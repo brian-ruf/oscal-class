@@ -1,0 +1,8 @@
+exclude = ["dist", "logs", "playground", "resource", "ui", "venv", "cache", "data"]
+
+[lint]
+ignore = ["F401", "F403", "F405"]
+
+[lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+
