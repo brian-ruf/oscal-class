@@ -5,7 +5,7 @@ from elementpath.xpath3 import XPath3Parser
 from xml.etree import ElementTree
 from xml.dom import minidom
 from common import *
-from oscal_support import *
+from oscal import oscal_support
 import uuid
 
 # As defined by NIST:
