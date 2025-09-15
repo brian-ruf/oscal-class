@@ -1,75 +1,38 @@
-# OSCAL PYTHON MODULES
+# Python OSCAL Class
 
-## Overview
-This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) manipulation. 
+This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) content validation, format conversion, and related capabilities without the need for Internet connectivity. 
 
-Feedback is welcome in the form of a [GitHub issue](https://github.com/brian-ruf/oscal-class/issues). While I will try to address bugs in a timely matter, I only intend to invest in feature requests that align with my project work. Feel free to contribute backward compatible enhancements.
+It handles all published OSCAL versions, and can be updated with additional versions as they are published by NIST.
 
-## Dependencies
+Please submit feedback,  bug reports and enhancement requests as [GitHub issues](https://github.com/brian-ruf/oscal-class/issues). I welcome code contributions for enhancements and bug fixes, and would enjoy collaborating with you on any enhancements that may impact existing code.
 
-Collectively, these modules rely on the following external libraries:
 
-- loguru (all)
-- python-dotenv ()
-- saxonche
-- jsonschema_rs
-- xmlschema
+## The OSCAL Support Module
 
-**This is an incomplete list**, and is being refined as the library is being prepared for independent use. This comment will be removed when the list is complete.
+The Python OSCAL Class creates and maintains a single external file that contains all of the NIST-published support files for all OSCAL versions and models. This is referred to in documentation as the _OSCAL Support Module_.
 
+The Python OSCAL Class is able to validate and convert any OSCAL version and module where the NIST-published support files are present in the OSCAL Support Model. No Internet connection required.
+
+As NIST publishes additional modules, they can be added to the OSCAL Support Module. An Internet connect is rquired to update the OSCAL Support Module; however, once updated, it can be copied to any computer for use.
+
+### Designed for Air Gapped Environments
+
+The concept behind the OSCAL Support Module is that it can be generated or updated on an Internet-connected computer and then conveyed into an air gapped environment for use.  
+
+### Open Standard
+
+The OSCAL Support Module is a SQLite 3 database, implemented without encryption so that tables can be inspected. Each cached file is stored as a blob. 
+
+The default configuration is to compress each cached file before storing; however, the compression can be turned off for even greater transparency with the trade-off of increased file size. 
+
+This default name and location for the OSCAl Support Module is `./support/support.oscal`; however, your project code can override the location and/or the file name. 
 
 ## Setup
 
-These instructions assume the following project structure:
+The Python OSCAL Class is intended to be used as a submodule to your project repository. It currently expects your project repository to have a my [Python Common](https://github.com/brian-ruf/common-python) submodule.
 
-```
-[project-root]
-README.md
-src/            [Your Python project]
-   ├── requirements.txt
-   ├── your-module1.py
-   ├── your-module2.py
-   ├── oscal/  [this submodule]
-   |    ├── oscal.py
-   |    ├── oscal_class.py
-   |    ├── misc.py
-   |    └── __init__.py
-   ├── common/  [required submodule]
-        ├── data.py
-        ├── database_sqlite3.py
-        ├── database.py
-        ├── lfs.py
-        ├── helper.py
-        ├── network.py
-        └── __init__.py
-```
+Please see the [Setup documentation](./docs/SETUP.md) for setup instructions and related details.
 
-To use this submodule, your GitHub repository must also have [common-python](https://github.com/brian-ruf/common-python) as a submodule.
+## Usage in Code Quick Start
 
-1. Ensure the common-python submodule is present
-
-
-1. With your repository's `./src` folder as the default location, issue the following command:
-```
-git submodule add https://github.com/brian-ruf/oscal-class.git oscal_class
-```
-
-2. Import the library into your python modules:
-
-```python
-from oscal_class import * # to import all
-
-# OR
-
-from oscal_class import metaschema_parser # import only one of the modules
-```
-
-## Modules
-
-The following modules are exposed to your application via the above instructions:
-
-- `.py`: .
-
-The following additional modules are present and support the above, but are not directly exposed:
-
-- `.py`: .
+The Python OSCAL Class is designed to use the 
