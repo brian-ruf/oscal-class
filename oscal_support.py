@@ -1,15 +1,13 @@
-# import os
+import os
 from loguru import logger
-# import json
 import uuid
-# import pickle
 from time import sleep
 from typing import Any, Optional
-from common import helper as misc
+from common import helper 
 from common import database
 from common import network
+from output import *
 import asyncio
-# import qasync
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Release and Support File Patterns
@@ -70,24 +68,24 @@ OSCAL_DATA_TYPES = {}
 
 # ========================================================================
 async def setup_support(support_file= "./support/support.oscal"):
-    logger.debug(f"Setting up support file: {support_file}")
+    debug(f"Setting up support file: {support_file}")
     
     support = await OSCAL_support.create(support_file)
     cycle = 0
     while not support.ready:
-        logger.debug("Waiting for support object to be ready...")
+        debug("Waiting for support object to be ready...")
         if support.db_state != "unknown":
-            logger.debug(f"Support file status {support.db_state}")
+            debug(f"Support file status {support.db_state}")
             break
         cycle += 1
         if cycle > 20:
-            logger.error(f"Support object took too long to be ready.({support.db_state})")
+            error(f"Support object took too long to be ready.({support.db_state})")
             break
         sleep(0.25)
     if not support.ready:
-        logger.error("Support object is not ready.")
+        error("Support object is not ready.")
     else:
-        logger.debug("Support file is ready.")
+        debug("Support file is ready.")
 
     return support
 
@@ -101,27 +99,29 @@ class OSCAL_support:
         self.versions   = {}        # Supported OSCAL versions available within the support database, and support references
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
+        self.also_files = False     # If True, also save support files directly to the file system. 
+                                    #    Files are always saved to the database.
 
         self.db = database.Database(self.db_type, self.db_conn)
-        logger.debug("Support: __init__")
+        debug("Support: __init__")
 
     # -------------------------------------------------------------------------
     async def async_init(self):
-        logger.debug("Support: async_init")
+        debug("Support: async_init")
         self.ready = await self.startup()
 
     # -------------------------------------------------------------------------
     @classmethod
     async def create(cls, db_conn, db_type="sqlite3"):
         """Async factory method to create and initialize OSCAL_support"""
-        logger.debug("Support: create")
+        debug("Support: create")
         self = cls(db_conn, db_type)
         # if self.db is not None:
         #     self.ready = await self.startup()
         if self.db is not None:
             await self.async_init()
         else:
-            logger.error("Unable to create support database object.")
+            error("Unable to create support database object.")
             self.ready = False
 
         return self
@@ -145,12 +145,14 @@ class OSCAL_support:
            - If update succeeds, set state to "populated"
         3 If state is "populated" set self.ready to True
         """
-        logger.debug("Support: startup")
+        debug("Support: startup")
         status = False
 
         if not self.db_state or self.db_state == "unknown": 
             # status = await self.__check_for_tables()
             status = await self.db.check_for_tables(OSCAL_SUPPORT_TABLES)
+
+            debug(f"Support database tables check status: {status}")
 
             if status: # Tables exist
                 # TODO: Check database structure against current
@@ -162,7 +164,7 @@ class OSCAL_support:
                 else:
                     self.db_state = "empty"
             else:
-                logger.error("Unable to initiate OSCAL support capability. Exiting.")
+                error("Unable to initiate OSCAL support capability. Exiting.")
                 self.ready = False
 
         if self.db_state == "empty":
@@ -172,7 +174,7 @@ class OSCAL_support:
                 self.db_state = "populated"
                 self.ready = True
             else:
-                logger.error("Unable to update OSCAL support capability. Exiting.")
+                error("Unable to update OSCAL support capability. Exiting.")
                 self.ready = False
        
         return status
@@ -209,7 +211,7 @@ class OSCAL_support:
                         self.__status_messages(f"Updating specific version: {fetch}")
                         status = await self.__clear_oscal_version(fetch)
                     else:
-                        logger.error(f"Invalid update directive: {fetch}")
+                        error(f"Invalid update directive: {fetch}")
                         status = False
             
             if status:
@@ -222,7 +224,7 @@ class OSCAL_support:
             self.__status_messages("Update process completed.")
             
         except Exception as e:
-            logger.error(f"Error during update: {e}")
+            error(f"Error during update: {e}")
             self.__status_messages(f"Error during update: {str(e)}", "error")
             status = False
             
@@ -248,18 +250,18 @@ class OSCAL_support:
             results = await self.db.query(query)
             if results is not None:
                 filecache_uuid = results[0].get("filecache_uuid", None)
-                # logger.debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
-                logger.debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
+                # debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
+                debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
                 # Check if the filecache UUID is valid
                 if filecache_uuid:
                     # Get the asset from the filecache
-                    asset = misc.normalize_content(await self.db.retrieve_file(filecache_uuid))
+                    asset = helper.normalize_content(await self.db.retrieve_file(filecache_uuid))
                 else:
-                    logger.error(f"Unable to find asset for {oscal_version} and {model_name}.")
+                    error(f"Unable to find asset for {oscal_version} and {model_name}.")
             else:
-                logger.error(f"Unable to find asset for {oscal_version} and {model_name}.")
+                error(f"Unable to find asset for {oscal_version} and {model_name}.")
         else:
-            logger.error(f"OSCAL version {oscal_version} is either not valid or not supported.")
+            error(f"OSCAL version {oscal_version} is either not valid or not supported.")
 
         return asset
 
@@ -290,8 +292,8 @@ class OSCAL_support:
             query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{version}' and type = 'xml-schema' and model != 'complete'"
             results = await self.db.query(query)
             if results is not None:
-                # logger.debug(f"Found {len(results)} models for version {version}.")
-                # logger.debug(f"Models: {results}")
+                # debug(f"Found {len(results)} models for version {version}.")
+                # debug(f"Models: {results}")
                 for entry in results:
                     models.append(entry.get("model", ""))
 
@@ -313,7 +315,7 @@ class OSCAL_support:
             bool: True if the asset was added successfully, False otherwise.
         """
         status = False
-        logger.debug(f"Add asset {model_name} ({asset_type}) for version {oscal_version}.")
+        debug(f"Add asset {model_name} ({asset_type}) for version {oscal_version}.")
         if isinstance(content, str):
             # If content is a string, convert it to bytes
             content = content.encode('utf-8')
@@ -321,13 +323,13 @@ class OSCAL_support:
         elif isinstance(content, bytes):
             status = True  # Content is already in bytes
         else:
-            logger.error(f"Content for {model_name} ({asset_type}) must be bytes or a string. Received type: {type(content)}")
+            error(f"Content for {model_name} ({asset_type}) must be bytes or a string. Received type: {type(content)}")
         # Check if the version is valid
 
         if status and self.is_valid_version(oscal_version):
             status = True
         else:
-            logger.error(f"OSCAL version {oscal_version} is not valid or supported.")
+            error(f"OSCAL version {oscal_version} is not valid or supported.")
             status = False
 
         if status:
@@ -337,7 +339,7 @@ class OSCAL_support:
             attributes["original_location"] = ""
             attributes["mime_type"] = "application/octet-stream"
             attributes["file_type"] = asset_type
-            attributes["acquired"] = misc.oscal_date_time_with_timezone()
+            attributes["acquired"] = helper.oscal_date_time_with_timezone()
 
 
             # Check if the asset already exists
@@ -346,22 +348,22 @@ class OSCAL_support:
             if results is not None and len(results) > 0:
                 filecache_uuid = results[0].get("filecache_uuid", None)
                 if filecache_uuid:
-                    logger.debug(f"Asset {model_name} ({asset_type}) for version {oscal_version} already exists with UUID {filecache_uuid}.")
+                    debug(f"Asset {model_name} ({asset_type}) for version {oscal_version} already exists with UUID {filecache_uuid}.")
             else:
-                logger.debug(f"No existing asset found for {model_name} ({asset_type}) for version {oscal_version}. Proceeding to insert.")
+                debug(f"No existing asset found for {model_name} ({asset_type}) for version {oscal_version}. Proceeding to insert.")
 
             if filecache_uuid:
                 # If the asset already exists, update it
-                logger.debug(f"Updating existing asset {model_name} ({asset_type}) for version {oscal_version} with UUID {filecache_uuid}.")
+                debug(f"Updating existing asset {model_name} ({asset_type}) for version {oscal_version} with UUID {filecache_uuid}.")
 
                 # Cache the file content
                 if await self.db.cache_file(content, filecache_uuid, attributes):
                     status = True
-                    logger.info(f"Updated asset {model_name} ({asset_type}) for version {oscal_version}.")
+                    info(f"Updated asset {model_name} ({asset_type}) for version {oscal_version}.")
                 else:
-                    logger.error(f"Failed to cache updated file for {model_name} ({asset_type}) for version {oscal_version}.")
+                    error(f"Failed to cache updated file for {model_name} ({asset_type}) for version {oscal_version}.")
             else:
-                logger.debug(f"Adding new asset {model_name} ({asset_type}) for version {oscal_version} with UUID {filecache_uuid}.")
+                debug(f"Adding new asset {model_name} ({asset_type}) for version {oscal_version} with UUID {filecache_uuid}.")
                 filecache_uuid = str(uuid.uuid4())
 
                 # Cache the file content
@@ -374,9 +376,9 @@ class OSCAL_support:
                         "filecache_uuid": filecache_uuid
                     })
 
-                    logger.info(f"Added asset {model_name} ({asset_type}) for version {oscal_version}.")
+                    info(f"Added asset {model_name} ({asset_type}) for version {oscal_version}.")
                 else:
-                    logger.error(f"Failed to cache file for {model_name} ({asset_type}) for version {oscal_version}.")
+                    error(f"Failed to cache file for {model_name} ({asset_type}) for version {oscal_version}.")
 
         return status
 
@@ -398,7 +400,7 @@ class OSCAL_support:
         """
         status = False
 
-        logger.debug("Loading OSCAL versions into memory.")
+        debug("Loading OSCAL versions into memory.")
         query = "SELECT * FROM oscal_versions ORDER BY released DESC"
         results = await self.db.query(query)
         if results is not None:
@@ -463,21 +465,21 @@ class OSCAL_support:
                             # Split up the database operations to allow more UI updates
                             await asyncio.sleep(0)
                             
-                            logger.info(f"Learning {oscal_version}, released {release_date} ...")
+                            info(f"Learning {oscal_version}, released {release_date} ...")
                             if await self.db.insert("oscal_versions", {
                                 "version": oscal_version,
                                 "released": release_date,
                                 "title": release_name,
                                 "github_location": github_location,
                                 "documentation_location": documentation_location,
-                                "acquired": misc.oscal_date_time_with_timezone()
+                                "acquired": helper.oscal_date_time_with_timezone()
                             }):
                                 OSCAL_versions.append(oscal_version)
                                 if "assets" in entry:
                                     # Process assets in chunks
                                     await self.__get_support_files(oscal_version, entry["assets"])
                             else:
-                                logger.error(f"Unable to insert OSCAL version {oscal_version} into support database.")
+                                error(f"Unable to insert OSCAL version {oscal_version} into support database.")
                         else:
                             self.__status_messages(f"Skipping {oscal_version} release.")
                     else:
@@ -486,7 +488,7 @@ class OSCAL_support:
                 # Add small delay after processing each version
                 await asyncio.sleep(0)
         else:
-            logger.error("Unable to fetch release information from GitHub.") 
+            error("Unable to fetch release information from GitHub.") 
             status = False
 
         if status:
@@ -555,7 +557,7 @@ class OSCAL_support:
                 "original_location": asset_URL,
                 "mime_type": "application/octet-stream",
                 "file_type": SUPPORT_FILE_PATTERNS[pattern],
-                "acquired": misc.oscal_date_time_with_timezone()
+                "acquired": helper.oscal_date_time_with_timezone()
             }
             await self.db.cache_file(content, uuid_value, attributes)
             self.__status_messages(f"Downloaded [{version}] {asset_name}")
@@ -587,9 +589,9 @@ class OSCAL_support:
         status = await self.db.db_execute(sql_commands)
 
         if status: 
-            logger.info(f"Successfully deleted support information for version {version}")
+            info(f"Successfully deleted support information for version {version}")
         else:
-            logger.error(f"Unable to deleted support information for version {version}")
+            error(f"Unable to deleted support information for version {version}")
 
         return status
     
@@ -610,11 +612,76 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
+    async def export_support_files(self, export_path="./support_files"):
+        """
+        Export all support files to the specified directory.
+        Args:
+            export_path (str): The directory to export support files to.
+        Returns:
+            bool: True if the export was successful, False otherwise.
+        """
+        status = False
+
+        if self.versions:
+
+            export_path = os.path.abspath(export_path)
+            debug(f"Export path expanded to: {export_path}")
+
+            status = lfs.chkdir(export_path, make_if_not_present=True)
+            if status:
+                debug(f"OSCAL support files present. Exporting support files to {export_path}...")
+
+                for version in self.versions:
+                    version_path = os.path.join(export_path, version)
+                    if lfs.chkdir(version_path, make_if_not_present=True):
+                        debug(f"Exporting support files for version {version} to {version_path}...")
+
+
+                        # Query all records for this version from oscal_support table
+                        query = f"SELECT * FROM oscal_support WHERE version = '{version}'"
+                        support_records = await self.db.query(query)
+                        
+                        if support_records:
+                            for record in support_records:
+                                model = record.get('model', '')
+                                asset_type = record.get('type', '')
+                                filecache_uuid = record.get('filecache_uuid', '')
+                                filename = await self.db.retrieve_file_name(filecache_uuid)
+                                if filename:
+                                    filename = os.path.join(version_path, filename)
+                                    try:
+                                        content = await self.db.retrieve_file(filecache_uuid)
+                                        if content is not None:
+                                            content = helper.normalize_content(content)
+                                            status = lfs.putfile(filename, content)
+                                            if status:
+                                                debug(f"Exported {model} ({asset_type}) to {filename}.")
+                                            else:
+                                                error(f"Failed to write asset to {filename}.")
+                                        else:
+                                            error(f"No content found for UUID {filecache_uuid}.")
+                                    except Exception as e:
+                                        error(f"Failed to write asset to {filename}: {e}")
+                                        status = False
+                                else:
+                                    error(f"Asset not found for {model} ({asset_type}) in version {version}.")
+                    else:
+                        error(f"Unable to create or access version directory: {version_path}")
+                        status = False
+            else:
+                error(f"Unable to create or access export directory: {export_path}")
+                status = False
+        else:
+            error("No OSCAL versions available to export.")
+            status = False
+
+        return status
+    # -------------------------------------------------------------------------
     def __status_messages(self, status="", level="info"):
         """Enhanced status message handling"""
         if self.backend is not None:
             self.backend.status_update(status, level)
-        logger.info(status)
+        info(status)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':

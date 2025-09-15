@@ -1,9 +1,9 @@
 # OSCAL PYTHON MODULES
 
 ## Overview
-This is a collection of python modules I have created for OSCAL manipulation. 
+This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) manipulation. 
 
-Feedback is welcome in the form of a [GitHub issue](https://github.com/brian-ruf/oscal-class/issues). While I will try to address issues in a timely matter, I only intend to invest in feature requests that align with my project work. Feel free to contribute backward compatible enhancements.
+Feedback is welcome in the form of a [GitHub issue](https://github.com/brian-ruf/oscal-class/issues). While I will try to address bugs in a timely matter, I only intend to invest in feature requests that align with my project work. Feel free to contribute backward compatible enhancements.
 
 ## Dependencies
 
