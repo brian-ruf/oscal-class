@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]  # These are REAL requirements
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscal-class"
+version = "1.0.0-dev"
+description = "OSCAL utility classes"
+requires-python = ">=3.7"
+dependencies = [
+    "loguru>=0.6.0",  # Put loguru HERE, not in requirements.txt
+    "saxonche",
+    "jsonschema_rs",
+    "xmlschema",
+    "common-python @ git+https://github.com/brian-ruf/common-python.git"
+]
