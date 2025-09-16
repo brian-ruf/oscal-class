@@ -10,14 +10,13 @@ Relative to the location of your project's main Python module, the Python OSCAL 
 
 Please see the [Setup documentation](./SETUP.md) for setup instructions and related details.
 
-
 ## The OSCAL Classes
 
 There are three OSCAL Classes available. Each class uses and expands on the classes beneath it.:
 
 - **OSCAL Project Class**: Managing a collection of _related_ OSCAL artifacts.
 - **OSCAL Content Class**: Managing a single OSCAL artifact.
-- **OSCAL Support Class**: Interact directly with the OSCAL Support Module. 
+- **OSCAL Support Class** [FUTURE]: Interact directly with the OSCAL Support Module. 
 
 If you are just getting started with this library, consider starting with the OSCAL Content Class.
 
@@ -29,7 +28,7 @@ You only need one support object for your entire project. The OSCAL Content Clas
 
 You need one OSCAL Content object for each OSCAL artifact. The OSCAL Project Class will instantiate OSCAL content objects as neeed. You only need to instantiate the content object if you want to interact with a single OSCAL artifact.
 
-### The OSCAL Project Class
+### The OSCAL Project Class [FUTURE]
 
 You need one OSCAL Project object for each grouping of related OSCAL artifacts. 
 
@@ -38,6 +37,3 @@ For example, if you have a Catalog, Profile, SSP, AP, AR and POA&M for each of t
 Each OSCAL project object would have six OSCAL content object. One for each of the OSCAL artifacts.
 
 A single OSCAL support object would be instantiated automatically by the OSCAL content class and used automatically as needed.
-
-
-
