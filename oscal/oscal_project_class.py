@@ -1,7 +1,7 @@
 from loguru import logger
 from common import *
-from oscal_support import *
-from oscal_class import *
+from oscal_support_class import *
+from oscal_content_class import *
 import asyncio
 import datetime
 
