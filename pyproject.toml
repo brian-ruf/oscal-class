@@ -8,9 +8,9 @@ version = "1.0.0-dev"
 description = "OSCAL utility classes"
 requires-python = ">=3.7"
 dependencies = [
-    "loguru>=0.6.0",  # Put loguru HERE, not in requirements.txt
-    "saxonche",
-    "jsonschema_rs",
-    "xmlschema",
-    "common-python @ git+https://github.com/brian-ruf/common-python.git"
+    "loguru>=0.7.3",  # Put loguru HERE, not in requirements.txt
+    "saxonche==12.5.0",
+    "jsonschema_rs>=0.26.1",
+    "xmlschema>=3.4.3",
+    "common-python @ git+https://github.com/brian-ruf/common-python.git@develop"
 ]
