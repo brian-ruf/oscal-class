@@ -1,4 +1,4 @@
-# The OSCAL Python Class
+# The OSCAL Python Content Class
 from loguru import logger
 
 from saxonche import *
@@ -10,6 +10,7 @@ import yaml
 from datetime import datetime
 import os
 
+from oscal import oscal_support_class as oscal_support
 from common import * 
 
 NIST_OSCAL_NS = "http://csrc.nist.gov/ns/oscal/1.0"
@@ -62,15 +63,27 @@ class OSCAL_Content:
             .validate(target_format)
             .convert(convert_to, validate=False)
     """
-    def __init__(self, file_path_and_name, file_content, identifier=""):
+    def __init__(self, file_path_and_name, file_content, support=None, identifier=""):
         status = False
         self.identifier = identifier
         self.file_path_and_name = file_path_and_name
         self.file_name = os.path.basename(file_path_and_name)
-        self.original_content = misc.normalize_content(file_content)
+        self.original_content = helper.normalize_content(file_content)
         self.original_format = ""
         self.oscal_model = ""
         self.oscal_version = ""
+        self.support = support
+        if self.support is None:
+            self.support = await oscal_support.OSCAL_support.create(self.config["location"]["supportfile"]["data"])
+            if self.support is None:
+                logger.error("Unable to initialize OSCAL support module.")
+                status = False
+            else:
+                logger.debug("OSCAL support module initialized.")
+
+
+
+
         self.log = []
         self.__xdm  = "" # 
         self.xml    = "" # If the native content is XML, this gets populated in XML_Interrogation
@@ -149,7 +162,7 @@ class OSCAL_Content:
 
         if not is_recognized_format:
             # "<" = OSCAL XML, "{" = OSCAL JSON, "-"
-            first_non_ws = misc.get_first_non_whitespace_char(self.original_content)
+            first_non_ws = helper.get_first_non_whitespace_char(self.original_content)
             match first_non_ws:
                 case "<":  #  OSCAL XML
                     self.original_format = "xml"
@@ -277,7 +290,7 @@ class OSCAL_Content:
                 logger.error("Unable to proceed with validation. Invalid format requested" + target_format)
 
         run_time = datetime.now() - start_time
-        out_str = "- - - - - - " + target_format.upper() + " is " + misc.iif(is_valid, "valid", "INVALID") +  " (" + str(run_time.total_seconds()) + "s)"
+        out_str = "- - - - - - " + target_format.upper() + " is " + helper.iif(is_valid, "valid", "INVALID") +  " (" + str(run_time.total_seconds()) + "s)"
         self.logging(out_str)
         
         return is_valid 
