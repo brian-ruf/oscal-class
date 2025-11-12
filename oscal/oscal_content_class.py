@@ -1,11 +1,11 @@
 # The OSCAL Python Content Class
 from loguru import logger
-
 from saxonche import *
 import jsonschema_rs
 import xmlschema
 import json
 import yaml
+import asyncio
 
 from datetime import datetime
 import os
@@ -29,12 +29,20 @@ OUT_DEBUG = 0
 # -------------------------------------------------------
 class OSCAL_Content:
     """
-    CLASS OSCAL_Content(file_path_and_name, file_content)
+    CLASS OSCAL_Content(content=None, file_path_and_name=None, support=None, identifier="", support_db_path=None)
 
     PARAMETERS:
-        - file_path_and_name : (string) Can me just the base file name or include 
+        - file_path_and_name : (string) Can be just the base file name or include 
                                 the full path. Must include ".xml", ".json" or ".yaml" (case insensitive)
         - file_content       : The actual content in string or unicode/utf-8 format
+        - support           : (optional) Pre-created OSCAL_support instance
+        - identifier        : (optional) Identifier for this content instance
+        - support_db_path   : (optional) Path to support database file (default: "./support/support.oscal")
+
+    FACTORY METHODS:
+        - OSCAL_Content.create_async() : For use in async contexts
+        - OSCAL_Content.create_sync()  : For use in sync contexts
+        - OSCAL_Content()              : Direct constructor (auto-detects context)
 
         PROPERTIES:
             .identifier = identifier
@@ -63,7 +71,7 @@ class OSCAL_Content:
             .validate(target_format)
             .convert(convert_to, validate=False)
     """
-    def __init__(self, file_path_and_name, file_content, support=None, identifier=""):
+    def __init__(self, file_path_and_name, file_content, support=None, identifier="", support_db_path=None):
         status = False
         self.identifier = identifier
         self.file_path_and_name = file_path_and_name
@@ -73,16 +81,45 @@ class OSCAL_Content:
         self.oscal_model = ""
         self.oscal_version = ""
         self.support = support
+
+        # TODO: Enable running in both sync and async contexts
+        # self.async_mode = False
+        # try:
+        #     asyncio.get_running_loop()
+        #     self.async_mode = True
+        #     self.executor = self._async_execute
+        # except RuntimeError:
+        #     self.async_mode = False
+        #     self.executor = self._sync_execute
+
         if self.support is None:
-            self.support = await oscal_support.OSCAL_support.create(self.config["location"]["supportfile"]["data"])
-            if self.support is None:
-                logger.error("Unable to initialize OSCAL support module.")
-                status = False
-            else:
-                logger.debug("OSCAL support module initialized.")
-
-
-
+            # Default support database path if not provided
+            if support_db_path is None:
+                support_db_path = "./support/support.oscal"
+            
+            try:
+                # Check if we're in an async context
+                loop = asyncio.get_running_loop()
+                if loop and loop.is_running():
+                    logger.warning("OSCAL_Content created in async context but support not provided. Please pass a pre-created support object or use an async factory method.")
+                    # For now, we'll skip the support initialization
+                    logger.debug("Skipping support initialization - must be provided separately in async context.")
+                else:
+                    # We're in sync context, use sync support creation
+                    self.support = oscal_support.OSCAL_support.create_sync(support_db_path)
+                    if self.support is None:
+                        logger.error("Unable to initialize OSCAL support module.")
+                        status = False
+                    else:
+                        logger.debug("OSCAL support module initialized.")
+            except RuntimeError:
+                # No event loop running, we're in sync context
+                self.support = oscal_support.OSCAL_support.create_sync(support_db_path)
+                if self.support is None:
+                    logger.error("Unable to initialize OSCAL support module.")
+                    status = False
+                else:
+                    logger.debug("OSCAL support module initialized.")
 
         self.log = []
         self.__xdm  = "" # 
@@ -106,6 +143,38 @@ class OSCAL_Content:
                 logger.warning("Not valid OSCAL content.")
         else:
             logger.warning("Not a valid XML, JSON, or YAML format.")
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    async def create_async(cls, file_path_and_name, file_content, support=None, identifier="", support_db_path=None):
+        """Async factory method to create OSCAL_Content with proper support initialization"""
+        
+        # If support is not provided, create it asynchronously
+        if support is None:
+            if support_db_path is None:
+                support_db_path = "./support/support.oscal"
+            support = await oscal_support.OSCAL_support.create(support_db_path)
+            if support is None:
+                logger.error("Unable to initialize OSCAL support module.")
+        
+        # Create the instance with the support object
+        return cls(file_path_and_name, file_content, support=support, identifier=identifier, support_db_path=support_db_path)
+
+    # -------------------------------------------------------------------------
+    @classmethod  
+    def create_sync(cls, file_path_and_name, file_content, support=None, identifier="", support_db_path=None):
+        """Synchronous factory method to create OSCAL_Content with proper support initialization"""
+        
+        # If support is not provided, create it synchronously
+        if support is None:
+            if support_db_path is None:
+                support_db_path = "./support/support.oscal"
+            support = oscal_support.OSCAL_support.create_sync(support_db_path)
+            if support is None:
+                logger.error("Unable to initialize OSCAL support module.")
+        
+        # Create the instance with the support object
+        return cls(file_path_and_name, file_content, support=support, identifier=identifier, support_db_path=support_db_path)
 
     # -------------------------------------------------------
     def __str__(self):
@@ -327,7 +396,7 @@ class OSCAL_Content:
                     if  isinstance(ret,PyXdmNode):
                         self.oscal_version = ret.string_value
                         self.logging("Declared OSCAL Version: " + self.oscal_version )
-                        support_obj = get_support_file(self.oscal_version, self.oscal_model, "xml-validation")
+                        support_obj = self.support.asset(self.oscal_version, self.oscal_model, "xml-validation")
                         if support_obj.acquired:
                             self.logging("SUPPORT FILE: " + support_obj.file_name)
                             status = self.__XML_schema_validation(support_obj.content)
@@ -538,8 +607,8 @@ class OSCAL_Content:
 
         # Getting the correct OSCAL JSON schema validation file, processing it against the content   
         if ok_to_continue:
-            support_obj = get_support_file(self.oscal_version, self.oscal_model, "json-validation")
-            # status, support_file_name, support_file = get_support_file(self.oscal_version, self.oscal_model, "json-validation")
+            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "json-validation")
+            # status, support_file_name, support_file = self.support.asset(self.oscal_version, self.oscal_model, "json-validation")
             if support_obj.acquired:
                 status = self.__JSON_schema_validation(json.loads(support_obj.content))
 
@@ -595,7 +664,7 @@ class OSCAL_Content:
 
         # Getting the correct OSCAL YAML schema validation file (which is the JSON schema), processing it against the content   
         if ok_to_continue:
-            support_obj = get_support_file(self.oscal_version, self.oscal_model, "json-validation")
+            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "json-validation")
             if support_obj.acquired:
                 status = self.__JSON_schema_validation(json.loads(support_obj.content))
 
@@ -652,7 +721,7 @@ class OSCAL_Content:
     def __oscal_xml2json(self, validate=False):
         self.logging("Converting OSCAL XML to OSCAL JSON")
         if self.xml != "" and self.xml_is_valid:
-            support_obj = get_support_file(self.oscal_version, self.oscal_model, "xml-to-json")
+            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
             self.json = xslt_transform(self.xml, support_obj.content, "xml")
             if validate: self.validate("json")
         else:
@@ -667,7 +736,7 @@ class OSCAL_Content:
     def __oscal_json2xml(self, validate=False):
         self.logging("Converting OSCAL JSON to OSCAL XML")
         if self.json != "" and self.is_valid():
-            support_obj = get_support_file(self.oscal_version, self.oscal_model, "json-to-xml")
+            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
             self.xml = xslt_transform(self.json, support_obj.content, "json")
             if validate: self.validate("xml")
         else:

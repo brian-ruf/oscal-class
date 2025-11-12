@@ -8,6 +8,7 @@ from common import database
 from common import network
 from output import *
 import asyncio
+import inspect
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Release and Support File Patterns
@@ -67,6 +68,30 @@ OSCAL_SUPPORT_TABLES["filecache"] = database.OSCAL_COMMON_TABLES["filecache"]
 OSCAL_DATA_TYPES = {}
 
 # ========================================================================
+def setup_support_sync(support_file="./support/support.oscal"):
+    """Synchronous version of setup_support"""
+    logger.debug(f"Setting up support file (sync): {support_file}")
+    
+    support = OSCAL_support.create_sync(support_file)
+    cycle = 0
+    while not support.ready:
+        logger.debug("Waiting for support object to be ready...")
+        if support.db_state != "unknown":
+            logger.debug(f"Support file status {support.db_state}")
+            break
+        cycle += 1
+        if cycle > 20:
+            logger.error(f"Support object took too long to be ready.({support.db_state})")
+            break
+        sleep(0.25)
+    if not support.ready:
+        logger.error("Support object is not ready.")
+    else:
+        logger.debug("Support file is ready.")
+
+    return support
+
+# ========================================================================
 async def setup_support(support_file= "./support/support.oscal"):
     logger.debug(f"Setting up support file: {support_file}")
     
@@ -99,16 +124,43 @@ class OSCAL_support:
         self.versions   = {}        # Supported OSCAL versions available within the support database, and support references
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
-        self.also_files = False     # If True, also save support files directly to the file system. 
-                                    #    Files are always saved to the database.
 
         self.db = database.Database(self.db_type, self.db_conn)
         logger.debug("Support: __init__")
+
+        # TODO: Enable running in both sync and async contexts
+        # self.async_mode = False
+        # try:
+        #     asyncio.get_running_loop()
+        #     self.async_mode = True
+        #     self.executor = self._async_execute
+        # except RuntimeError:
+        #     self.async_mode = False
+        #     self.executor = self._sync_execute
+
+    # -------------------------------------------------------------------------
+    def sync_init(self):
+        """Synchronous initialization"""
+        logger.debug("Support: sync_init")
+        self.ready = asyncio.run(self.startup())
 
     # -------------------------------------------------------------------------
     async def async_init(self):
         logger.debug("Support: async_init")
         self.ready = await self.startup()
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def create_sync(cls, db_conn, db_type="sqlite3"):
+        """Synchronous factory method to create and initialize OSCAL_support"""
+        logger.debug("Support: create_sync")
+        instance = cls(db_conn, db_type)
+        if instance.db is not None:
+            instance.sync_init()
+        else:
+            logger.error("Unable to create support database object.")
+            instance.ready = False
+        return instance
 
     # -------------------------------------------------------------------------
     @classmethod
@@ -125,6 +177,26 @@ class OSCAL_support:
             self.ready = False
 
         return self
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def create_auto(cls, db_conn, db_type="sqlite3"):
+        """Auto-detecting factory method that uses async if in async context, sync otherwise"""
+        logger.debug("Support: create_auto")
+        
+        # Check if we're in an async context
+        try:
+            # Try to get the current event loop
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                # We're in an async context, but we can't return a coroutine from this method
+                # Instead, we'll use asyncio.run_coroutine_threadsafe or similar
+                # For now, let's use the sync version and warn the user
+                logger.warning("create_auto called from async context, but returning sync instance. Use create() directly in async context.")
+                return cls.create_sync(db_conn, db_type)
+        except RuntimeError:
+            # No event loop running, we're in sync context
+            return cls.create_sync(db_conn, db_type)
 
     # -------------------------------------------------------------------------
     async def startup(self, check_for_updates=False, refresh_all=False):
@@ -497,7 +569,7 @@ class OSCAL_support:
             self.__status_messages(f"OSCAL versions: {', '.join(OSCAL_versions)}")
 
         return status
-
+  
     # -------------------------------------------------------------------------
     async def __get_support_files(self, version, assets):
         """Modified to use async network operations and process in chunks"""

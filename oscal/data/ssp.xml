@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system-security-plan xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="8561a2f5-9e57-47c2-81ce-e0499806a3f2">
+   <metadata>
+      <title>System Security Plan (SSP)</title>
+      <published>2025-09-10T12:00:00-04:00</published>
+      <last-modified>2025-09-10T12:00:00-04:00</last-modified>
+      <version>DRAFT</version>
+      <oscal-version>1.1.3</oscal-version>
+      <role id="system-owner">
+         <title>System Owneer</title>
+      </role>
+      <role id="author">
+         <title>Content Author</title>
+      </role>
+      <party uuid="5f12ac90-5527-4006-a1b4-b7382d3da084" type="person">
+         <name>System Owner's Name</name>
+      </party>
+      <party uuid="d8367bde-b01c-4520-a141-690efb539b91" type="person">
+         <name>System Owner's Name</name>
+      </party>
+      <responsible-party role-id="system-owner">
+         <party-uuid>5f12ac90-5527-4006-a1b4-b7382d3da084</party-uuid>
+      </responsible-party>
+      <responsible-party role-id="author">
+         <party-uuid>d8367bde-b01c-4520-a141-690efb539b91</party-uuid>
+      </responsible-party>
+   </metadata>
+   
+   <import-profile href="#b875f8a1-afcd-474e-9861-a10f388c5de4"/>
+   
+   <system-characteristics>
+      <system-id identifier-type="https://ietf.org/rfc/rfc4122">${uuid}</system-id>
+      <system-name>System Name</system-name>
+      <description>
+         <p></p>
+      </description>
+      <security-sensitivity-level>[not-specified]</security-sensitivity-level>
+      <system-information>
+         <information-type uuid="472ff18d-01d5-45cc-9e16-32092c39bea7">
+            <title></title>
+            <description>
+               <p></p>
+            </description>
+         </information-type>
+      </system-information>
+      <status state="other" />
+      
+      <authorization-boundary>
+         <description>
+            <p></p>
+         </description>
+      </authorization-boundary>
+   </system-characteristics>
+   
+   <system-implementation>
+      <user uuid="ecc8e51e-56d1-4961-b4f2-cdcb90f4a9c1">
+         <title>System Owner</title>
+         <prop name="type" value="internal"/>
+         <role-id>system-owner</role-id>
+      </user>
+      <component uuid="cd1570e8-b600-426d-a87a-845c47aa13a5" type="this-system">
+         <title>This System</title>
+         <description>
+            <p></p>
+         </description>
+         <status state="planned"/>
+      </component>
+   </system-implementation>
+   <control-implementation>
+      <description>
+         <p></p>
+      </description>
+      <implemented-requirement uuid="478311b8-86c6-40d7-a066-f418cb2367bc" control-id="placeholder">
+         <statement statement-id="control-1_stm" uuid="06648976-a0bb-4708-bf21-65dff8ed8601">
+            <by-component component-uuid="cd1570e8-b600-426d-a87a-845c47aa13a5" uuid="0829bc29-1e10-40af-989a-fe68dae05c16">
+               <description>
+                  <p></p>
+               </description>
+            </by-component>
+         </statement>
+      </implemented-requirement>
+   </control-implementation>
+   
+   <back-matter>
+      <resource uuid="b875f8a1-afcd-474e-9861-a10f388c5de4">
+         <title>Catalog, Baseline, or Overlay</title>
+         <rlink media-type="application/xml" href="#" />
+      </resource>
+   </back-matter>
+</system-security-plan>

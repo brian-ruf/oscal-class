@@ -5,8 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oscal"
 version = "1.0.0-dev"
-description = "OSCAL utility classes"
+description = "Python classes to mange OSCAL content."
 requires-python = ">=3.7"
+authors = [{ name = "Brian Ruf", email = "Brian@RufRisk.com" }]
+readme = "README.md"
+license = { file = "LICENSE" }
+
 dependencies = [
     "loguru>=0.7.3",  # Put loguru HERE, not in requirements.txt
     "saxonche==12.5.0",
@@ -15,3 +19,8 @@ dependencies = [
     "common-python @ git+https://github.com/brian-ruf/common-python.git@develop"
 ]
 
+[tool.setuptools]
+packages = ["oscal"]
+
+[tool.setuptools.package-data]
+"oscal" = ["data/*.xml"]

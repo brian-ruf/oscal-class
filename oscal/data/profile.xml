@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="08beb860-3c94-49a6-bc82-5ebb73a55e33">
+   <metadata>
+      <title>Control Baseline or Overlay</title>
+      <published>2025-09-10T12:00:00-04:00</published>
+      <last-modified>2025-09-10T12:00:00-04:00</last-modified>
+      <version>DRAFT</version>
+      <oscal-version>1.1.3</oscal-version>
+   </metadata>
+   
+   <import href="#0119451e-a426-4e25-b51d-2c11cece68b4">
+      <include-controls />
+   </import>
+   
+   <merge>
+      <combine method="keep"/>
+      <as-is>true</as-is>
+   </merge>
+
+   <back-matter>
+      <resource uuid="0119451e-a426-4e25-b51d-2c11cece68b4">
+         <title>Catalog, Baseline, or Overlay Title</title>
+         <rlink media-type="application/xml"  href="catalog-template.xml"/>
+      </resource>
+   </back-matter>
+</profile>

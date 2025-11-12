@@ -2,10 +2,9 @@
 
 This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) content validation, format conversion, and related capabilities without the need for Internet connectivity. 
 
-It handles all published OSCAL versions, and can be updated with additional versions as they are published by NIST.
+It handles all published OSCAL versions, and can "learn" new versions as they are published by NIST.
 
-Please submit feedback,  bug reports and enhancement requests as [GitHub issues](https://github.com/brian-ruf/oscal-class/issues). I welcome code contributions for enhancements and bug fixes, and would enjoy collaborating with you on any enhancements that may impact existing code.
-
+Please submit feedback,  bug reports and enhancement requests as [GitHub issues](https://github.com/brian-ruf/oscal-class/issues). I welcome bug fixes and backward-compatible code contributions; and would enjoy collaborating with you on any breaking enhancements.
 
 ## The OSCAL Support Module
 

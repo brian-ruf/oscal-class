@@ -19,37 +19,37 @@ class OSCAL:
     OSCAL Class
 
     Properties:
-    - content: The string representing the content as originally passed to the class
-    - valid_xml: A boolean indicating whether the content was found to be well-formed XML
-    - xml_namespace: The identified default namespace
-    - valid_oscal: A boolean indicating whether the content was found to OSCAL schema valid
-    - Currently, valid just means a recognized OSCAL model name (root) and OSCAL version (/metadata/oscal-veraion)
-    - oscal_format: The recognized OSCAL format ("xml", "json" or "yaml")
-    - Currently, the value will only be XML as the class only accepts XML. 
-    - Phase 3: Accept all three formats
-    - oscal_version: The value in the /metadata/oscal-version field
-    - oscal_model: The OSCAL model name exatly as it appears in OSCAL syntax
-    ["catalog", "profile", "component-definition", "system-security-plan", "assessment-plan", "assessment-results", "plan-of-action-and-milestones"]
-    - doc: The lxml representation of the content
+        - content: The string representing the content as originally passed to the class
+        - valid_xml: A boolean indicating whether the content was found to be well-formed XML
+        - xml_namespace: The identified default namespace
+        - valid_oscal: A boolean indicating whether the content was found to OSCAL schema valid
+        - Currently, valid just means a recognized OSCAL model name (root) and OSCAL version (/metadata/oscal-veraion)
+        - oscal_format: The recognized OSCAL format ("xml", "json" or "yaml")
+        - Currently, the value will only be XML as the class only accepts XML. 
+        - Phase 3: Accept all three formats
+        - oscal_version: The value in the /metadata/oscal-version field
+        - oscal_model: The OSCAL model name exatly as it appears in OSCAL syntax
+        ["catalog", "profile", "component-definition", "system-security-plan", "assessment-plan", "assessment-results", "plan-of-action-and-milestones"]
+        - doc: The lxml representation of the content
 
     Methods:
-    - OSCAL_validate: Validates the content against the appropriate NIST OSCAL schema
-    - OSCAL_convert: Converts the content to a different format
-    - xpath: Performs an xpath query on the content
-    - serializer: Serializes the content for output
-    - lookup: Checks for the existence of an element based on an xpath expression
-    - append_child: Appends a child node to the content
-    - content_modified: Sets the content as modified
-    - __setup_saxon: Sets up the Saxon processor
-    - __saxon_serializer: Serializes the content using the Saxon processor
-    - __saxon_handle_ns: Handles namespaces using the Saxon processor
-    - __saxon_xpath_global: Performs an xpath query on the content using the Saxon processor
-    - __saxon_xpath_global_single: Performs an xpath query on the content using the Saxon processor
-    - __saxon_xpath: Performs an xpath query on the content using the Saxon processor
-    - __saxon_xpath_single: Performs an xpath query on the content using the Saxon processor
+        - OSCAL_validate: Validates the content against the appropriate NIST OSCAL schema
+        - OSCAL_convert: Converts the content to a different format
+        - xpath: Performs an xpath query on the content
+        - serializer: Serializes the content for output
+        - lookup: Checks for the existence of an element based on an xpath expression
+        - append_child: Appends a child node to the content
+        - content_modified: Sets the content as modified
+        - __setup_saxon: Sets up the Saxon processor
+        - __saxon_serializer: Serializes the content using the Saxon processor
+        - __saxon_handle_ns: Handles namespaces using the Saxon processor
+        - __saxon_xpath_global: Performs an xpath query on the content using the Saxon processor
+        - __saxon_xpath_global_single: Performs an xpath query on the content using the Saxon processor
+        - __saxon_xpath: Performs an xpath query on the content using the Saxon processor
+        - __saxon_xpath_single: Performs an xpath query on the content using the Saxon processor
     """
     def __init__(self, content):
-        self.uuid = uuid.uuid4() # CC-assigned UUID
+        # self.uuid = uuid.uuid4() # Class-assigned UUID
         self.content = content   # Working XML version of the content retained in memory for processing
         self.oscal_version = ""
         self.oscal_model = ""
