@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plan-of-action-and-milestones xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="06c3b989-3379-4fa5-ae2a-6f3a63e8d228">
+   <metadata>
+      <title>Plan of Action and Milestones (POA&amp;M) Template</title>
+      <published>2025-09-10T12:00:00-04:00</published>
+      <last-modified>2025-09-10T12:00:00-04:00</last-modified>
+      <version>DRAFT</version>
+      <oscal-version>1.1.3</oscal-version>
+   </metadata>
+   
+   <import-ssp href="#"/>
+   
+   <poam-item uuid="6F5FFF73-CAC6-4DA0-A0D9-0F931A5EFAFA">
+      <title>[POA&amp;M Item Title]</title>
+      <description><p></p></description>
+   </poam-item>
+   
+</plan-of-action-and-milestones>

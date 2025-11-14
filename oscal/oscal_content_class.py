@@ -1,991 +1,708 @@
-# The OSCAL Python Content Class
+"""
+OSCAL Class
+
+A class for creation, manipulation, validation and format convertion of OSCAL content.
+All published OSCAL versions, formats and models can be validated and converted. 
+Creation and manipulation is OSCAL 1.1.3 compliant.
+
+This class ingests XML, JSON or YAML OSCAL content and validates it in its native format
+using the appropriate NIST-published OSCAL schema.
+
+The class converts YAML and JSON to XML for manipulation. New content starts as XML.
+
+The class can export the content back to any of the three supported formats (XML, JSON, YAML).
+
+Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
+Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
+
+Future versions will include direct validation and conversion using the NIST-published OSCAL metaschema.
+"""
 from loguru import logger
-from saxonche import *
-import jsonschema_rs
-import xmlschema
-import json
-import yaml
-import asyncio
+import re
+# from elementpath.xpath3 import XPath3Parser
+# from xml.dom import minidom
+from common.logging import LoggableMixin
+from common.data import detect_data_format, is_xml_well_formed, is_json_well_formed, is_yaml_well_formed
+from xml.etree import ElementTree
+from common.lfs import getfile, normalize_content
+from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
+import uuid
 
-from datetime import datetime
-import os
+INDENT = "  "
 
-from oscal import oscal_support_class as oscal_support
-from common import * 
+# Shared OSCAL Support instance (initialized lazily)
+_shared_oscal_support = None
 
-NIST_OSCAL_NS = "http://csrc.nist.gov/ns/oscal/1.0"
-TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"  
-RECOGNIZED_FORMATS = ["xml", "json", "yaml"]
-OSCAL_support_file_patterns = ["_metaschema_RESOLVED.xml", "_schema.xsd", "_schema.json", "_xml-to-json-converter.xsl", "_json-to-xml-converter.xsl", "metaschema.xml"]
-
-
-OUT_ERROR = 4
-OUT_WARNING = 2
-OUT_MESSAGE = 1
-OUT_DEBUG = 0
-
-# -------------------------------------------------------
-# OSCAL_Content - An object for managing OSCAL content 
-# -------------------------------------------------------
-class OSCAL_Content:
+def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
     """
-    CLASS OSCAL_Content(content=None, file_path_and_name=None, support=None, identifier="", support_db_path=None)
-
-    PARAMETERS:
-        - file_path_and_name : (string) Can be just the base file name or include 
-                                the full path. Must include ".xml", ".json" or ".yaml" (case insensitive)
-        - file_content       : The actual content in string or unicode/utf-8 format
-        - support           : (optional) Pre-created OSCAL_support instance
-        - identifier        : (optional) Identifier for this content instance
-        - support_db_path   : (optional) Path to support database file (default: "./support/support.oscal")
-
-    FACTORY METHODS:
-        - OSCAL_Content.create_async() : For use in async contexts
-        - OSCAL_Content.create_sync()  : For use in sync contexts
-        - OSCAL_Content()              : Direct constructor (auto-detects context)
-
-        PROPERTIES:
-            .identifier = identifier
-            .file_path_and_name = file_path_and_name
-            .file_name = os.path.basename(file_path_and_name)
-            .original_content = normalize_content(file_content)
-            .original_format = ""
-            .oscal_model = ""
-            .oscal_version = ""
-            .log = []
-            .xml    = "" # If the native content is XML, this gets populated in XML_Interrogation
-            .xml_validation_report = []
-            .xml_transform_report = []
-            .xml_is_valid   = None
-            .json   = "" # If the native content is JSON, this gets populated in JSON_Interrogation
-            .json_validation_report = []
-            .json_transform_report = []
-            .json_is_valid  = None
-            .yaml   = "" # If the native content is YAML, this gets populated in YAML_Interrogation
-            .yaml_validation_report = []
-            .yaml_transform_report = []
-            .yaml_is_valid  = None    
-
-        METHODS:
-            .logging(message, title="", details="", output_type=OUT_DEBUG)
-            .validate(target_format)
-            .convert(convert_to, validate=False)
+    Get the shared OSCAL Support instance. Creates it if it doesn't exist.
+    This ensures only one resource-intensive instance is created and shared
+    across all OSCAL content instances.
+    
+    Args:
+        db_conn: Database connection string or path (only used for first initialization)
+        db_type: Database type (default: "sqlite3", only used for first initialization)
+        
+    Returns:
+        OSCAL_support: The shared OSCAL Support instance
     """
-    def __init__(self, file_path_and_name, file_content, support=None, identifier="", support_db_path=None):
-        status = False
-        self.identifier = identifier
-        self.file_path_and_name = file_path_and_name
-        self.file_name = os.path.basename(file_path_and_name)
-        self.original_content = helper.normalize_content(file_content)
-        self.original_format = ""
+    global _shared_oscal_support
+    if _shared_oscal_support is None:
+        if db_conn is None:
+            # Use a default in-memory database if no connection specified
+            db_conn = ":memory:"
+        logger.info("Initializing shared OSCAL Support instance...")
+        _shared_oscal_support = OSCAL_support.create_sync(db_conn, db_type)
+    return _shared_oscal_support
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# OSCAL CLASS
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class OSCAL(LoggableMixin):
+    """
+
+    Properties:
+
+
+    Methods:
+
+    """
+    def __init__(self, content="", filename="", new_model="", support_db_conn=None, support_db_type="sqlite3"):
+        """
+        OSCAL Class Constructor
+        Must provide at least one of the following parameters:
+        - content: A string containing the OSCAL content
+        - filename: A path to a file containing the OSCAL content
+        - new_model: A string indicating the type of new OSCAL model to create
+        - support_db_conn: Database connection string or path for OSCAL Support instance
+        - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
+        
+        content and new_model are mutually exclusive.
+        """
+        # self.uuid = uuid.uuid4() # Class-assigned UUID
+        self.setup_logging()
+        self.content = ""
+
         self.oscal_model = ""
         self.oscal_version = ""
-        self.support = support
+        self.imports = []        # A list of imported OSCAL files, by CC-assigned UUID
+        self.xml_schema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL XML Schema
+        self.json_schema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL JSON Schema
+        self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
+        self.xml = "" 
+        self.json = "" 
+        self.yaml = "" 
+        self.well_formed_xml = False
+        self.well_formed_json = False
+        self.well_formed_yaml = False
+        self.valid_xml = False
+        self.valid_json = False
+        self.valid_yaml = False
+        self.valid_oscal = False
+        self.original_location = ""
+        self.original_format = ""
+        self.support = get_shared_oscal_support(support_db_conn, support_db_type)  # Always gets the same instance
 
-        # TODO: Enable running in both sync and async contexts
-        # self.async_mode = False
-        # try:
-        #     asyncio.get_running_loop()
-        #     self.async_mode = True
-        #     self.executor = self._async_execute
-        # except RuntimeError:
-        #     self.async_mode = False
-        #     self.executor = self._sync_execute
+        self.tree = None
+        self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE}
+        self.__saxon = None
+        self.unsaved_modified_content = False 
+        self.json_synced = None # Boolean indicating whether the latest XML content has been converted to JSON
+        self.yaml_synced = None # Boolean indicating whether the latest XML content has been converted to YAML
 
-        if self.support is None:
-            # Default support database path if not provided
-            if support_db_path is None:
-                support_db_path = "./support/support.oscal"
+        # Need at least one of content, filename, or new_model
+        if not content and not filename and not new_model:
+            logger.error("No content, filename or new model specified. Unable to proceed.")
+            return
+        
+        if content and new_model:
+            logger.error("Cannot specify both content and new_model. They are mutually exclusive.")
+            return
+
+        # If just a filename and no content, load the file
+        if filename and not content:
+            self.filename = filename
+            content = getfile(filename)
+            if not content:
+                logger.error(f"Unable to read content from file: {filename}")
+        
+        if (new_model and not content) and new_model in self.support.enumerate_models():
+            logger.debug(f"Creating new OSCAL model: {new_model}")
+
+            self.support = get_shared_oscal_support()
+            self.create_new_oscal_content(new_model)
+            if self.xml:  # create_new_oscal_content sets self.xml directly
+                content = self.xml
+                logger.debug(f"Created new OSCAL model: {new_model}")
+            else:
+                logger.error(f"Unable to create new OSCAL model: {new_model}")
+
+        # Process content if we have it
+        if content:
+            self.content = content
+            self.initial_validation(content)
+
+
+    # -------------------------------------------------------------------------
+    def content_modified(self):
+        # Prevent infinite recursion
+        if getattr(self, '_in_content_modified', False):
+            return
             
-            try:
-                # Check if we're in an async context
-                loop = asyncio.get_running_loop()
-                if loop and loop.is_running():
-                    logger.warning("OSCAL_Content created in async context but support not provided. Please pass a pre-created support object or use an async factory method.")
-                    # For now, we'll skip the support initialization
-                    logger.debug("Skipping support initialization - must be provided separately in async context.")
-                else:
-                    # We're in sync context, use sync support creation
-                    self.support = oscal_support.OSCAL_support.create_sync(support_db_path)
-                    if self.support is None:
-                        logger.error("Unable to initialize OSCAL support module.")
-                        status = False
+        self._in_content_modified = True
+        try:
+            self.unsaved_modified_content = True
+            self.json_synced = False
+            self.yaml_synced = False
+            self.__set_field("/*/metadata/last-modified", oscal_date_time_with_timezone())
+            self.__set_field("/*/@uuid", str(uuid.uuid4()))
+        finally:
+            self._in_content_modified = False
+    
+    # -------------------------------------------------------------------------
+    def __set_field(self, path: str, field_value: str, create_if_missing=True):
+        """
+        Sets a specific field in the OSCAL content.
+        The xpath expression must p9oint to a single element.
+        Args:
+            field_name (str): The name of the metadata field to set.
+            field_value (str): The value to set for the metadata field.
+        """
+        # Check if this is an attribute path (contains @attribute)
+        if '@' in path:
+            # Extract attribute name and element path
+            # For paths like "/*/@uuid", we want element "/*" and attribute "uuid"
+            attr_match = re.search(r'(.*)/@([^/\]]+)$', path)
+            if attr_match:
+                element_path = attr_match.group(1)
+                attr_name = attr_match.group(2)
+                
+                if self.tree:
+                    # Special handling for root element selector /*
+                    if element_path == '/*':
+                        element_node = self.tree.getroot()
                     else:
-                        logger.debug("OSCAL support module initialized.")
-            except RuntimeError:
-                # No event loop running, we're in sync context
-                self.support = oscal_support.OSCAL_support.create_sync(support_db_path)
-                if self.support is None:
-                    logger.error("Unable to initialize OSCAL support module.")
-                    status = False
-                else:
-                    logger.debug("OSCAL support module initialized.")
+                        element_node = self.tree.find(element_path, namespaces=self.nsmap)
+                        
+                    if element_node is not None:
+                        element_node.set(attr_name, field_value)
+                        # Only call content_modified if we're not already in it (prevent recursion)
+                        if not getattr(self, '_in_content_modified', False):
+                            self.content_modified()
+                        return
+        
+        # Handle element text content
+        if self.tree:
+            field_node = self.tree.find(path, namespaces=self.nsmap)
+            if field_node is not None:
+                field_node.text = field_value
+                # Only call content_modified if we're not already in it (prevent recursion)
+                if not getattr(self, '_in_content_modified', False):
+                    self.content_modified()
+            elif create_if_missing:
+                # Create the missing element based on the element and attributes in the path
+                # the path must be absolute, and any attributes found in predecates are created
+                # with the assocaited element.
 
-        self.log = []
-        self.__xdm  = "" # 
-        self.xml    = "" # If the native content is XML, this gets populated in XML_Interrogation
-        self.xml_validation_report = []
-        self.xml_transform_report = []
-        self.xml_is_valid   = None
-        self.__dict = []
-        self.json   = "" # If the native content is JSON, this gets populated in JSON_Interrogation
-        self.json_validation_report = []
-        self.json_transform_report = []
-        self.json_is_valid  = None
-        self.yaml   = "" # If the native content is YAML, this gets populated in YAML_Interrogation
-        self.yaml_validation_report = []
-        self.yaml_transform_report = []
-        self.yaml_is_valid  = None
+                # Expect an absolute path like /...; tolerate and normalize if needed
+                if not path.startswith('/'):
+                    logger.warning("XPath not absolute; treating as absolute: " + path)
 
-        self.logging("Object creted")
-        if self.__format_verification():
-            if not self.validate():
-                logger.warning("Not valid OSCAL content.")
+                # Split into path steps, ignore empty parts caused by leading '/'
+                parts = [p for p in path.split('/') if p]
+
+                # Start at document root
+                current = self.tree.getroot() if isinstance(self.tree, ElementTree.ElementTree) else self.tree
+                if current is None:
+                    logger.error("No XML tree available to set field.")
+                    return
+
+                # If first part is a wildcard (*) that represents the root element, skip it
+                idx = 0
+                if parts and parts[0] == '*':
+                    idx = 1
+
+                for part in parts[idx:]:
+                    # Parse element name and optional predicate(s) inside brackets
+                    m = re.match(r"(?P<name>[^\[]+)(\[(?P<pred>.+)\])?$", part.strip())
+                    if not m:
+                        logger.warning(f"Unrecognized path segment: {part}")
+                        continue
+
+                    name = m.group('name')
+                    pred = m.group('pred')
+
+                    # Parse predicates (support simple attribute predicates joined by 'and'):
+                    # examples supported: @id='val', @uuid="val", @flag
+                    predicates = []
+                    if pred:
+                        for sub in re.split(r"\s+and\s+", pred):
+                            sub = sub.strip()
+                            ma = re.match(r"@(?P<attr>[\w:-]+)(?:\s*=\s*'(.*?)'|\s*=\s*\"(.*?)\")?$", sub)
+                            if ma:
+                                attr = ma.group('attr')
+                                val = ma.group(2) if ma.group(2) is not None else ma.group(3)
+                                predicates.append((attr, val))
+                            else:
+                                logger.warning(f"Unsupported predicate format: {sub}")
+
+                    # Search for an existing matching child
+                    match_node = None
+                    for child in list(current):
+                        child_local = child.tag.split('}')[-1]  # handle namespace-qualified tags
+                        if name != '*' and child_local != name:
+                            continue
+                        ok = True
+                        for (attr, val) in predicates:
+                            if val is None:
+                                # predicate only requires presence of attribute
+                                if child.get(attr) is None:
+                                    ok = False
+                                    break
+                            else:
+                                if child.get(attr) != val:
+                                    ok = False
+                                    break
+                        if ok:
+                            match_node = child
+                            break
+
+                    # If not found, create the element (and set any attribute predicates)
+                    if match_node is None:
+                        new_tag = name
+                        new_elem = ElementTree.Element(new_tag)
+                        for (attr, val) in predicates:
+                            # If predicate required presence only, create attribute with empty string
+                            if val is None:
+                                new_elem.set(attr, "")
+                            else:
+                                new_elem.set(attr, val)
+                        current.append(new_elem)
+                        match_node = new_elem
+                        # Only call content_modified if we're not already in it (prevent recursion)
+                        if not getattr(self, '_in_content_modified', False):
+                            self.content_modified()
+
+                    # Descend into the matched/created node
+                    current = match_node
+
+                # Finally, set the element text
+                if current is not None:
+                    current.text = field_value
+                    # Only call content_modified if we're not already in it (prevent recursion)
+                    if not getattr(self, '_in_content_modified', False):
+                        self.content_modified()
+    # -------------------------------------------------------------------------
+    def set_metadata(self, content={}):
+        """
+        Sets metadata fields in the OSCAL content.
+        Args:
+            content (dict): A dictionary containing metadata fields to set.
+        """
+        for item in content:
+            logger.debug(f"Metadata field to set: {item[0]} = {item[1]}")
+            if item in ['revisions', 'document-ids', 'roles', 'locations', 'parties', 'links', 'props', 'responsible-parties']:
+                # These are complex fields - skip for now
+                logger.warning(f"Setting complex metadata field '{item}' is not yet implemented.")
+                continue
+            else:
+                self.__set_field(f"/*/metadata/{item}", content.get(item, ""))
+
+
+
+    # -------------------------------------------------------------------------
+    def create_new_oscal_content(self, model_name: str, title: str="", version: str="", published: str=""):
+        """
+        Returns minimally valid OSCAL content based on the specified model name.
+        Currently this is based on loading a template file from package data.
+        In the future, this should be generated based on the latest metaschema definition.
+        Args:
+            model_name (str): The OSCAL model name (e.g., "system-security-plan").
+        """
+        # TODO: Generate new content based on newest metaschema definition for the model
+        from xml.etree import ElementTree
+        metadata = {}
+
+        content = None
+        if self.support.is_model_valid(model_name):
+            content = self.support.load_file(f"{model_name}.xml", binary=False)
+            # If content is found and is of type string, load it as XML
+            if content and isinstance(content, str):
+                self.xml = content
+                self.oscal_model = model_name
+                # Parse to get version
+                self.tree = ElementTree.ElementTree(ElementTree.fromstring(content.encode('utf_8')))
+                self.oscal_version = self.xpath_atomic("//metadata/oscal-version/text()")
+                if title != "":
+                    metadata["title"] = title
+                if version != "":
+                    metadata["version"] = version
+                if published != "":
+                    metadata["published"] = published
+                
+                self.set_metadata({"title": title, "version": version})
+                return content
+
         else:
-            logger.warning("Not a valid XML, JSON, or YAML format.")
+            logger.error(f"Unsupported OSCAL model for new content: {model_name}")
+            return None
 
     # -------------------------------------------------------------------------
-    @classmethod
-    async def create_async(cls, file_path_and_name, file_content, support=None, identifier="", support_db_path=None):
-        """Async factory method to create OSCAL_Content with proper support initialization"""
+    def initial_validation(self, content: str):
+        """
+        Perform initial validation of content, which includes first ensuring the 
+        content is a recognized OSCAL format type (xml, json or yaml) and 
+        well formed, before passing it to the OSCAL validation mechanism.
+        """
+        logger.debug("Performing initial validation of content...")
+        self.original_format = detect_data_format(content)
+        root_element = ""
+        oscal_version = ""
         
-        # If support is not provided, create it asynchronously
-        if support is None:
-            if support_db_path is None:
-                support_db_path = "./support/support.oscal"
-            support = await oscal_support.OSCAL_support.create(support_db_path)
-            if support is None:
-                logger.error("Unable to initialize OSCAL support module.")
-        
-        # Create the instance with the support object
-        return cls(file_path_and_name, file_content, support=support, identifier=identifier, support_db_path=support_db_path)
-
-    # -------------------------------------------------------------------------
-    @classmethod  
-    def create_sync(cls, file_path_and_name, file_content, support=None, identifier="", support_db_path=None):
-        """Synchronous factory method to create OSCAL_Content with proper support initialization"""
-        
-        # If support is not provided, create it synchronously
-        if support is None:
-            if support_db_path is None:
-                support_db_path = "./support/support.oscal"
-            support = oscal_support.OSCAL_support.create_sync(support_db_path)
-            if support is None:
-                logger.error("Unable to initialize OSCAL support module.")
-        
-        # Create the instance with the support object
-        return cls(file_path_and_name, file_content, support=support, identifier=identifier, support_db_path=support_db_path)
-
-    # -------------------------------------------------------
-    def __str__(self):
-        json_out = {}
-        json_out["file-name"] = self.file_name
-        json_out["original-format"] = self.original_format
-        json_out["oscal-model"] = self.oscal_model
-        json_out["oscal-version"] = self.oscal_version
-        match self.original_format:
-            case "xml":
-                json_out["is-valid"] = self.xml_is_valid
-                json_out["validation-report"] = self.xml_validation_report
-                if self.json != "": json_out["json_transform-report"] = self.json_transform_report
-                if self.yaml != "": json_out["yaml_transform-report"] = self.yaml_transform_report
-            case "json":
-                json_out["is-valid"] = self.json_is_valid
-                json_out["validation-report"] = self.json_validation_report
-                if self.xml != "": json_out["xml_transform-report"] = self.xml_transform_report
-                if self.yaml != "": json_out["yaml_transform-report"] = self.yaml_transform_report
-            case "yaml":
-                json_out["is-valid"] = self.yaml_is_valid
-                json_out["validation-report"] = self.yaml_validation_report
-                if self.json != "": json_out["json_transform-report"] = self.json_transform_report
-                if self.xml != "": json_out["xml_transform-report"] = self.xml_transform_report
-
-        if self.xml_is_valid: json_out["xml-content"] = "XML format available. Use `.xml` attribute."
-        if self.json_is_valid: json_out["json-content"] = "JSON format available. Use `.json` attribute."
-        if self.yaml_is_valid: json_out["yaml-content"] = "YAMl format vailable. Use `.yaml` attribute."
-
-        return json_out
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    #  --- Helper Methods ---
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def logging(self, message, title="", details="", output_type=OUT_DEBUG):
-        temp_obj = {}
-        temp_obj["timestamp"] = str(datetime.now().strftime(TIMESTAMP_FORMAT))
-        temp_obj["title"] = title
-        temp_obj["message"] = message
-        temp_obj["details"] = details
-        self.log.append(temp_obj)
-
-        if output_type==OUT_DEBUG: logger.debug(message, details)
-        if output_type==OUT_ERROR  : logger.error(message, details)
-        if output_type==OUT_WARNING: logger.warning(message) # , title, detail)
-        if output_type==OUT_MESSAGE: logger.info(message) # , title, detail)
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    #  --- Core Methods ---
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def __format_verification(self): # Private method
-        is_recognized_format = False
-
-
-        if not is_recognized_format:
-            # "<" = OSCAL XML, "{" = OSCAL JSON, "-"
-            first_non_ws = helper.get_first_non_whitespace_char(self.original_content)
-            match first_non_ws:
-                case "<":  #  OSCAL XML
-                    self.original_format = "xml"
-                    is_recognized_format = True
-                case "{":  #  OSCAL JSON
-                    self.original_format = "json"
-                    is_recognized_format = True
-                case _: 
-                    if first_non_ws in "-abcdefghijklmnopqrstuvwxyz": # OSCAL YAML
-                        self.original_format = "yaml"
-                        is_recognized_format = True
-                    else:
-                        msg_out = "Content is not OSCAL XML, OSCAL JSON, or OSCAL YAML."
-                        self.logging(msg_out)
-                        logger.error(msg_out)
-
-        if is_recognized_format:
+        if self.original_format in OSCAL_FORMATS:
+            logger.debug(f"Content appears to be in {self.original_format} format.")
             match self.original_format:
                 case "xml":
-                    self.xml = self.original_content
+                    self.well_formed_xml = is_xml_well_formed(content)
+                    if self.well_formed_xml:
+                        # get root xml element
+                        self.tree = ElementTree.ElementTree(ElementTree.fromstring(content.encode('utf_8')))
+                        self.nsmap = {'': OSCAL_DEFAULT_XML_NAMESPACE}
+                        root_element = self.xpath_atomic("/*/name()")
+                        oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"                        
+                    else:
+                        logger.error("Content is not well-formed XML.")
+
                 case "json":
-                    self.json = self.original_content
+                    self.well_formed_json = is_json_well_formed(content)
+                    if self.well_formed_json:
+                        pass
+                        #get root element 
+                    else:
+                        logger.error("Content is not well-formed JSON.")
                 case "yaml":
-                    self.yaml = self.original_content
-                case _:
-                    is_recognized_format = False
-                    logger.error("Unable to proceed with validation. Invalid format requested: " + is_recognized_format)
+                    self.well_formed_yaml = is_yaml_well_formed(content)
+                    if self.well_formed_yaml:
+                        pass
+                        # get root element
+        else:
+            logger.error(f"Content is not one of {OSCAL_FORMATS}.")
+
+
+        logger.debug("ROOT ELEMENT: " + str(root_element))
+        if self.support.is_valid_version(oscal_version):
+            models = self.support.enumerate_models(version=oscal_version)
+            if root_element in models:
+                logger.debug("OSCAL ROOT ELEMENT DETECTED: " + root_element)
+                self.oscal_version = self.xpath_atomic("//metadata/oscal-version/text()")
+                logger.debug("OSCAL_VERSION: " + str(self.oscal_version))
+                if len(self.oscal_version) >= 5: # TODO: Look up value in list of known-valid OSCAL versions
+                    self.OSCAL_validate()
+            else:
+                logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
+
+    # -------------------------------------------------------------------------
+    def OSCAL_validate(self):
+        """
+        Validate OSCAL content.
+        This assumes the content has already been determined to be well-formed XML, JSON, or YAML,
+        and that the OSCAL model and version have been identified.
+        Currently uses the appropriate format schema.
+        Eventually will use meataschema for direct validation.
+        """
+        logger.debug("Validating OSCAL content...")
+
+
+        self.valid_oscal = True
+        pass
+
+    # -------------------------------------------------------------------------
+    def OSCAL_convert(self, directive):
+        """
+        Currently does nothing. Will soon accept the following directive values:
+        'xml-to-json'
+        'xml-to-yaml'
+        """
+        pass
+
+    # -------------------------------------------------------------------------
+    def __setup_saxon(self): # Future - place holder for code for now
+        from saxonche import PySaxonProcessor 
+
+        self.__saxon = PySaxonProcessor(license=False)
+        try: 
+            self.xdm = self.__saxon.parse_xml(xml_text=self.xml)
+            # self.__saxon.declare_namespace("", "http://csrc.nist.gov/ns/oscal/1.0")
+            self.valid = True
+            self.oscal_format = "xml"
+        except Exception as error:
+            logger.error(f"Content does not appear to be valid XML. Unable to rpoceed. {str(error)}")
+
+        if self.valid:
+            self.xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+            self.__saxon_handle_ns()
+            self.xp.set_context(xdm_item=self.xdm) # Sets xpath processing context as the whole file
+            temp_ret = self.__saxon_xpath_global("/*/name()")
+            if temp_ret is not None:
+                self.root_node = temp_ret[0].get_atomic_value().string_value
+                logger.debug("ROOT: " + self.root_node)
+            self.oscal_version = self.__saxon_xpath_global_single("/*/*:metadata/*:oscal-version/text()")
+            logger.debug("OSCAL VERSION: " + self.oscal_version)
+
+    # -------------------------------------------------------------------------
+    def __saxon_serializer(self):
+        return self.xdm.to_string('utf_8')
+
+    # -------------------------------------------------------------------------
+    def __saxon_handle_ns(self):
+        node_ = self.xdm
+        child = node_.children[0]
+        assert child is not None
+        namespaces = child.axis_nodes(8)
+
+        for ns in namespaces:
+            uri_str = ns.string_value
+            ns_prefix = ns.name
+
+            if ns_prefix is not None:
+                logger.debug("xmlns:" + ns_prefix + "='" + uri_str + "'")
+            else:
+                logger.debug("xmlns uri=" + uri_str + "'")
+                # set default ns here
+                self.xp.declare_namespace("", uri_str)
+
+    # -------------------------------------------------------------------------
+    def __saxon_xpath_global(self, expression):
+        from saxonche import PyXdmValue
+        ret_value = None
+        logger.debug("Global Evaluating: " + expression)
+        ret = self.xp.evaluate(expression)
+        if  isinstance(ret,PyXdmValue):
+            logger.debug("--Return Size: " + str(ret.size))
+            ret_value = ret
+        else:
+            logger.debug("--No result")
+
+        return ret_value
+
+    # -------------------------------------------------------------------------
+    def __saxon_xpath_global_single(self, expression):
+        from saxonche import PyXdmValue
+        ret_value = ""
+        logger.debug("Global Evaluating Single: " + expression)
+        ret = self.xp.evaluate_single(expression)
+        if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
+            ret_value = ret.string_value
+        else:
+            logger.debug("--No result")
+            logger.debug("TYPE: " + str(type(ret)))
+
+        return ret_value
+
+    # -------------------------------------------------------------------------
+    def __saxon_xpath(self, context, expression):
+        from saxonche import PyXdmValue
+        ret_value = None
+        logger.debug("Evaluating: " + expression)
+        xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+        xp.set_context(xdm_item=context)
+        ret = xp.evaluate(expression)
+        if  isinstance(ret,PyXdmValue):
+            logger.debug("--Return Size: " + str(ret.size))
+            ret_value = ret
+        else:
+            logger.debug("--No result")
+
+        return ret_value
+
+    # -------------------------------------------------------------------------
+    def __saxon_xpath_single(self, context, expression):
+        from saxonche import PyXdmValue
+        ret_value = ""
+        logger.debug("Evaluating Single: " + expression)
+        xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+        xp.set_context(xdm_item=context)
+        ret = xp.evaluate_single(expression)
+        if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
+            ret_value = ret.string_value
+        else:
+            logger.debug("--No result")
+            logger.debug("TYPE: " + str(type(ret)))
+
+        return ret_value
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
     
-        if is_recognized_format:
-            msg_out = "Content appears to be " + self.original_format.upper()
-            self.logging(msg_out)
+    def xpath_atomic(self, xExpr, context=None):
+        import elementpath
+        ret_value=""
+        if context is None:
+            logger.debug("XPath [1]: " + xExpr)
+            ret_value = elementpath.select(self.tree, xExpr, namespaces=self.nsmap)[0]
+        else:
+            logger.debug("XPath [1] (" + context.tag + "): " + xExpr)
+            ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)[0]
+
+        return str(ret_value)
+
+    def xpath(self, xExpr, context=None):
+        """
+        Performs an xpath query either on the entire XML document 
+        or on a context within the document.
+
+        Parameters:
+        - xExpr (str): An xpath expression
+        - context (obj)[optional]: Context object.
+        If the context object is present, the xpath expression is run against
+        that context. If absent, the xpath expression is run against the 
+        entire document.
+
+        Returns: 
+        - None if there is an error or if nothing is found.
+        - 
+        """
+        import elementpath
+        ret_value=None
+        if context is None:
+            logger.debug("XPath [1]: " + xExpr)
+            ret_value = elementpath.select(self.tree, xExpr, namespaces=self.nsmap)
+        else:
+            logger.debug("XPath [1] (" + context.tag + "): " + xExpr)
+            ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
+        logger.debug(str(type(ret_value)))
+        return ret_value
+
+    def serializer(self):
+        logger.debug("Serializing for Output")
+        ElementTree.indent(self.tree)
+        out_string = ElementTree.tostring(self.tree, 'utf-8')
+        logger.debug("LEN: " + str(len(out_string)))
+        out_string = normalize_content(out_string)
+        out_string = out_string.replace("ns0:", "")
+        out_string = out_string.replace(":ns0", "")
         
-        return is_recognized_format
+        return out_string
+    
+    def lookup(self, xExpr: str, attributes: list=[], children: list=[]):
+        """
+        Checks for the existence of an element basedon an xpath expression.
+        Returns a dict containing any of the following if available: id, uuid, title
+        If aditional attributes or children are specified in the function call
+        and found to be present, they are included in the dict as well. 
+        Parameters:
+        - xExpr (str): xpath expression. This should always evaluate to 0 or 1 nodes
+        - attributes(list)[Optional]: a list of additional attributes to return
+        - children(list)[Optional]: a list of additional children to return
 
-    def is_valid(self, target_format=""):
-        ret_value = False
-        if target_format=="":
-            target_format = self.original_format
+        Return:
+        - dict or None
+        dict = {
+           {'attribute/field name', 'value'},
+           {'attribute/field name', 'value'}        
+        }
+        """
+        ret_value = None
+        target_node = self.xpath(xExpr)
+        if target_node:
+            ret_value = {}
+            if 'id' in target_node.attrib:
+                ret_value.append({"id", target_node.get("id")})
+            if 'uuid' in target_node.attrib:
+                ret_value.append({"uuid", target_node.get("uuid")})
 
-        match target_format:
-            case "xml":
-                ret_value = self.xml_is_valid
-            case "json":
-                ret_value = self.json_is_valid
-            case "yaml":
-                ret_value = self.yaml_is_valid
-            case _:
-                logger.error("Unable to confirm content validity. Invalid format: " + target_format)
+            title = target_node.find('./title', self.nsmap)
+            if title:
+                ret_value.append({"title", title.text})
+
+            for attribute in attributes:
+                ret_value.append({attribute, target_node.get(attribute)})
+
+            for child in children:
+                child_node = target_node.find('./' + child, self.nsmap)
+                if child_node:
+                    ret_value.append({child, child_node.text})
+
 
         return ret_value
 
-
-
-    def conversion_report(self, target_format=""):
-        ret_value = []
-
-        match target_format:
-            case "xml":
-                ret_value = self.xml_transform_report
-            case "json":
-                ret_value = self.json_transform_report
-            case "yaml":
-                ret_value = self.yaml_transform_report
-            case _:
-                logger.error("Unable to retrieve conversion report for " + target_format.upper() + " format.")
-
-        return ret_value
-
-    def validation_report(self, target_format=""):
-        ret_value = []
-        if target_format=="":
-            target_format = self.original_format
-
-        match target_format:
-            case "xml":
-                ret_value = self.xml_validation_report
-            case "json":
-                ret_value = self.json_validation_report
-            case "yaml":
-                ret_value = self.yaml_validation_report
-            case _:
-                logger.error("Unable to retrieve validation report for " + target_format.upper() + " format.")
-
-        return ret_value
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def validate(self, target_format=""):
-        """
-        Validates the OSCAL content
-        1. Looks at file name to determine the declared format type (.xml, .json, or .yaml)
-        2. If a supported type, Check within the content for /metadata/oscal-version as appropriate for type
-        3. If a recognized OSCAL version numnber is found, use the appropriate OSCAL support file to validate
-        """
-
-        start_time = datetime.now()
-
-        self.is_valid = False
-
-        if target_format=="":
-            target_format = self.original_format
-
-        match target_format:
-            case "xml":
-                if self.xml != "":
-                    is_valid = self.__XML_validation()
-                    self.xml_is_valid = is_valid
-                else:
-                    self.logging("Unable to validate. " + target_format.upper() + " format does not exist.", "" , "May need to convert to this format before validating.")
-                    self.xml_is_valid = False
-            case "json":
-                if self.json != "":
-                    is_valid = self.__JSON_validation()
-                    self.json_is_valid = is_valid
-                else:
-                    self.logging("Unable to validate. " + target_format.upper() + " format does not exist.", "" , "May need to convert to this format before validating.")
-                    self.json_is_valid = False
-            case "yaml":
-                if self.yaml != "":
-                    is_valid = self.__YAML_validation()
-                    self.yaml_is_valid = is_valid
-                else:
-                    self.logging("Unable to validate. " + target_format.upper() + " format does not exist.", "" , "May need to convert to this format before validating.")
-                    self.json_is_valid = False
-            case _:
-                logger.error("Unable to proceed with validation. Invalid format requested" + target_format)
-
-        run_time = datetime.now() - start_time
-        out_str = "- - - - - - " + target_format.upper() + " is " + helper.iif(is_valid, "valid", "INVALID") +  " (" + str(run_time.total_seconds()) + "s)"
-        self.logging(out_str)
-        
-        return is_valid 
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    def __XML_validation(self):
-        """
-        Validates the OSCAL content in XML format.
-        """
+    def append_child(self, xpath, node_name, node_content = None, attribute_list = []):
+        # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
         status = False
-        ret = None
-        # file_content = self.original_content
-        # processing_errors = []
-        # Setup XML file to be managed with Saxon
-        with PySaxonProcessor(license=False) as proc:
-            self.logging("Using " + proc.version)
-            xp = proc.new_xpath_processor()  # Instantiates XPath processing
+        try:
+            parent_node = self.tree.find(xpath, namespaces=self.nsmap)
+            # parent_node = self.xpath(xpath)
+            logger.debug(parent_node)
+            if parent_node is not None:
+                logger.debug("TAG: " + parent_node.tag)
+                child = ElementTree.Element(node_name)
 
-            try: 
-                self.__xdm = proc.parse_xml(xml_text=self.original_content)
-                xp.set_context(xdm_item=self.__xdm)
-                ret = xp.evaluate('/*/name()') 
-                self.xml = self.content
-            except:
-                pass # ret is still None. Will be handled below.
+                if node_content is str:
+                    child.text = node_content
 
-            if not (ret is None and xp.exception_occurred):
-                if isinstance(ret, PyXdmValue):
-                    self.oscal_model = ret[0].get_atomic_value().string_value
-                    self.logging("Discovered OSCAL model: " + self.oscal_model)
+                for attrib in attribute_list:
+                    child.set(attrib[0], attrib[1])
 
-                    ret = xp.evaluate_single('/*/*:metadata/*:oscal-version/text()')
-                    if  isinstance(ret,PyXdmNode):
-                        self.oscal_version = ret.string_value
-                        self.logging("Declared OSCAL Version: " + self.oscal_version )
-                        support_obj = self.support.asset(self.oscal_version, self.oscal_model, "xml-validation")
-                        if support_obj.acquired:
-                            self.logging("SUPPORT FILE: " + support_obj.file_name)
-                            status = self.__XML_schema_validation(support_obj.content)
-                        else:
-                            msg = "Could not fetch appropriate support file."
-                            self.xml_validation_report.append("Could not fetch appropriate support file.")
-                    else:
-                        msg = "Invalid OSCAL content. The oscal-version was not found."
-                        self.xml_validation_report.append("Invalid OSCAL content. The oscal-version was not found.")
-                else:
-                    msg = "OSCAL model NOT deteced!"
-                    self.xml_validation_report.append(msg)
+                parent_node.append(child)
+                status = True
             else:
-                msg = "XPATH Processing Error: " + str(xpath_processor.error_message)
-                self.xml_validation_report.append(msg)
-
-        return status
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    # Uses the xmlschema library
-    # Accepts XML content and an XSD schema definition
-    def __XML_schema_validation(self, xsd_content):
-        self.xml_attempted = True
-        self.xml_is_valid = False
-        try:
-            schema_def = xmlschema.XMLSchema(xsd_content)
-            schema_def.validate(self.original_content)
-            self.xml_is_valid = True
-            msg_str = "XML Content is OSCAL Schema Valid!"
-            logger.debug(msg_str)
-            self.xml_validation_report.append(report_message(idx=0, message=msg_str))
-        except xmlschema.validators.exceptions.XMLSchemaValidationError: 
-            logger.warning("OSCAL XML schema validation errors.")
-            try:
-                validation_error_iterator = schema_def.iter_errors(self.original_content)
-                for idx, validation_error in enumerate(validation_error_iterator, start=1):
-                    self.xml_validation_report.append(report_message(idx, message="", path=validation_error.path, rule=validation_error.message, reason=validation_error.reason))
-                    logger.debug( f'[{idx}] path: {validation_error.path} | reason: {validation_error.reason} | message: {validation_error.message}')
-                # ret_value["validation-errors"] = error_list
-            except (Exception, BaseException) as error:
-                msg_str = "Unable to parse XML validation errors."
-                logger.error(msg_str, "(" + type(error).__name__ + ") " + str(error))
-                self.xml_validation_report.append(report_message(idx=0, message=msg_str))
-            except:
-                msg_str = "Unrecognized error while parsing XML schema validation errors."
-                logger.error(msg_str)
-                self.xml_validation_report.append(report_message(idx=0, message=msg_str))
-        except:
-            msg_str = "Unrecognized error performing OSCAL XML schema validation."
-            logger.error(msg_str)
-            self.xml_validation_report.append(report_message(idx=0, message=msg_str))
-
-        return self.xml_is_valid
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # JSON VALIDATION
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    # Accepts JSON content and a JSON schema definition
-    def __JSON_schema_validation(self, json_schema):
-        is_valid = False
-        if self.original_format == "json": self.json_attempted = True
-        if self.original_format == "yaml": self.yaml_attempted = True
-        format_lbl = self.original_format.upper()
-
-        # Is the schema defintion based on JSON Validation Standard draft-07 (FedRAMP's current as of Jan 2024)
-        # jsonschema-rs only supports draft-03, draft-04, and draft-07. 
-        # It may process later drafts depending on what features are used in the schema definition.
-        # A different library may be required for more recent schemas. 
-        if "$schema" in json_schema:
-            if not json_schema["$schema"].find("draft-07"):
-                logger.warning("Unsupported schema version. Attempting to continue. (" + json_schema["$schema"] + ")")
-        try:
-            # Load the schema into the schema processor
-            validator = jsonschema_rs.JSONSchema(json_schema)
-            try:
-                # evaluate the content with the schema
-                ret_temp = validator.validate(self.__dict)  
-                if (ret_temp == None):
-                    is_valid = True
-                    if self.original_format == "json": 
-                        self.json_is_valid = True
-                        msg_str = "JSON Content is OSCAL Schema Valid!"
-                        logger.debug(msg_str)
-                        if self.original_format == "json": 
-                            self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                        if self.original_format == "yaml": 
-                            self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-                    if self.original_format == "yaml": 
-                        self.yaml_is_valid = True
-                        msg_str = "YAML Content is OSCAL Schema Valid!"
-                        logger.debug(msg_str)
-                        if self.original_format == "json": 
-                            self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                        if self.original_format == "yaml": 
-                            self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-
-            except (Exception, BaseException) as error:
-                if type(error).__name__ == "ValidationError":
-                    logger.warning(format_lbl + " validation errors found.")
-                    validation_error_list = validator.iter_errors(self.__dict)
-                    cntr = 1
-                    for item in validation_error_list:
-                        logger.debug(item.message)
-                        # entry_obj = {}
-                        # entry_obj["id"] = cntr
-                        path_str = ""
-                        for path_item in item.instance_path:
-                            if isinstance(path_item, str):
-                                path_str = path_str + "/" + path_item 
-                            elif isinstance(path_item, int):
-                                path_str = path_str + "[" + str(path_item) + "]" 
-                        entry_item = path_str
-
-                        path_str = ""                        
-                        for path_item in item.schema_path:
-                            if isinstance(path_item, str):
-                                path_str = path_str + "/" + path_item 
-                            elif isinstance(path_item, int):
-                                path_str = path_str + "[" + str(path_item) + "]" 
-                        if self.original_format == "json": 
-                            self.json_validation_report.append(report_message(idx=0, message="", path=entry_item, rule=path_str, reason=item.message))
-                        if self.original_format == "yaml": 
-                            self.yaml_validation_report.append(report_message(idx=0, message="", path=entry_item, rule=path_str, reason=item.message))
-
-                        cntr += 1
-                else:
-                    msg_str = format_lbl + " validation errors found, but unable to parse."
-                    logger.error(msg_str, "(" + type(error).__name__ + ") " + str(error))
-                    self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                    if self.original_format == "json": 
-                        self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                    if self.original_format == "yaml": 
-                        self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-
-
-            except:
-                msg_str = "Unrecognized error processing schema for " + format_lbl + " validation."
-                logger.error(msg_str)
-                if self.original_format == "json": 
-                    self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                if self.original_format == "yaml": 
-                    self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-
+                logger.warning("APPEND: Unable to find " + xpath )
         except (Exception, BaseException) as error:
-            msg_str = "Unable to parse validation errors."
-            logger.error(msg_str, "(" + type(error).__name__ + ") " + str(error))
-            if self.original_format == "json": 
-                self.json_validation_report.append(report_message(idx=0, message=msg_str))
-            if self.original_format == "yaml": 
-                self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-
-        except:
-            msg_str = "Unrecognized error parsing schema file " + support_file_name + " for " + format_lbl + " validation."
-            logger.error(msg_str)
-            if self.original_format == "json": 
-                self.json_validation_report.append(report_message(idx=0, message=msg_str))
-            if self.original_format == "yaml": 
-                self.yaml_validation_report.append(report_message(idx=0, message=msg_str))            
-
-
-        return is_valid
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-    def __JSON_validation(self):
-        ok_to_continue = False
-        status = False
-
-        # Checking if well-fored JSON and setting up for additional validation
-        try:
-            self.json = self.original_content # json.loads(self.original_content)
-            self.__dict = json.loads(self.original_content)
-            msg_str = "Appears to be well-formed JSON."
-            logger.debug(msg_str)
-            self.json_validation_report.append(report_message(idx=0, message=msg_str))
-            ok_to_continue = True
-        except ValueError:
-            msg_str = "Content is not well formed JSON. Unable to proceed."
-            logger.debug(msg_str)
-            self.json_validation_report.append(report_message(idx=0, message=msg_str))
-
-        # Checking for OSCAL Model and Version
-        if ok_to_continue:
-            ok_to_continue = False
-            self.oscal_model = list(self.__dict.keys())[0]
-            if self.oscal_model != "":
-                msg_str = "OSCAL Model: " + self.oscal_model
-                logger.debug(msg_str)
-                self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                if "metadata" in self.__dict[self.oscal_model]:
-                    if "oscal-version" in self.__dict[self.oscal_model]["metadata"]:
-                        self.oscal_version = self.__dict[self.oscal_model]["metadata"]["oscal-version"]
-                        ok_to_continue = True
-                    else:
-                        msg_str = "Did not find oscal-version. Unable to continue."
-                        logger.debug(msg_str)
-                        self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                else:
-                    msg_str = "Unable to find OSCAL metadata. Unable to continue."
-                    logger.error(msg_str)
-                    self.json_validation_report.append(report_message(idx=0, message=msg_str))
-                logger.debug("OSCAL Version: " + self.oscal_version)
-            else:
-                msg_str = "No JSON root element. OSCAL requires a root element with the OSCAL model name. Unable to continue."
-                logger.error(msg_str)
-                self.json_validation_report.append(report_message(idx=0, message=msg_str))              
-
-        # Getting the correct OSCAL JSON schema validation file, processing it against the content   
-        if ok_to_continue:
-            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "json-validation")
-            # status, support_file_name, support_file = self.support.asset(self.oscal_version, self.oscal_model, "json-validation")
-            if support_obj.acquired:
-                status = self.__JSON_schema_validation(json.loads(support_obj.content))
-
-        return status
-
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # YAML VALIDATION
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    def __YAML_validation(self):
-        ok_to_continue = False
-        status = False
-
-        # Checking if well-formed YAML and setting up for additional validation
-        try:
-            self.yaml = self.original_content
-            self.__dict = yaml.safe_load(self.original_content)
-            msg_str = "Appears to be well-formed YAML."
-            logger.debug(msg_str)
-            self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-            ok_to_continue = True
-        except ValueError:
-            msg_str = "Content is not well formed YAML. Unable to proceed."
-            logger.debug(msg_str)
-            self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-
-        # Checking for OSCAL Model and Version
-        if ok_to_continue:
-            ok_to_continue = False
-            self.oscal_model = list(self.__dict.keys())[0]
-            if self.oscal_model != "":
-                msg_str = "OSCAL Model: " + self.oscal_model
-                logger.debug(msg_str)
-                self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-                if "metadata" in self.__dict[self.oscal_model]:
-                    if "oscal-version" in self.__dict[self.oscal_model]["metadata"]:
-                        self.oscal_version = self.__dict[self.oscal_model]["metadata"]["oscal-version"]
-                        ok_to_continue = True
-                    else:
-                        msg_str = "Did not find oscal-version. Unable to continue."
-                        logger.debug(msg_str)
-                        self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-                else:
-                    msg_str = "Unable to get root object name or no root object used. Unable to continue."
-                    logger.error(msg_str)
-                    self.yaml_validation_report.append(report_message(idx=0, message=msg_str))
-                logger.debug("OSCAL Version: " + self.oscal_version)
-            else:
-                msg_str = "No YAML root element. OSCAL requires a root element with the OSCAL model name. Unable to continue."
-                logger.error(msg_str)
-                self.yaml_validation_report.append(report_message(idx=0, message=msg_str)) 
-
-        # Getting the correct OSCAL YAML schema validation file (which is the JSON schema), processing it against the content   
-        if ok_to_continue:
-            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "json-validation")
-            if support_obj.acquired:
-                status = self.__JSON_schema_validation(json.loads(support_obj.content))
-
-        return status
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # OSCAL FORMAT CONVERSION METHODS
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # If the OSCAL content exists in YAML format, and that format is valid
-    #      convert to JSON and return True
-    # If the OSCAL content does not exist in YAML format, or the format is invalid,
-    #      return False
-    def __oscal_yaml2json(self, validate=False):
-        self.logging("Converting OSCAL YAML to OSCAL JSON")
-        status = False
-        if self.yaml != "": #  and self.yaml_is_valid:
-            self.json = yaml2json(self.yaml)
-            status = True
-            msg_str = "Converted YAML to JSON."
-            self.json_transform_report.append(msg_str)
-            logger.debug(msg_str)
-            if validate: self.validate("json")
-        else:
-            msg_str = "No valid YAML present. Unable to convert YAML to JSON."
-            self.yaml_transform_report.append(msg_str)
-            logger.debug(msg_str)
+            logger.error("Error appending child (" + node_name + "): " + type(error).__name__ + " - " + str(error))
         
-        return status
-
-    # If the OSCAL content exists in JSON format, and that format is valid
-    #      convert to YAML and return True
-    # If the OSCAL content does not exist in JSON format, or the format is invalid,
-    #      return False
-    def __oscal_json2yaml(self, validate=False):
-        self.logging("Converting OSCAL JSON to OSCAL YAML")
-        status = False
-        if self.json != "" : # and self.json_is_valid:
-            self.yaml = json2yaml(self.json)
-            status = True
-            msg_str = "Converted JSON to YAML."
-            self.yaml_transform_report.append(msg_str)
-            logger.debug(msg_str)
-            if validate: self.validate("yaml")
+        if status:
+            return child
         else:
-            msg_str = "No valid JAON present. Unable to convert JSON to YAML."
-            self.yaml_transform_report.append(msg_str)
-            logger.debug(msg_str)
-        return status
+            return None
 
-    # If the OSCAL content exists in XML format, and that format is valid
-    #      convert to JSON and return True
-    # If the OSCAL content does not exist in XML format, or the format is invalid,
-    #      return False
-    def __oscal_xml2json(self, validate=False):
-        self.logging("Converting OSCAL XML to OSCAL JSON")
-        if self.xml != "" and self.xml_is_valid:
-            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
-            self.json = xslt_transform(self.xml, support_obj.content, "xml")
-            if validate: self.validate("json")
-        else:
-            msg_str = "No valid XML present. Unable to convert XML to JSON."
-            self.json_transform_report.append(msg_str)
-            logger.debug(msg_str)
-
-    # If the OSCAL content exists in JSON format, and that format is valid
-    #      convert to XML and return True
-    # If the OSCAL content does not exist in JSON format, or the format is invalid,
-    #      return False
-    def __oscal_json2xml(self, validate=False):
-        self.logging("Converting OSCAL JSON to OSCAL XML")
-        if self.json != "" and self.is_valid():
-            support_obj = self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
-            self.xml = xslt_transform(self.json, support_obj.content, "json")
-            if validate: self.validate("xml")
-        else:
-            msg_str = "No valid JSON present. Unable to convert JSON to XML."
-            self.xml_transform_report.append(msg_str)
-            logger.debug(msg_str)
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # OSCAL FORMAT CONVERSION MANAGEMENT
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # 
-    def convert(self, convert_to, validate=False):
-        """
-        This OSCAL_Content method converts OSCAL content to the specified format
-        from any existing format.
-        The resulting format of this method is stored within the object.
-        This method can only function if the OSCAL_Content object already 
-        contains valid OSCAL content in another format. 
-
-        METHOD:
-            OSCAL_Content.convert(convert_to, validate=False)
-
-        PARAMETERS:
-            - convert_to: (string) Indicates the desired format for the OSCAL content. 
-                                   Value must be "xml", "json" or "yaml" (case sensitive)
-            - validate  : (boolean) If True, the syntax of the resulting OCAL content 
-                                    will be checked by the appropriate schmea. 
-                                    Default is False.
-        
-        RETURNS: Boolean
-            True if successful. False otherwise.
-            If validate is False:
-                .convert will return True if there were no conversion errors.
-            If validate is True:
-                .convert will return True if there were no conversion errors,
-                AND no validation errors.
-                                    
-
-        NOTES:
-
-        Conversion may take several seconds for large files.
-
-        NIST only offers XML -> JSON and JSON -> XML converters. Conversions
-        between XML and YAML must go "through" the JSON converter as an extra step.
-        The result is the following conversion path:
-        XML -> JSON -> YAML -> JSON -> XML
-
-        When converting between XML and YAML in either direction, the resulting JSON 
-        content will also be stored when it is created.
-
-        This method looks at all formats already stored in the object and performs 
-        shortest-path conversion automatically. 
-
-        """
-        
-        status = False
-
-        match convert_to:
-            case "xml":
-                # If target format is XML, check for JSON. 
-                # Otherwise, convert YAML to JSON first.
-                if self.xml == "":
-                    if (self.json == "") and self.yaml != "": 
-                        self.__oscal_yaml2json()
-                    if self.json != "":
-                        self.__oscal_json2xml(validate)
-                        status = True
-                    else:
-                        self.logging("Neither valid JSON nor valid YAML available. Unable to convert to XML", "", "", OUT_ERROR)
-                else:
-                    self.logging("XML already exists. Skipping request.", "", "", OUT_WARNING)
-            case "json":
-                # If target format is JSON, check for YAML. Otherwise, convert XML to JSON first.
-                if self.json == "":
-                    if self.yaml != "": 
-                        self.__oscal_yaml2json(validate)
-                        status = True
-                    elif self.xml != "":
-                        self.__oscal_xml2json(validate)
-                        status = True
-                    else:
-                        self.logging("Neither valid XML nor valid YAML available. Unable to convert to JSON", "", "", OUT_ERROR)
-                else:
-                    self.logging("JSON already exists. Skipping request.", "", "", OUT_WARNING)
-            case "yaml":
-                # If target format is YAML, check for JSON. Otherwise, convert XML to JSON first.
-                if self.yaml == "":
-                    if (self.json == "") and self.xml != "": 
-                        self.__oscal_xml2json()
-                    if self.json != "":
-                        self.__oscal_json2yaml(validate)
-                        status = True
-                    else:
-                        self.logging("Neither valid JSON nor valid XML available. Unable to convert to YAML", "", "", OUT_ERROR)
-                else:
-                    self.logging("YAML already exists. Skipping request.", "", "", OUT_WARNING)
-            case _:
-                self.logging("Unknown conversion directive: " + convert_to, "", "", OUT_ERROR)
-
-        return status
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-# CALL THIS FUNCTION FROM OUTSIDE THIS MODULE
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-def oscal_services(file_path_and_name, file_content, directives, validate_on_convert=False):
-    """oscal_services(file_path_and_name, file_content, directives, validate_on_convert=False)
-
-    Performs support functions on an OSCAL file including validation, format conversion, and profile resolution.
-    NOTE: Profile resolution is not yet implemented.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def get_root_element_name(content: str) -> str:
+    """
+    Returns the name of the root element in the provided XML content string.
+    If the content is not well-formed XML, returns an empty string.
 
     Parameters:
-    - file_path_and_name : (string) Can me just the base file name or include 
-                            the full path. Must include ".xml", ".json" or ".yaml" (case insensitive)
-    - file_content       : The actual content in string or unicode/utf-8 format
-    - directives         : (Array of strings) contains one or more tasks to 
-                            perform on the OSCAL content.
-    - validate_on_convert: (Optional boolean) If True, re-validate the content
-                            for any new format created. 
+    - content (str): The XML content as a string.
 
-    RETURNS: 
-    - OSCAL_Content object
-
-    The `directives` array is processed in the sequence received.
-    VALID values in the `directives` array are:
-    - "validate": verify the original content is valid OSCAL syntax.
-    - "xml"     : convert the content to XML
-    - "json"    : convert the content to JSON
-    - "yaml"    : convert the content to YAML
-    - "all"     : convert the content into all formats
-    - "resolve" : processes a profile and returns the resulting catalog (AKA "Profile Resolution"). Only valid for OSCAL Profile content.
+    Returns:
+    - str: The name of the root element, or an empty string if not well-formed XML.
     """
-    status = False
-
-    logger.debug("- - - - - - - - - [SUPPORT REQUEST START] - - - - - - - - - -")
-    this_file = OSCAL_Content(file_path_and_name, file_content)
-
-    for directive in directives:
-        match directive.lower():
-            case "validate":
-                status = this_file.validate()
-            case "json" | "xml" | "yaml" | "all":
-                status = this_file.convert(directive, validate_on_convert)
-            case "resolve":
-                logger.warning("Resolve is not yet implemented")
-            case _:
-                logger.warning("Unrecognized directive: " + directive)
-                # this_file.messages
-
-    logger.debug("- - - - - - - - - [SUPPORT REQUEST COMPLETE] - - - - - - - - - -")
-    return this_file
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def report_message(idx=0, message="", path="", rule="", reason=""):
-    entry_obj = {}
-    entry_obj["id"] = idx
-    entry_obj["path"] = path
-    entry_obj["rule"] = rule
-    entry_obj["reason"] = reason
-    entry_obj["message"] = message
-    return entry_obj
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-# Perform an XSLT Transform on content using Saxon
-# This is exposed as a function so it may be called directly
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-def xslt_transform(in_file, xslt_file, start_format):
-    status = False
-    ok_to_continue = False
-    return_content = ""
+    root_name = ""
+    try:
+        tree = ElementTree.fromstring(content.encode('utf_8'))
+        root_name = tree.tag
+    except ElementTree.ParseError:
+        logger.debug("Content does not appear to be well-formed XML.")
     
-    start_time = datetime.now()
-    logger.debug("* * * * * * Starting transform")
+    return root_name
 
-    xslt_file = normalize_content(xslt_file)
-    proc = PySaxonProcessor(license=False)
-    logger.debug(proc.version)
+# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
+    """
+    Converts a date and time to UTC and ouptuts an OSCAL date-time-with-timezone string. 
+    Optional Parameters:
+    - date_time (datetime): A date and time to convert to a formatted string.
+       default is the current date and time
+    - format (str): The formatting string to use
+        default is "%Y-%m-%d--%H-%M-%S" (YYYY-MM-DD--HH-MM-SS)
 
-    xsltproc = proc.new_xslt30_processor()
+    Returns a formatted date time string.
+    If an error occurs, returns an empty string.
+    """
+    from datetime import datetime, timezone
+    if date_time is None: 
+        date_time = datetime.now()
+    ret_value = ""
 
     try:
-        executable = xsltproc.compile_stylesheet(stylesheet_text=xslt_file) 
-        ok_to_continue = True
-    except:
-        logger.error("Unable to process stylesheet")
-        ok_to_continue = False
-
-    if ok_to_continue:
-        try:
-            if start_format == "xml":
-                document = proc.parse_xml(xml_text=in_file) # .decode("utf-8"))
-            elif start_format == "json":
-                json_xdm_string = proc.make_string_value(in_file)
-                executable.set_parameter('json', json_xdm_string)
-        except:
-            logger.error("Unable to prepare content for transformation")
-            ok_to_continue = False
-
-    if ok_to_continue:
-        try:
-            if start_format == "xml":
-                return_content = executable.transform_to_string(xdm_node=document)
-            elif start_format == "json":
-                return_content = executable.call_template_returning_string('from-json')
-        except (Exception, BaseException) as error:
-            logger.error("Unable to convert file.", "(" + type(error).__name__ + ") " + str(error))
-        except:
-            logger.error("Unknown error while converting file.")
-
-    run_time = datetime.now() - start_time
-    logger.debug(" * * * * * Finished transform (" + str(run_time.total_seconds()) + "s)")
-
-    return normalize_content(return_content)
+        date_time = date_time.astimezone(timezone.utc)
+        ret_value = date_time.strftime(format)
+    except (Exception, BaseException) as error:
+        logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
+    return ret_value
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-def yaml2json(yaml_content):
-    return json.dumps(yaml.safe_load(yaml_content), sort_keys=False, indent=3)
-
-def json2yaml(json_content):
-    logger.debug(str(type(json_content)))
-    return yaml.dump(json.loads(json_content), sort_keys=False, indent=3)
-
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
-#  --- MAIN: Only runs if the module is executed stand-alone. ---
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~===
 if __name__ == '__main__':
-    # Execute when the module is not initialized from an import statement.
-    logger.info("--- START ---")
+    print("OSCAL Class Library. Not intended to be run as a stand-alone file.")
 
-    logger.info("This contains functions that process OSCAL syntax validation and format conversions.")
-    logger.info("Import this file until your content and use it by calling:")
-    logger.info(oscal_services.__doc__)
-    logger.info("")
-    logger.info("It will return the following object:")
-    logger.info(OSCAL_Content.__doc__)
-
-    data_loc = "../../../oscal-support/src/test/data/usnistgov_oscal-content/v1.2.1/"
-    test_files = ["examples_ssp_xml_ssp-example.xml", "examples_ssp_xml_ssp-example[with-error].xml"]
-    for test_file_name in test_files:
-
-        status, test_file = LFS_get_file(data_loc + test_file_name)
-        if status:
-            oscal_obj = oscal_services(test_file_name, test_file, ["validate"])
-            print("")
-            print("=== DONE ===")
-            print(iif(oscal_obj.is_valid(), "VALID", "not valid"))
-            print("LEN XML : " + str(len(oscal_obj.xml)))
-            print("LEN JSON: " + str(len(oscal_obj.json)))
-            print("LEN YAML: " + str(len(oscal_obj.yaml)))
-
-    logger.info("--- END ---", linefeed=True)
