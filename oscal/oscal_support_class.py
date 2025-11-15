@@ -25,7 +25,7 @@ SUPPORT_DATABASE_DEFAULT_TYPE = "sqlite3"
 OSCAL_DEFAULT_XML_NAMESPACE = "http://csrc.nist.gov/ns/oscal/1.0"
 NIST_OSCAL_EXTENSION_NAMESPACE = "http://csrc.nist.gov/ns/oscal"
 NIST_RMF_EXTENSION_NAMESPACE = "http://csrc.nist.gov/ns/rmf"
-OSCAL_FORMATS = ["xml", "json", "yaml"]
+OSCAL_FORMATS = ["xml", "json", "yaml", "yml"]
 # OSCAL_MODELS = ["catalog", "profile", "component-definition", "system-security-plan", "assessment-plan", "assessment-results", "plan-of-action-and-milestones", "mapping", "shared-responsibility"]
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

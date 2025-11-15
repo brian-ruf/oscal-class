@@ -18,19 +18,22 @@ Conversion between JSON and YAML in either direction uses internal conversion vi
 Future versions will include direct validation and conversion using the NIST-published OSCAL metaschema.
 """
 from loguru import logger
-import re
+# import re
+import os
 # from elementpath.xpath3 import XPath3Parser
 # from xml.dom import minidom
+import json
+import yaml
 from common.logging import LoggableMixin
-from common.data import detect_data_format, is_xml_well_formed, is_json_well_formed, is_yaml_well_formed
+from common.data import detect_data_format, safe_load, safe_load_xml
 from xml.etree import ElementTree
 import elementpath
-from common.lfs import getfile, normalize_content
+from common.lfs import getfile, chkfile, chkdir, putfile, normalize_content
 # from common.xml_formatter import format_xml_string
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
 import uuid
 
-INDENT = "  "
+INDENT = 2
 
 # Shared OSCAL Support instance (initialized lazily)
 _shared_oscal_support = None
@@ -69,7 +72,7 @@ class OSCAL(LoggableMixin):
     Methods:
 
     """
-    def __init__(self, content="", filename="", new_model="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
+    def __init__(self, content="", filename="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
         """
         OSCAL Class Constructor
         Must provide at least one of the following parameters:
@@ -78,128 +81,229 @@ class OSCAL(LoggableMixin):
         - new_model: A string indicating the type of new OSCAL model to create
         - support_db_conn: Database connection string or path for OSCAL Support instance
         - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
-        
+
         content and new_model are mutually exclusive.
+
+        Raises:
+            ValueError: If no content or filename is provided, or if content cannot be loaded
         """
-        # self.uuid = uuid.uuid4() # Class-assigned UUID
-        self.setup_logging()
-        self.content = ""
+        # Need at least one of content, filename, or new_model
+        if not content and not filename:
+            logger.error("No content or filename. Unable to proceed.")
+            raise ValueError("No content or filename provided. Unable to proceed.")
+
+        self.content = content
+        self.original_location = filename
+        self.original_format = ""
 
         self.oscal_model = ""
         self.oscal_version = ""
-        self.imports = []        # A list of imported OSCAL files, by CC-assigned UUID
-        self.xml_schema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL XML Schema
-        self.json_schema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL JSON Schema
+
+        self.well_formed = {}          # A dictionary indicating whether the content is well-formed for each format
+        self.well_formed["xml"] = None
+        self.well_formed["json"] = None
+        self.well_formed["yaml"] = None
+        self.schema_valid = {}       # A dictionary indicating whether the content is valid against the schema for each format
+        self.schema_valid["xml"] = None
+        self.schema_valid["json"] = None
+        self.schema_valid["yaml"] = None
         self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
-        self.xml = "" 
-        self.json = "" 
-        self.yaml = "" 
-        self.well_formed_xml = False
-        self.well_formed_json = False
-        self.well_formed_yaml = False
-        self.valid_xml = False
-        self.valid_json = False
-        self.valid_yaml = False
-        self.valid_oscal = False
-        self.original_location = ""
-        self.original_format = ""
+
+        self.imports = []        # A list of imported OSCAL files, by CC-assigned UUID
+
+        self.dict = None # JSON/YAML constructs
+        self.tree = None # XML constructs
+        self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
+        # self.__saxon = None
+        self.synced = False # Boolean indicating whether the tree and dict are in sync
+        self.unsaved = False # Boolean indicating whether there are unsaved modifications
+
         self.support = get_shared_oscal_support(support_db_conn, support_db_type)  # Always gets the same instance
-
-        self.tree = None
-        self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE}
-        self.__saxon = None
-        self.unsaved_modified_content = False 
-        self.json_synced = None # Boolean indicating whether the latest XML content has been converted to JSON
-        self.yaml_synced = None # Boolean indicating whether the latest XML content has been converted to YAML
-
-        # Need at least one of content, filename, or new_model
-        if not content and not filename and not new_model:
-            logger.error("No content, filename or new model specified. Unable to proceed.")
-            return
-        
-        if content and new_model:
-            logger.error("Cannot specify both content and new_model. They are mutually exclusive.")
-            return
 
         # If just a filename and no content, load the file
         if filename and not content:
+            logger.debug(f"Loading OSCAL content from file: {filename}")
             self.filename = filename
-            content = getfile(filename)
-            if not content:
-                logger.error(f"Unable to read content from file: {filename}")
-        
-        if (new_model and not content) and new_model in self.support.enumerate_models():
-            logger.debug(f"Creating new OSCAL model: {new_model}")
-
-            self.support = get_shared_oscal_support()
-            self.create_new_oscal_content(new_model)
-            if self.xml:  # create_new_oscal_content sets self.xml directly
-                content = self.xml
-                logger.debug(f"Created new OSCAL model: {new_model}")
-            else:
-                logger.error(f"Unable to create new OSCAL model: {new_model}")
+            self.content = getfile(filename)
+            if not self.content:
+                logger.error(f"Unable to get file: {filename}")
+                raise ValueError(f"Unable to get file: {filename}")
 
         # Process content if we have it
-        if content:
-            self.content = content
-            self.initial_validation(content)
-
+        if self.content:
+            logger.debug("Processing provided content...")
+            self.initial_validation()
+        else:
+            logger.error("No content available after attempting to load from file.")
+            raise ValueError("No content available after attempting to load from file.")
 
     # -------------------------------------------------------------------------
-    def save(self, filename: str, format: str="xml", pretty_print: bool=False):
+    def __str__(self):
+        return f"OSCAL(model={self.oscal_model}, version={self.oscal_version}, format={self.original_format})"
+    # -------------------------------------------------------------------------
+    def initial_validation(self):
         """
-        Save the current OSCAL content to a file in the specified format.
+        Perform initial validation of content, which includes first ensuring the 
+        content is a recognized OSCAL format type (xml, json or yaml) and 
+        well formed, before passing it to the OSCAL validation method.
+        """
+        logger.debug("Performing initial validation of content...")
+        status = False
+        root_element = ""
+        oscal_version = ""
+
+        self.original_format = detect_data_format(self.content)
+        logger.debug(f"Detected content format: {self.original_format}")
+        
+        if self.original_format in OSCAL_FORMATS:
+            logger.debug(f"{self.original_format} is an OSCAL format.")
+
+            match self.original_format:
+                case "xml":
+                    self.tree = safe_load_xml(self.content)
+                    if self.tree is not None:
+                        status = True
+                        root_element = self.xpath_atomic("/*/name()")
+                        oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"
+                    else:
+                        status = False
+                        logger.error("Content is not well-formed XML.")
+
+                case "json", "yaml":
+                    self.dict = safe_load(self.content, self.original_format)
+                    if self.dict is not None:
+                        status = True
+                        root_element = next(iter(self.dict.keys())) if self.dict else ""
+                        oscal_version = f"v{self.dict.get('metadata', {}).get('oscal-version', '')}"
+                    else:
+                        status = False
+                        logger.error(f"Content is not well-formed {self.original_format.upper()}.")
+
+        else:
+            logger.error(f"Content is not one of {OSCAL_FORMATS}.")
+            status = False
+
+        if status:
+            if oscal_version in self.support.versions:
+                self.oscal_version = oscal_version
+                if root_element in self.support.enumerate_models(self.oscal_version):
+                    self.oscal_model = root_element
+                    logger.debug(f"OSCAL model '{self.oscal_model}' and version '{self.oscal_version}' identified.")
+                    status = True
+                    # **** TODO: VALIDATE ****
+                    self.OSCAL_validate()
+                else:
+                    logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
+                    status = False
+            else:
+                logger.error("OSCAL VERSION IS NOT RECOGNIZED: " + oscal_version)
+                status = False
+
+        return status
+
+    # -------------------------------------------------------------------------
+    def OSCAL_validate(self) -> bool:
+        """
+        Validate OSCAL content.
+        This assumes the content has already been determined to be well-formed XML, JSON, or YAML,
+        and that the OSCAL model and version have been identified.
+        Currently uses the appropriate format schema.
+        Eventually will use meataschema for direct validation.
+        """
+        # TODO: Implement actual validation logic here
+        logger.debug("Validating OSCAL content...")
+
+
+        self.valid_oscal = True
+        return self.valid_oscal
+
+    # -------------------------------------------------------------------------
+    def OSCAL_convert(self, directive):
+        """
+        Currently does nothing. Will soon accept the following directive values:
+        'xml-to-json'
+        'xml-to-yaml'
+        """
+        # TODL: Implement conversion logic here
+        pass
+
+    # -------------------------------------------------------------------------
+    def save(self, filename: str="", format: str="", pretty_print: bool=False):
+        f"""
+        Save the current OSCAL content to a file.
+        With no parameters, saves to the original location in the original format.
+        This will save to any valid filename, even if the file extension does not match the format.
         
         Args:
             filename (str): The path to the file where content will be saved.
-            format (str): The format to save the content in ("xml", "json", "yaml").
+            format (str): The format to save the content in {OSCAL_FORMATS}.
+
         """
-        content_to_save = ""
-        match format.lower():
+        status = False
+        if format:
+            format = format.lower()
+            if format not in OSCAL_FORMATS:
+                logger.debug(f"The save format specified ({format}) is not an OSCAL format.")
+                return
+        else:
+            format = self.original_format
+
+
+        if filename == "":
+            filename = self.original_location
+
+        file_path = os.path.abspath(filename)
+        if not chkdir(file_path, make_if_not_present=True):
+            logger.error(f"Directory does not exist and could not be created: {os.path.dirname(file_path)}")
+            return
+        
+        logger.debug(f"Saving content as {filename} in OSCAL {format.upper()} format.")
+        match format:
             case "xml":
-                if self.xml and (self.unsaved_modified_content or not self.well_formed_xml):
-                    self.xml = self.serializer() # ElementTree.tostring(self.tree.getroot(), encoding='utf-8').decode('utf-8')
-                    # self.xml = format_xml_string(self.xml) if pretty_print else self.xml
-                    self.unsaved_modified_content = False
-                content_to_save = self.xml
+                self.xml = self.xml_serializer() 
+                status = putfile(filename, self.xml)
+
             case "json":
-                if not self.json_synced or self.unsaved_modified_content:
-                    # Convert XML to JSON here
-                    pass
-                content_to_save = self.json
-            case "yaml":
-                if not self.yaml_synced or self.unsaved_modified_content:
-                    # Convert XML to YAML here
-                    pass
-                content_to_save = self.yaml
+                self.json = self.to_json()
+                status = putfile(filename, self.json)
+
+            case "yaml", "yml":
+                self.yaml = self.to_yaml()
+                status = putfile(filename, self.yaml)
             case _:
                 logger.error(f"Unsupported format for saving: {format}")
                 return
         
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(content_to_save)
-            logger.info(f"OSCAL content saved to {filename} in {format} format.")
-        except Exception as e:
-            logger.error(f"Failed to save OSCAL content to {filename}: {e}")
+        if status:
+            logger.info(f"OSCAL content saved to {filename} in XML format.")
+            self.unsaved = False
+
+        else:
+            logger.error(f"Failed to save OSCAL content to {filename} in XML format.")
+
+        return status
+
     # -------------------------------------------------------------------------
     def content_modified(self):
+        """
+        Marks the content as modified by updating metadata fields and setting unsaved flag.
+        """
+        logger.debug("Content modified; updating metadata fields and flags.")
         # Prevent infinite recursion
         if getattr(self, '_in_content_modified', False):
             return
             
         self._in_content_modified = True
         try:
-            self.unsaved_modified_content = True
-            self.json_synced = False
-            self.yaml_synced = False
+            self.unsaved = True
+            self.synced = False
             self.__set_field("/*/metadata/last-modified", oscal_date_time_with_timezone())
             self.__set_field("/*/@uuid", str(uuid.uuid4()))
         finally:
             self._in_content_modified = False
     
     # -------------------------------------------------------------------------
-    def __set_field(self, path: str, field_value: str, create_if_missing=True):
+    def __set_field(self, path: str, field_value: str):
         """
         Sets a specific field in the OSCAL content.
         The xpath expression must p9oint to a single element.
@@ -207,134 +311,47 @@ class OSCAL(LoggableMixin):
             field_name (str): The name of the metadata field to set.
             field_value (str): The value to set for the metadata field.
         """
-        # Check if this is an attribute path (contains @attribute)
-        if '@' in path:
-            # Extract attribute name and element path
-            # For paths like "/*/@uuid", we want element "/*" and attribute "uuid"
-            attr_match = re.search(r'(.*)/@([^/\]]+)$', path)
-            if attr_match:
-                element_path = attr_match.group(1)
-                attr_name = attr_match.group(2)
-                
-                if self.tree:
-                    # Special handling for root element selector /*
-                    if element_path == '/*':
-                        element_node = self.tree.getroot()
-                    else:
-                        # Use elementpath for reliable XPath processing
-                        element_nodes = elementpath.select(self.tree, element_path, namespaces=self.nsmap)
-                        element_node = element_nodes[0] if element_nodes else None
-                        
-                    if element_node is not None:
-                        element_node.set(attr_name, field_value)
-                        # Only call content_modified if we're not already in it (prevent recursion)
-                        if not getattr(self, '_in_content_modified', False):
-                            self.content_modified()
-                        return
-        
-        # Handle element text content
-        if self.tree:
-            # Use elementpath for reliable XPath processing
-            field_nodes = elementpath.select(self.tree, path, namespaces=self.nsmap)
-            field_node = field_nodes[0] if field_nodes else None
-            if field_node is not None:
-                field_node.text = field_value
-                # Only call content_modified if we're not already in it (prevent recursion)
-                if not getattr(self, '_in_content_modified', False):
-                    self.content_modified()
-            elif create_if_missing:
-                # Create the missing element based on the element and attributes in the path
-                # the path must be absolute, and any attributes found in predecates are created
-                # with the assocaited element.
+        logger.debug(f"Setting field or attribute at '{path}' to value '{field_value}'")
+        basename = os.path.basename(path)
 
-                # Expect an absolute path like /...; tolerate and normalize if needed
-                if not path.startswith('/'):
-                    logger.warning("XPath not absolute; treating as absolute: " + path)
-
-                # Split into path steps, ignore empty parts caused by leading '/'
-                parts = [p for p in path.split('/') if p]
-
-                # Start at document root
-                current = self.tree.getroot() if isinstance(self.tree, ElementTree.ElementTree) else self.tree
-                if current is None:
-                    logger.error("No XML tree available to set field.")
+        if "@" in basename: # Attribute
+            base_path = path.rsplit("/", 1)[0] # Remove attribute part
+            logger.debug(f"Setting attribute on '{base_path}' to value '{field_value}'")
+            attr_name = basename.replace("@", "")
+            parent_nodes = self.xpath(base_path)
+            if not parent_nodes or len(parent_nodes) != 1:
+                logger.warning(f"XPath '{path}' returned unexpected results or no results. Cannot set attribute.")
+                return
+            parent_node = parent_nodes[0]  # Extract the first element from the list
+            # logger.debug(f"Setting @{attr_name} to {field_value} on {ElementTree.tostring(parent_node, 'utf-8')}")
+            try:
+                parent_node.set(attr_name, field_value)
+                logger.debug(f"Attribute @{attr_name} set to {field_value}")
+            except Exception as error:
+                logger.error(f"Failed to set attribute @{attr_name} to {field_value}: {str(error)}")
+        else: 
+            logger.debug(f"Setting field '{path}' to value '{field_value}'")
+            current_nodes = self.xpath(path)
+            if current_nodes:
+                if len(current_nodes) > 1:
+                    logger.warning(f"XPath '{path}' returned multiple results. Only the first will be set.")
+                elif len(current_nodes) == 0:
+                    logger.warning(f"XPath '{path}' returned no results. Cannot set value.")
                     return
 
-                # If first part is a wildcard (*) that represents the root element, skip it
-                idx = 0
-                if parts and parts[0] == '*':
-                    idx = 1
+                else:
+                    current_node = current_nodes[0]
+                    logger.debug(f"Current node before setting: {ElementTree.tostring(current_node, 'utf-8')}")
+                    current_node.text = field_value
+                    logger.debug(f"Current node after setting: {ElementTree.tostring(current_node, 'utf-8')}")
 
-                for part in parts[idx:]:
-                    # Parse element name and optional predicate(s) inside brackets
-                    m = re.match(r"(?P<name>[^\[]+)(\[(?P<pred>.+)\])?$", part.strip())
-                    if not m:
-                        logger.warning(f"Unrecognized path segment: {part}")
-                        continue
 
-                    name = m.group('name')
-                    pred = m.group('pred')
+        # Only call content_modified if we're not already in it (prevent recursion)
+        if not getattr(self, '_in_content_modified', False):
+            self.content_modified()
 
-                    # Parse predicates (support simple attribute predicates joined by 'and'):
-                    # examples supported: @id='val', @uuid="val", @flag
-                    predicates = []
-                    if pred:
-                        for sub in re.split(r"\s+and\s+", pred):
-                            sub = sub.strip()
-                            ma = re.match(r"@(?P<attr>[\w:-]+)(?:\s*=\s*'(.*?)'|\s*=\s*\"(.*?)\")?$", sub)
-                            if ma:
-                                attr = ma.group('attr')
-                                val = ma.group(2) if ma.group(2) is not None else ma.group(3)
-                                predicates.append((attr, val))
-                            else:
-                                logger.warning(f"Unsupported predicate format: {sub}")
 
-                    # Search for an existing matching child
-                    match_node = None
-                    for child in list(current):
-                        child_local = child.tag.split('}')[-1]  # handle namespace-qualified tags
-                        if name != '*' and child_local != name:
-                            continue
-                        ok = True
-                        for (attr, val) in predicates:
-                            if val is None:
-                                # predicate only requires presence of attribute
-                                if child.get(attr) is None:
-                                    ok = False
-                                    break
-                            else:
-                                if child.get(attr) != val:
-                                    ok = False
-                                    break
-                        if ok:
-                            match_node = child
-                            break
-
-                    # If not found, create the element (and set any attribute predicates)
-                    if match_node is None:
-                        new_tag = name
-                        new_elem = ElementTree.Element(new_tag)
-                        for (attr, val) in predicates:
-                            # If predicate required presence only, create attribute with empty string
-                            if val is None:
-                                new_elem.set(attr, "")
-                            else:
-                                new_elem.set(attr, val)
-                        current.append(new_elem)
-                        match_node = new_elem
-                        # Only call content_modified if we're not already in it (prevent recursion)
-                        if not getattr(self, '_in_content_modified', False):
-                            self.content_modified()
-
-                    # Descend into the matched/created node
-                    current = match_node
-
-                # Finally, set the element text
-                if current is not None:
-                    current.text = field_value
-                    # Only call content_modified if we're not already in it (prevent recursion)
-                    if not getattr(self, '_in_content_modified', False):
-                        self.content_modified()
+    # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
     def set_metadata(self, content={}):
         """
@@ -350,145 +367,6 @@ class OSCAL(LoggableMixin):
                 continue
             else:
                 self.__set_field(f"/*/metadata/{item}", content.get(item, ""))
-
-
-
-    # -------------------------------------------------------------------------
-    def create_new_oscal_content(self, model_name: str, title: str="", version: str="", published: str=""):
-        """
-        Returns minimally valid OSCAL content based on the specified model name.
-        Currently this is based on loading a template file from package data.
-        In the future, this should be generated based on the latest metaschema definition.
-        Args:
-            model_name (str): The OSCAL model name (e.g., "system-security-plan").
-        """
-        # TODO: Generate new content based on newest metaschema definition for the model
-        from xml.etree import ElementTree
-        metadata = {}
-
-        content = None
-        if self.support.is_model_valid(model_name): # is the specified model name an actual OSCAL model?
-            content = self.support.load_file(f"{model_name}.xml", binary=False)
-            # If content is found and is of type string, load it as XML
-            if content and isinstance(content, str):
-                self.xml = content
-                self.oscal_model = model_name
-                # Parse to get version
-                self.tree = ElementTree.ElementTree(ElementTree.fromstring(content.encode('utf_8')))
-                self.oscal_version = self.xpath_atomic("//metadata/oscal-version/text()")
-                # metadata["last-modified"] = oscal_date_time_with_timezone()
-                if title != "":
-                    metadata["title"] = title
-                if version != "":
-                    metadata["version"] = version
-                if published != "":
-                    metadata["published"] = published
-                
-                if metadata:
-                    self.set_metadata(metadata)
-
-                self.content_modified() # mark content as modified to update last-modified and uuid
-                return content
-
-        else:
-            logger.error(f"Unsupported OSCAL model for new content: {model_name}")
-            return None
-
-    # -------------------------------------------------------------------------
-    def initial_validation(self, content: str):
-        """
-        Perform initial validation of content, which includes first ensuring the 
-        content is a recognized OSCAL format type (xml, json or yaml) and 
-        well formed, before passing it to the OSCAL validation mechanism.
-        """
-        logger.debug("Performing initial validation of content...")
-        status = False
-        self.original_format = detect_data_format(content)
-        root_element = ""
-        oscal_version = ""
-        
-        if self.original_format in OSCAL_FORMATS:
-            logger.debug(f"Content appears to be in {self.original_format} format.")
-            match self.original_format:
-                case "xml":
-                    self.well_formed_xml = is_xml_well_formed(content)
-                    if self.well_formed_xml:
-                        # get root xml element
-                        self.tree = ElementTree.ElementTree(ElementTree.fromstring(content.encode('utf_8')))
-                        root_element = self.xpath_atomic("/*/name()")
-                        oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"
-                        status = True
-                    else:
-                        logger.error("Content is not well-formed XML.")
-
-                case "json":
-                    self.well_formed_json = is_json_well_formed(content)
-                    if self.well_formed_json:
-                        pass
-                        #get root element 
-                    else:
-                        logger.error("Content is not well-formed JSON.")
-                case "yaml":
-                    self.well_formed_yaml = is_yaml_well_formed(content)
-                    if self.well_formed_yaml:
-                        pass
-                        # get root element
-        else:
-            logger.error(f"Content is not one of {OSCAL_FORMATS}.")
-            status = False
-
-        if status:
-            if oscal_version in self.support.versions:
-                self.oscal_version = oscal_version
-                if root_element in self.support.enumerate_models(self.oscal_version):
-                    self.oscal_model = root_element
-                    logger.debug(f"OSCAL model '{self.oscal_model}' and version '{self.oscal_version}' identified.")
-                    status = True
-                    # **** TODO: VALIDATE ****
-                else:
-                    logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
-                    status = False
-            else:
-                logger.error("OSCAL VERSION IS NOT RECOGNIZED: " + oscal_version)
-                status = False
-
-        logger.debug("ROOT ELEMENT: " + str(root_element))
-        if self.support.is_valid_version(oscal_version):
-            models = self.support.enumerate_models(version=oscal_version)
-            if root_element in models:
-                logger.debug("OSCAL ROOT ELEMENT DETECTED: " + root_element)
-                self.oscal_version = self.xpath_atomic("//metadata/oscal-version/text()")
-                logger.debug("OSCAL_VERSION: " + str(self.oscal_version))
-                if len(self.oscal_version) >= 5: # TODO: Look up value in list of known-valid OSCAL versions
-                    self.OSCAL_validate()
-            else:
-                logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
-
-        return status
-
-    # -------------------------------------------------------------------------
-    def OSCAL_validate(self):
-        """
-        Validate OSCAL content.
-        This assumes the content has already been determined to be well-formed XML, JSON, or YAML,
-        and that the OSCAL model and version have been identified.
-        Currently uses the appropriate format schema.
-        Eventually will use meataschema for direct validation.
-        """
-        logger.debug("Validating OSCAL content...")
-
-
-        self.valid_oscal = True
-        pass
-
-    # -------------------------------------------------------------------------
-    def OSCAL_convert(self, directive):
-        """
-        Currently does nothing. Will soon accept the following directive values:
-        'xml-to-json'
-        'xml-to-yaml'
-        """
-        pass
 
     # -------------------------------------------------------------------------
     def __setup_saxon(self): # Future - place holder for code for now
@@ -515,7 +393,7 @@ class OSCAL(LoggableMixin):
             logger.debug("OSCAL VERSION: " + self.oscal_version)
 
     # -------------------------------------------------------------------------
-    def __saxon_serializer(self):
+    def __saxon_xml_serializer(self):
         return self.xdm.to_string('utf_8')
 
     # -------------------------------------------------------------------------
@@ -595,10 +473,22 @@ class OSCAL(LoggableMixin):
             logger.debug("TYPE: " + str(type(ret)))
 
         return ret_value
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # -------------------------------------------------------------------------
 
     
     def xpath_atomic(self, xExpr, context=None):
+        """
+        Performs an xpath query that is expected to return a single atomic value,
+        Parameters:
+        - xExpr (str): An xpath expression
+        - context (obj)[optional]: Context object.
+        If the context object is present, the xpath expression is run against 
+        that context. If absent, the xpath expression is run against the 
+        entire document.
+        Returns: 
+        - str: The atomic value as a string.
+        """
+
         ret_value=""
 
         if context:
@@ -636,23 +526,62 @@ class OSCAL(LoggableMixin):
             context = self.tree
             logger.debug(f"Using document root as context for XPath: {xExpr}")
 
-        ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
+        try:
 
-        logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
+            ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
+            logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
+        except Exception as error:
+            logger.error(f"XPath expression '{xExpr}' failed: {str(error)}")
+            ret_value = None
 
         return ret_value
 
-    def serializer(self):
-        logger.debug("Serializing for Output")
-        ElementTree.indent(self.tree)
-        out_string = ElementTree.tostring(self.tree.getroot(), 'utf-8')
+    # -------------------------------------------------------------------------
+    def xml_serializer(self):
+        """
+        Serializes the current XML tree to a string.
+        Returns:
+        - str: The serialized XML content as a string.        
+        """
+        logger.debug("Serializing the XML tree for text output.")
+        # Handle both ElementTree and Element objects
+        root = self.tree.getroot() if hasattr(self.tree, 'getroot') else self.tree
+        ElementTree.indent(root, space=" "* INDENT)
+
+        out_string = ElementTree.tostring(root, 'utf-8')
         logger.debug("LEN: " + str(len(out_string)))
         out_string = normalize_content(out_string)
         out_string = out_string.replace("ns0:", "")
         out_string = out_string.replace(":ns0", "")
         
         return out_string
-    
+
+    # -------------------------------------------------------------------------
+    def json_serializer(self):
+        """
+        Serializes the current dict to a string.
+        Returns:
+        - str: The serialized JSON content as a string.        
+        """
+        logger.debug("Serializing dict for string output as JSON.")
+        out_string = json.dumps(self.dict, indent=INDENT, sort_keys=False)
+        logger.debug("LEN: " + str(len(out_string)))
+        
+        return out_string
+        
+    # -------------------------------------------------------------------------
+    def yaml_serializer(self):
+        """
+        Serializes the current dict to a string.
+        Returns:
+        - str: The serialized YAML content as a string.        
+        """
+        logger.debug("Serializing dict for string output as YAML.")
+        out_string = yaml.dump(self.dict, indent=INDENT, sort_keys=False)
+        logger.debug("LEN: " + str(len(out_string)))
+        
+        return out_string
+    # -------------------------------------------------------------------------
     def lookup(self, xExpr: str, attributes: list=[], children: list=[]):
         """
         Checks for the existence of an element basedon an xpath expression.
@@ -699,6 +628,142 @@ class OSCAL(LoggableMixin):
 
         return ret_value
     # -------------------------------------------------------------------------
+    def assign_html_string_to_node(self, parent_node, html_string: str):
+        """
+        Assigns an HTML string to an XML node, converting it to proper XML structure.
+        Parameters:
+        - parent_node (ElementTree.Element): The parent XML node to which the HTML content will be added.
+        - html_string (str): The HTML string to convert and assign.
+        """
+        try:
+            # Wrap the HTML string in a temporary root element
+            wrapped_html = f"<div>{html_string}</div>"
+            temp_tree = ElementTree.ElementTree(ElementTree.fromstring(wrapped_html))
+            temp_root = temp_tree.getroot()
+
+            # Append each child of the temporary root to the parent node
+            for child in temp_root:
+                parent_node.append(child)
+
+            logger.debug("HTML string successfully assigned to node.")
+        except Exception as error:
+            logger.error(f"Error assigning HTML string to node: {type(error).__name__} - {str(error)}")
+    # -------------------------------------------------------------------------
+    def create_control(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", statements={}, guidance="", example="", objectives=[], objects=[], methods=[], remarks=""):
+        """
+        Creates a new control under the specified parent group.
+        Parameters:
+        - parent_id (str): The id of the parent group to which this new control will be added.
+        - id (str): The id of the new control.    
+        - title (str): The title of the new control.
+        - params (array): A dictionary of parameters to add to the control.
+        - props (array): A dictionary of properties to add to the control.
+        - links (array): A dictionary of links to add to the control.
+        - overview (str): An overview of the control.
+        - statements (dict): The control's requirement statement.
+        - guidance (str): Guidance for understanding the new control.
+        - objectives (array): A list of assessment objectives for the new control.
+        - objects (array): A dictionary of assessment objects to add to the control.
+        - methods (array): A dictionary of assessment methods to add to the control.
+        - remarks (str): The remarks of the new control. 
+        """
+        status = False
+        if self.oscal_model == "catalog":
+            try:
+                parent_xpath = f"//group[@id='{parent_id}']"
+                logger.debug(f"Creating control under parent id: {parent_id}")
+
+                # Use elementpath for reliable XPath processing
+                parent_nodes = self.xpath(parent_xpath)
+                logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
+                parent_node = parent_nodes[0] if parent_nodes else None
+                if parent_node is not None:
+                    logger.debug("TAG: " + parent_node.tag)
+                    control = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}control")
+                    control.set("id", id)
+
+                    if title != "":
+                        title_node = ElementTree.SubElement(control, "title")
+                        title_node.text = title
+
+                    if label != "":
+                        label_node = ElementTree.SubElement(control, "prop")
+                        label_node.set("name", "label")
+                        label_node.set("value", label)
+
+                    if sort_id != "":
+                        sort_id_node = ElementTree.SubElement(control, "prop")
+                        sort_id_node.set("name", "sort-id")
+                        sort_id_node.set("value", sort_id)
+
+                    if alt_identifier != "":
+                        alt_id_node = ElementTree.SubElement(control, "prop")
+                        alt_id_node.set("name", "alt-identifier")
+                        alt_id_node.set("value", alt_identifier)
+
+
+
+                    for param in params:
+                        param_node = ElementTree.SubElement(control, "param")
+                        param_node.set("id", param)
+                    
+                    # for prop in props:
+                    #     prop_node = ElementTree.SubElement(control, "prop")
+                    #     prop_node.text = prop
+                    
+                    for link in links:
+                        link_node = ElementTree.SubElement(control, "link")
+                        link_node.text = link
+                    
+                    if overview != "":
+                        overview_node = ElementTree.SubElement(control, "part")
+                        overview_node.set("name", "overview")
+                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview))
+                                            
+                    
+                    if statements:
+                        statement_node = ElementTree.SubElement(control, "part")
+                        statement_node.set("name", "statement")
+                        statement_node.set("id", f"{id}_smt")
+                        if len(statements) == 1 and "" in statements:
+                            # Single statement without id
+                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0]))
+                        # else:
+                        #     for stmt_id, stmt_content in statements.items():
+                        #         statement_child_node = ElementTree.SubElement(control, "part")
+                        #         statement_child_node.set("name", "item")
+                        #         if stmt_id != "":
+                        #             statement_child_node.set("id", f"{id}_smt")
+                        #         self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(stmt_content))
+                    
+                    if guidance != "":
+                        guidance_node = ElementTree.SubElement(control, "guidance")
+                        self.assign_html_string_to_node(guidance_node, oscal_markdown_to_html(guidance))
+                    
+                    if example != "":
+                        example_node = ElementTree.SubElement(control, "part")
+                        example_node.set("name", "example")
+                        self.assign_html_string_to_node(example_node, oscal_markdown_to_html(example))
+                    
+                    if remarks != "":
+                        remarks_node = ElementTree.SubElement(control, "remarks")
+                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks))
+                    parent_node.append(control)
+                    self.content_modified()
+                    status = True
+                else:
+                    logger.warning(f"CREATE CONTROL: Unable to find parent group with id {parent_id}" )
+            except Exception as error:
+                logger.error(f"Error creating control ({id}): {type(error).__name__} - {str(error)}")
+        else:
+            logger.error("CREATE CONTROL: Current model is not a catalog. Unable to create control.")
+
+        if not status:
+            control = None
+
+        return control
+
+    # -------------------------------------------------------------------------
     def create_control_group(self, parent_id, id, title="", params={}, props={}, links={}, label="", sort_id="", alt_identifier="", overview="", instruction="", remarks=""):
         """
         Creates a new catalog group.
@@ -735,7 +800,7 @@ class OSCAL(LoggableMixin):
                 parent_node = parent_nodes[0] if parent_nodes else None
                 if parent_node is not None:
                     logger.debug("TAG: " + parent_node.tag)
-                    group = ElementTree.Element("group")
+                    group = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}group")
                     group.set("id", id)
 
                     if title != "":
@@ -760,16 +825,19 @@ class OSCAL(LoggableMixin):
                     if overview != "":
                         overview_node = ElementTree.SubElement(group, "part")
                         overview_node.set("name", "overview")
-                        overview_node.text = overview
+                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview))
+                        # overview_node.text = oscal_markdown_to_html(overview)
 
                     if instruction != "":
                         instruction_node = ElementTree.SubElement(group, "part")
                         instruction_node.set("name", "instruction")
-                        instruction_node.text = instruction
+                        self.assign_html_string_to_node(instruction_node, oscal_markdown_to_html(instruction))
+                        # instruction_node.text = oscal_markdown_to_html(instruction)
 
                     if remarks != "":
                         remarks_node = ElementTree.SubElement(group, "remarks")
-                        remarks_node.text = remarks
+                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks))
+                        # remarks_node.text = oscal_markdown_to_html(remarks)
 
                     parent_node.append(group)
                     self.content_modified()
@@ -781,7 +849,10 @@ class OSCAL(LoggableMixin):
         else:
             logger.error("CREATE GROUP: Current model is not a catalog. Unable to create group.")
 
-        return status
+        if not status:
+            group = None
+
+        return group
 
     # -------------------------------------------------------------------------
     def append_child(self, xpath, node_name, node_content = None, attribute_list = []):
@@ -1300,7 +1371,7 @@ def _format_table_helper(table_lines: list) -> str:
     return '\n'.join(html)
 
 # -------------------------------------------------------------------------
-def create_new_oscal_content(model_name: str, title: str="", version: str="", published: str="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE) -> OSCAL:
+def create_new_oscal_content(model_name: str, title: str, version: str="", published: str="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE) -> OSCAL:
     """
     Returns minimally valid OSCAL content based on the specified model name.
     Currently this is based on loading a template file from package data.
@@ -1319,6 +1390,7 @@ def create_new_oscal_content(model_name: str, title: str="", version: str="", pu
 
             try:
                 oscal_object = OSCAL(content=content)
+                logger.debug(f"Created new OSCAL content for model {model_name}")
 
                 if oscal_object is not None:
                     metadata = {}
@@ -1327,12 +1399,16 @@ def create_new_oscal_content(model_name: str, title: str="", version: str="", pu
                     if version != "":
                         metadata["version"] = version
                     if published != "":
-                        metadata["published"] = published
+                        metadata["published"] = oscal_date_time_with_timezone(published)
                 
                     if metadata:
                         oscal_object.set_metadata(metadata)
 
                     oscal_object.content_modified() # mark content as modified to update last-modified and uuid
+            except ValueError as ve:
+                logger.error(f"ValueError creating new OSCAL content for model {model_name}: {str(ve)}")
+                oscal_object = None
+
             except Exception as error:
                 logger.error(f"Error creating new OSCAL content for model {model_name}: {type(error).__name__} - {str(error)}")
                 oscal_object = None
