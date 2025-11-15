@@ -24,7 +24,9 @@ import re
 from common.logging import LoggableMixin
 from common.data import detect_data_format, is_xml_well_formed, is_json_well_formed, is_yaml_well_formed
 from xml.etree import ElementTree
+import elementpath
 from common.lfs import getfile, normalize_content
+# from common.xml_formatter import format_xml_string
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
 import uuid
 
@@ -52,7 +54,7 @@ def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPP
             # Use a default in-memory database if no connection specified
             db_conn = ":memory:"
         logger.info("Initializing shared OSCAL Support instance...")
-        _shared_oscal_support = OSCAL_support.create_sync(db_conn, db_type)
+        _shared_oscal_support = OSCAL_support.create(db_conn, db_type)
     return _shared_oscal_support
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -67,7 +69,7 @@ class OSCAL(LoggableMixin):
     Methods:
 
     """
-    def __init__(self, content="", filename="", new_model="", support_db_conn=None, support_db_type="sqlite3"):
+    def __init__(self, content="", filename="", new_model="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
         """
         OSCAL Class Constructor
         Must provide at least one of the following parameters:
@@ -144,6 +146,43 @@ class OSCAL(LoggableMixin):
 
 
     # -------------------------------------------------------------------------
+    def save(self, filename: str, format: str="xml", pretty_print: bool=False):
+        """
+        Save the current OSCAL content to a file in the specified format.
+        
+        Args:
+            filename (str): The path to the file where content will be saved.
+            format (str): The format to save the content in ("xml", "json", "yaml").
+        """
+        content_to_save = ""
+        match format.lower():
+            case "xml":
+                if self.xml and (self.unsaved_modified_content or not self.well_formed_xml):
+                    self.xml = self.serializer() # ElementTree.tostring(self.tree.getroot(), encoding='utf-8').decode('utf-8')
+                    # self.xml = format_xml_string(self.xml) if pretty_print else self.xml
+                    self.unsaved_modified_content = False
+                content_to_save = self.xml
+            case "json":
+                if not self.json_synced or self.unsaved_modified_content:
+                    # Convert XML to JSON here
+                    pass
+                content_to_save = self.json
+            case "yaml":
+                if not self.yaml_synced or self.unsaved_modified_content:
+                    # Convert XML to YAML here
+                    pass
+                content_to_save = self.yaml
+            case _:
+                logger.error(f"Unsupported format for saving: {format}")
+                return
+        
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content_to_save)
+            logger.info(f"OSCAL content saved to {filename} in {format} format.")
+        except Exception as e:
+            logger.error(f"Failed to save OSCAL content to {filename}: {e}")
+    # -------------------------------------------------------------------------
     def content_modified(self):
         # Prevent infinite recursion
         if getattr(self, '_in_content_modified', False):
@@ -182,7 +221,9 @@ class OSCAL(LoggableMixin):
                     if element_path == '/*':
                         element_node = self.tree.getroot()
                     else:
-                        element_node = self.tree.find(element_path, namespaces=self.nsmap)
+                        # Use elementpath for reliable XPath processing
+                        element_nodes = elementpath.select(self.tree, element_path, namespaces=self.nsmap)
+                        element_node = element_nodes[0] if element_nodes else None
                         
                     if element_node is not None:
                         element_node.set(attr_name, field_value)
@@ -193,7 +234,9 @@ class OSCAL(LoggableMixin):
         
         # Handle element text content
         if self.tree:
-            field_node = self.tree.find(path, namespaces=self.nsmap)
+            # Use elementpath for reliable XPath processing
+            field_nodes = elementpath.select(self.tree, path, namespaces=self.nsmap)
+            field_node = field_nodes[0] if field_nodes else None
             if field_node is not None:
                 field_node.text = field_value
                 # Only call content_modified if we're not already in it (prevent recursion)
@@ -300,7 +343,7 @@ class OSCAL(LoggableMixin):
             content (dict): A dictionary containing metadata fields to set.
         """
         for item in content:
-            logger.debug(f"Metadata field to set: {item[0]} = {item[1]}")
+            logger.debug(f"Metadata field to set: {item} = {content[item]}")
             if item in ['revisions', 'document-ids', 'roles', 'locations', 'parties', 'links', 'props', 'responsible-parties']:
                 # These are complex fields - skip for now
                 logger.warning(f"Setting complex metadata field '{item}' is not yet implemented.")
@@ -324,7 +367,7 @@ class OSCAL(LoggableMixin):
         metadata = {}
 
         content = None
-        if self.support.is_model_valid(model_name):
+        if self.support.is_model_valid(model_name): # is the specified model name an actual OSCAL model?
             content = self.support.load_file(f"{model_name}.xml", binary=False)
             # If content is found and is of type string, load it as XML
             if content and isinstance(content, str):
@@ -333,6 +376,7 @@ class OSCAL(LoggableMixin):
                 # Parse to get version
                 self.tree = ElementTree.ElementTree(ElementTree.fromstring(content.encode('utf_8')))
                 self.oscal_version = self.xpath_atomic("//metadata/oscal-version/text()")
+                # metadata["last-modified"] = oscal_date_time_with_timezone()
                 if title != "":
                     metadata["title"] = title
                 if version != "":
@@ -340,7 +384,10 @@ class OSCAL(LoggableMixin):
                 if published != "":
                     metadata["published"] = published
                 
-                self.set_metadata({"title": title, "version": version})
+                if metadata:
+                    self.set_metadata(metadata)
+
+                self.content_modified() # mark content as modified to update last-modified and uuid
                 return content
 
         else:
@@ -355,6 +402,7 @@ class OSCAL(LoggableMixin):
         well formed, before passing it to the OSCAL validation mechanism.
         """
         logger.debug("Performing initial validation of content...")
+        status = False
         self.original_format = detect_data_format(content)
         root_element = ""
         oscal_version = ""
@@ -367,9 +415,9 @@ class OSCAL(LoggableMixin):
                     if self.well_formed_xml:
                         # get root xml element
                         self.tree = ElementTree.ElementTree(ElementTree.fromstring(content.encode('utf_8')))
-                        self.nsmap = {'': OSCAL_DEFAULT_XML_NAMESPACE}
                         root_element = self.xpath_atomic("/*/name()")
-                        oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"                        
+                        oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"
+                        status = True
                     else:
                         logger.error("Content is not well-formed XML.")
 
@@ -387,7 +435,22 @@ class OSCAL(LoggableMixin):
                         # get root element
         else:
             logger.error(f"Content is not one of {OSCAL_FORMATS}.")
+            status = False
 
+        if status:
+            if oscal_version in self.support.versions:
+                self.oscal_version = oscal_version
+                if root_element in self.support.enumerate_models(self.oscal_version):
+                    self.oscal_model = root_element
+                    logger.debug(f"OSCAL model '{self.oscal_model}' and version '{self.oscal_version}' identified.")
+                    status = True
+                    # **** TODO: VALIDATE ****
+                else:
+                    logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
+                    status = False
+            else:
+                logger.error("OSCAL VERSION IS NOT RECOGNIZED: " + oscal_version)
+                status = False
 
         logger.debug("ROOT ELEMENT: " + str(root_element))
         if self.support.is_valid_version(oscal_version):
@@ -400,6 +463,8 @@ class OSCAL(LoggableMixin):
                     self.OSCAL_validate()
             else:
                 logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
+
+        return status
 
     # -------------------------------------------------------------------------
     def OSCAL_validate(self):
@@ -534,17 +599,20 @@ class OSCAL(LoggableMixin):
 
     
     def xpath_atomic(self, xExpr, context=None):
-        import elementpath
         ret_value=""
-        if context is None:
-            logger.debug("XPath [1]: " + xExpr)
-            ret_value = elementpath.select(self.tree, xExpr, namespaces=self.nsmap)[0]
+
+        if context:
+            logger.debug(f"Using provided context for XPath Atomic: {xExpr}")
         else:
-            logger.debug("XPath [1] (" + context.tag + "): " + xExpr)
-            ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)[0]
+            context = self.tree
+            logger.debug(f"Using document root as context for XPath Atomic: {xExpr}")
+
+        ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)[0]
+        logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
 
         return str(ret_value)
 
+    # -------------------------------------------------------------------------
     def xpath(self, xExpr, context=None):
         """
         Performs an xpath query either on the entire XML document 
@@ -561,21 +629,23 @@ class OSCAL(LoggableMixin):
         - None if there is an error or if nothing is found.
         - 
         """
-        import elementpath
         ret_value=None
-        if context is None:
-            logger.debug("XPath [1]: " + xExpr)
-            ret_value = elementpath.select(self.tree, xExpr, namespaces=self.nsmap)
+        if context:
+            logger.debug(f"Using provided context for XPath: {xExpr}")
         else:
-            logger.debug("XPath [1] (" + context.tag + "): " + xExpr)
-            ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
-        logger.debug(str(type(ret_value)))
+            context = self.tree
+            logger.debug(f"Using document root as context for XPath: {xExpr}")
+
+        ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
+
+        logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
+
         return ret_value
 
     def serializer(self):
         logger.debug("Serializing for Output")
         ElementTree.indent(self.tree)
-        out_string = ElementTree.tostring(self.tree, 'utf-8')
+        out_string = ElementTree.tostring(self.tree.getroot(), 'utf-8')
         logger.debug("LEN: " + str(len(out_string)))
         out_string = normalize_content(out_string)
         out_string = out_string.replace("ns0:", "")
@@ -610,7 +680,9 @@ class OSCAL(LoggableMixin):
             if 'uuid' in target_node.attrib:
                 ret_value.append({"uuid", target_node.get("uuid")})
 
-            title = target_node.find('./title', self.nsmap)
+            # Use elementpath for reliable XPath processing
+            title_nodes = elementpath.select(target_node, './title', namespaces=self.nsmap)
+            title = title_nodes[0] if title_nodes else None
             if title:
                 ret_value.append({"title", title.text})
 
@@ -618,35 +690,127 @@ class OSCAL(LoggableMixin):
                 ret_value.append({attribute, target_node.get(attribute)})
 
             for child in children:
-                child_node = target_node.find('./' + child, self.nsmap)
+                # Use elementpath for reliable XPath processing
+                child_nodes = elementpath.select(target_node, './' + child, namespaces=self.nsmap)
+                child_node = child_nodes[0] if child_nodes else None
                 if child_node:
                     ret_value.append({child, child_node.text})
 
 
         return ret_value
+    # -------------------------------------------------------------------------
+    def create_control_group(self, parent_id, id, title="", params={}, props={}, links={}, label="", sort_id="", alt_identifier="", overview="", instruction="", remarks=""):
+        """
+        Creates a new catalog group.
+        Parameters:
+        - parent_id (str): The id of the parent group to which this new group will be added.
+                           Use '[root]' (case sensitive) to add to the top level of the catalog.
+        - id (str): The id of the new group.    
+        - title (str): The title of the new group.
+        - params (dict): A dictionary of parameters to add to the group.
+        - props (dict): A dictionary of properties to add to the group.
+        - links (dict): A dictionary of links to add to the group.
+        - label (str): The label of the new group.
+        - sort_id (str): The sort-id of the new group.
+        - alt_identifier (str): The alt-identifier of the new group.
+        - overview (str): The overview of the new group.
+        - instruction (str): The instruction of the new group.
+        - remarks (str): The remarks of the new group. 
+        """
+        status = False
+        if parent_id == "":
+            parent_id = "[root]"
+        if self.oscal_model == "catalog":
+            try:
+                if parent_id == "[root]":
+                    logger.debug("Creating group at root level")
+                    parent_xpath = "/*"
+                else:
+                    parent_xpath = f"//group[@id='{parent_id}']"
+                    logger.debug(f"Creating group under parent id: {parent_id}")
 
+                # Use elementpath for reliable XPath processing
+                parent_nodes = self.xpath(parent_xpath)
+                logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
+                parent_node = parent_nodes[0] if parent_nodes else None
+                if parent_node is not None:
+                    logger.debug("TAG: " + parent_node.tag)
+                    group = ElementTree.Element("group")
+                    group.set("id", id)
+
+                    if title != "":
+                        title_node = ElementTree.SubElement(group, "title")
+                        title_node.text = title
+
+                    if label != "":
+                        label_node = ElementTree.SubElement(group, "prop")
+                        label_node.set("name", "label")
+                        label_node.set("value", label)
+
+                    if sort_id != "":
+                        sort_id_node = ElementTree.SubElement(group, "prop")
+                        sort_id_node.set("name", "sort-id")
+                        sort_id_node.set("value", sort_id)
+
+                    if alt_identifier != "":
+                        alt_id_node = ElementTree.SubElement(group, "prop")
+                        alt_id_node.set("name", "alt-identifier")
+                        alt_id_node.set("value", alt_identifier)
+
+                    if overview != "":
+                        overview_node = ElementTree.SubElement(group, "part")
+                        overview_node.set("name", "overview")
+                        overview_node.text = overview
+
+                    if instruction != "":
+                        instruction_node = ElementTree.SubElement(group, "part")
+                        instruction_node.set("name", "instruction")
+                        instruction_node.text = instruction
+
+                    if remarks != "":
+                        remarks_node = ElementTree.SubElement(group, "remarks")
+                        remarks_node.text = remarks
+
+                    parent_node.append(group)
+                    self.content_modified()
+                    status = True
+                else:
+                    logger.warning(f"CREATE GROUP: Unable to find parent group with id {parent_id}" )
+            except Exception as error:
+                logger.error(f"Error creating group ({id}): {type(error).__name__} - {str(error)}")
+        else:
+            logger.error("CREATE GROUP: Current model is not a catalog. Unable to create group.")
+
+        return status
+
+    # -------------------------------------------------------------------------
     def append_child(self, xpath, node_name, node_content = None, attribute_list = []):
         # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
         status = False
         try:
-            parent_node = self.tree.find(xpath, namespaces=self.nsmap)
+            logger.debug("Fetching parent at " + xpath)
+            # Use elementpath for reliable XPath processing
+            parent_nodes = elementpath.select(self.tree, xpath, namespaces=self.nsmap)
+            parent_node = parent_nodes[0] if parent_nodes else None
             # parent_node = self.xpath(xpath)
             logger.debug(parent_node)
             if parent_node is not None:
                 logger.debug("TAG: " + parent_node.tag)
                 child = ElementTree.Element(node_name)
 
+                logger.debug("SETTING CONTENT")
                 if node_content is str:
                     child.text = node_content
 
+                logger.debug("SETTING ATTRIBUTES")
                 for attrib in attribute_list:
-                    child.set(attrib[0], attrib[1])
+                    child.set(attrib, attribute_list[attrib])
 
                 parent_node.append(child)
                 status = True
             else:
                 logger.warning("APPEND: Unable to find " + xpath )
-        except (Exception, BaseException) as error:
+        except Exception as error:
             logger.error("Error appending child (" + node_name + "): " + type(error).__name__ + " - " + str(error))
         
         if status:
@@ -679,27 +843,506 @@ def get_root_element_name(content: str) -> str:
 # -----------------------------------------------------------------------------
 def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
     """
-    Converts a date and time to UTC and ouptuts an OSCAL date-time-with-timezone string. 
+    Converts a date and time to UTC and outputs an OSCAL date-time-with-timezone string. 
     Optional Parameters:
-    - date_time (datetime): A date and time to convert to a formatted string.
-       default is the current date and time
+    - date_time (datetime or str): A date and time to convert to a formatted string.
+       Can be a datetime object or a string that can be parsed into datetime.
+       Default is the current date and time
     - format (str): The formatting string to use
-        default is "%Y-%m-%d--%H-%M-%S" (YYYY-MM-DD--HH-MM-SS)
+        default is "%Y-%m-%dT%H:%M:%SZ" (OSCAL standard format)
 
     Returns a formatted date time string.
     If an error occurs, returns an empty string.
     """
     from datetime import datetime, timezone
+    from dateutil import parser as date_parser
+    
     if date_time is None: 
         date_time = datetime.now()
+    elif isinstance(date_time, str):
+        # Parse string into datetime object
+        try:
+            date_time = date_parser.parse(date_time)
+        except Exception as error:
+            logger.error(f"{type(error).__name__} error parsing date/time string '{date_time}': {str(error)}")
+            return ""
+    
     ret_value = ""
 
     try:
-        date_time = date_time.astimezone(timezone.utc)
+        # Ensure we have timezone info, default to UTC if naive
+        if date_time.tzinfo is None:
+            date_time = date_time.replace(tzinfo=timezone.utc)
+        else:
+            date_time = date_time.astimezone(timezone.utc)
         ret_value = date_time.strftime(format)
-    except (Exception, BaseException) as error:
+    except Exception as error:
         logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
     return ret_value
+
+# -------------------------------------------------------------------------
+def oscal_markdown_to_html(markdown_text: str, multiline: bool = True) -> str:
+    """
+    Converts OSCAL markup-line or markup-multiline formatted markdown to HTML.
+    
+    This function handles the specific markdown subset defined in the NIST Metaschema
+    specification for OSCAL markup-line and markup-multiline data types.
+    
+    Args:
+        markdown_text (str): The markdown text to convert
+        multiline (bool): If True, handles markup-multiline (supports block elements).
+                         If False, handles markup-line (inline elements only).
+    
+    Returns:
+        str: HTML representation of the markdown text
+    
+    References:
+        https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline 
+        https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
+    """
+    import re
+    
+    if not markdown_text:
+        return ""
+    
+    # Store escaped characters temporarily
+    escape_map = {
+        '\\*': '___ESCAPED_ASTERISK___',
+        '\\`': '___ESCAPED_BACKTICK___',
+        '\\~': '___ESCAPED_TILDE___',
+        '\\^': '___ESCAPED_CARET___',
+        '\\_': '___ESCAPED_UNDERSCORE___',
+        '\\[': '___ESCAPED_LEFT_BRACKET___',
+        '\\]': '___ESCAPED_RIGHT_BRACKET___',
+        '\\{': '___ESCAPED_LEFT_BRACE___',
+        '\\}': '___ESCAPED_RIGHT_BRACE___',
+        '\\\\': '___ESCAPED_BACKSLASH___'
+    }
+    
+    html = markdown_text
+    for escaped, placeholder in escape_map.items():
+        html = html.replace(escaped, placeholder)
+    
+    # Handle OSCAL parameter insertion syntax: {{ insert: param, pm-9_prm_1 }}
+    def replace_param_insertion(match):
+        parts = [p.strip() for p in match.group(1).split(',')]
+        if len(parts) >= 2:
+            insert_type = parts[0].replace('insert:', '').strip()
+            id_ref = parts[1].strip()
+            return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
+        return match.group(0)
+    
+    html = re.sub(r'\{\{\s*([^}]+)\s*\}\}', replace_param_insertion, html)
+    
+    # For markup-line, only apply inline formatting
+    if not multiline:
+        # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
+        html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
+                      lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}"' + 
+                               (f' title="{m.group(3)}"' if m.group(3) else '') + '/>', html)
+        
+        # Links: [text](url "title") -> <a href="url" title="title">text</a>  
+        html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
+                      lambda m: f'<a href="{m.group(2)}"' + 
+                               (f' title="{m.group(3)}"' if m.group(3) else '') + 
+                               f'>{m.group(1)}</a>', html)
+        
+        # Strong emphasis (bold) - **text** -> <strong>text</strong>
+        html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
+        
+        # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
+        html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
+        
+        # Inline code - `text` -> <code>text</code>
+        html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+        
+        # Superscript - ^text^ -> <sup>text</sup>
+        html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
+        
+        # Subscript - ~text~ -> <sub>text</sub>
+        html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
+    else:
+        # Handle block-level elements (only for markup-multiline)
+        lines = html.split('\n')
+        result = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            if not line:
+                i += 1
+                continue
+            
+            # Headers - # text -> <h1>text</h1> (and so on)
+            if line.startswith('#'):
+                level = len(line) - len(line.lstrip('#'))
+                if 1 <= level <= 6:
+                    header_text = line[level:].strip()
+                    result.append(f'<h{level}>{header_text}</h{level}>')
+                    i += 1
+                    continue
+            
+            # Code blocks - ```text``` -> <pre>text</pre>
+            if line == '```':
+                code_lines = []
+                i += 1
+                while i < len(lines) and lines[i].strip() != '```':
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < len(lines):  # Skip closing ```
+                    i += 1
+                result.append(f'<pre>{"\n".join(code_lines)}</pre>')
+                continue
+            
+            # Tables
+            if '|' in line:
+                table_lines = [line]
+                j = i + 1
+                # Collect all consecutive table lines
+                while j < len(lines) and '|' in lines[j].strip():
+                    table_lines.append(lines[j].strip())
+                    j += 1
+                
+                if len(table_lines) >= 2:  # At least header and separator
+                    table_html = _format_table_helper(table_lines)
+                    result.append(table_html)
+                    i = j
+                    continue
+            
+            # Blockquotes - > text -> <blockquote>text</blockquote>
+            if line.startswith('>'):
+                quote_text = line[1:].strip()
+                result.append(f'<blockquote>{quote_text}</blockquote>')
+                i += 1
+                continue
+            
+            # Lists - unordered
+            if line.startswith('-') or line.startswith('*'):
+                list_item = line[1:].strip()
+                result.append(f'<ul><li>{list_item}</li></ul>')
+                i += 1
+                continue
+            
+            # Lists - ordered
+            if re.match(r'^\d+\.', line):
+                list_item = re.sub(r'^\d+\.\s*', '', line)
+                result.append(f'<ol><li>{list_item}</li></ol>')
+                i += 1
+                continue
+            
+            # Regular paragraph
+            result.append(f'<p>{line}</p>')
+            i += 1
+        
+        html = '\n'.join(result)
+        
+        # Now apply inline formatting to the result
+        # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
+        html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
+                      lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}"' + 
+                               (f' title="{m.group(3)}"' if m.group(3) else '') + '/>', html)
+        
+        # Links: [text](url "title") -> <a href="url" title="title">text</a>  
+        html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
+                      lambda m: f'<a href="{m.group(2)}"' + 
+                               (f' title="{m.group(3)}"' if m.group(3) else '') + 
+                               f'>{m.group(1)}</a>', html)
+        
+        # Strong emphasis (bold) - **text** -> <strong>text</strong>
+        html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
+        
+        # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
+        html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
+        
+        # Inline code - `text` -> <code>text</code>
+        html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+        
+        # Superscript - ^text^ -> <sup>text</sup>
+        html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
+        
+        # Subscript - ~text~ -> <sub>text</sub>
+        html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
+    
+    # Restore escaped characters
+    reverse_escape_map = {
+        '___ESCAPED_ASTERISK___': '*',
+        '___ESCAPED_BACKTICK___': '`',
+        '___ESCAPED_TILDE___': '~',
+        '___ESCAPED_CARET___': '^',
+        '___ESCAPED_UNDERSCORE___': '_',
+        '___ESCAPED_LEFT_BRACKET___': '[',
+        '___ESCAPED_RIGHT_BRACKET___': ']',
+        '___ESCAPED_LEFT_BRACE___': '{',
+        '___ESCAPED_RIGHT_BRACE___': '}',
+        '___ESCAPED_BACKSLASH___': '\\'
+    }
+    
+    for placeholder, original in reverse_escape_map.items():
+        html = html.replace(placeholder, original)
+    
+    return html
+
+# -------------------------------------------------------------------------
+def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
+    """
+    Converts HTML back to OSCAL markup-line or markup-multiline formatted markdown.
+    
+    This function handles the reverse conversion from HTML to the specific markdown subset 
+    defined in the NIST Metaschema specification for OSCAL markup-line and markup-multiline data types.
+    
+    Args:
+        html_text (str): The HTML text to convert
+        multiline (bool): If True, generates markup-multiline (supports block elements).
+                         If False, generates markup-line (inline elements only).
+    
+    Returns:
+        str: Markdown representation of the HTML text
+    
+    References:
+        https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline
+        https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
+    """
+    import re
+    
+    if not html_text:
+        return ""
+    
+    markdown = html_text.strip()
+    
+    # Handle OSCAL parameter insertion: <insert type="param" id-ref="id"/> -> {{ insert: param, id }}
+    markdown = re.sub(r'<insert\s+type="([^"]+)"\s+id-ref="([^"]+)"\s*/>', 
+                      r'{{ insert: \1, \2 }}', markdown)
+    
+    if multiline:
+        # Handle block-level elements first (only for markup-multiline)
+        
+        # Headers: <h1>text</h1> -> # text
+        for level in range(1, 7):
+            markdown = re.sub(f'<h{level}>([^<]+)</h{level}>', 
+                             f'{"#" * level} \\1\n\n', markdown)
+        
+        # Code blocks: <pre>code</pre> -> ```code```
+        def fix_code_block(match):
+            content = match.group(1)
+            return f'\n\n```\n{content}\n```\n\n'
+        markdown = re.sub(r'<pre>([^<]*)</pre>', fix_code_block, markdown, flags=re.DOTALL)
+        
+        # Tables: Convert HTML table back to markdown table
+        def convert_html_table(match):
+            table_html = match.group(0)
+            
+            # Extract header row
+            header_match = re.search(r'<tr>((?:<th[^>]*>[^<]*</th>)+)</tr>', table_html)
+            if not header_match:
+                return table_html  # Not a valid table structure
+            
+            header_cells = re.findall(r'<th[^>]*>([^<]*)</th>', header_match.group(1))
+            
+            # Extract alignment information
+            alignments = []
+            for th_match in re.finditer(r'<th[^>]*align="([^"]*)"[^>]*>', header_match.group(1)):
+                alignments.append(th_match.group(1))
+            
+            # Extract data rows
+            data_rows = []
+            for row_match in re.finditer(r'<tr>((?:<td[^>]*>.*?</td>)+)</tr>', table_html, flags=re.DOTALL):
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', row_match.group(1), flags=re.DOTALL)
+                data_rows.append(cells)
+            
+            if not header_cells or not data_rows:
+                return table_html
+            
+            # Build markdown table
+            table_lines = []
+            
+            # Header row
+            table_lines.append('| ' + ' | '.join(header_cells) + ' |')
+            
+            # Separator row with alignment
+            separators = []
+            for i, header in enumerate(header_cells):
+                align = alignments[i] if i < len(alignments) else 'left'
+                if align == 'center':
+                    separators.append(':---:')
+                elif align == 'right':
+                    separators.append('---:')
+                else:
+                    separators.append('---')
+            table_lines.append('| ' + ' | '.join(separators) + ' |')
+            
+            # Data rows
+            for row in data_rows:
+                # Pad row to match header length
+                while len(row) < len(header_cells):
+                    row.append('')
+                table_lines.append('| ' + ' | '.join(row[:len(header_cells)]) + ' |')
+            
+            return '\n\n' + '\n'.join(table_lines) + '\n\n'
+        
+        # Match HTML tables
+        markdown = re.sub(r'<table>.*?</table>', convert_html_table, markdown, flags=re.DOTALL)
+        
+        # Blockquotes: <blockquote>text</blockquote> -> > text
+        markdown = re.sub(r'<blockquote>([^<]+)</blockquote>', r'\n\n> \1\n\n', markdown)
+        
+        # Lists - unordered: <ul><li>text</li></ul> -> - text
+        markdown = re.sub(r'<ul><li>([^<]+)</li></ul>', r'\n\n- \1\n', markdown)
+        
+        # Lists - ordered: <ol><li>text</li></ol> -> 1. text
+        markdown = re.sub(r'<ol><li>([^<]+)</li></ol>', r'\n\n1. \1\n', markdown)
+        
+        # Paragraphs: <p>text</p> -> text (with newlines)
+        markdown = re.sub(r'<p>([^<]+)</p>', r'\1\n\n', markdown)
+    
+    # Handle inline formatting (for both markup types)
+    
+    # Images: <img alt="alt" src="src" title="title"/> -> ![alt](src "title")
+    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>', 
+                      r'![\1](\2 "\3")', markdown)
+    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s*/>', 
+                      r'![\1](\2)', markdown)
+    
+    # Links: <a href="url" title="title">text</a> -> [text](url "title")
+    markdown = re.sub(r'<a\s+href="([^"]+)"\s+title="([^"]*)">([^<]+)</a>', 
+                      r'[\3](\1 "\2")', markdown)
+    markdown = re.sub(r'<a\s+href="([^"]+)">([^<]+)</a>', 
+                      r'[\2](\1)', markdown)
+    
+    # Strong emphasis: <strong>text</strong> -> **text**
+    markdown = re.sub(r'<strong>([^<]+)</strong>', r'**\1**', markdown)
+    
+    # Emphasis: <em>text</em> -> *text*
+    markdown = re.sub(r'<em>([^<]+)</em>', r'*\1*', markdown)
+    
+    # Inline code: <code>text</code> -> `text`
+    markdown = re.sub(r'<code>([^<]+)</code>', r'`\1`', markdown)
+    
+    # Superscript: <sup>text</sup> -> ^text^
+    markdown = re.sub(r'<sup>([^<]+)</sup>', r'^\1^', markdown)
+    
+    # Subscript: <sub>text</sub> -> ~text~
+    markdown = re.sub(r'<sub>([^<]+)</sub>', r'~\1~', markdown)
+    
+    # Clean up any remaining HTML tags or artifacts
+    markdown = re.sub(r'<[^>]+>', '', markdown)
+    
+    if multiline:
+        # For multiline, preserve line structure but clean up excess whitespace
+        lines = markdown.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                cleaned_lines.append(line)
+            elif cleaned_lines and cleaned_lines[-1]:  # Add empty lines only between content
+                cleaned_lines.append('')
+        
+        # Join lines and clean up multiple consecutive empty lines
+        markdown = '\n'.join(cleaned_lines)
+        markdown = re.sub(r'\n\n\n+', '\n\n', markdown)
+    else:
+        # For inline only, collapse whitespace
+        markdown = re.sub(r'\s+', ' ', markdown)
+    
+    markdown = markdown.strip()
+    return markdown
+
+# -------------------------------------------------------------------------
+def _format_table_helper(table_lines: list) -> str:
+    """Helper function to format markdown table to HTML"""
+    if len(table_lines) < 2:
+        return ""
+    
+    # Parse header row
+    header_cells = [cell.strip() for cell in table_lines[0].split('|')[1:-1]]
+    
+    # Parse alignment row
+    alignment_row = table_lines[1]
+    alignments = []
+    for cell in alignment_row.split('|')[1:-1]:
+        cell = cell.strip()
+        if cell.startswith(':') and cell.endswith(':'):
+            alignments.append('center')
+        elif cell.endswith(':'):
+            alignments.append('right')
+        else:
+            alignments.append('left')
+    
+    # Ensure we have alignments for all columns
+    while len(alignments) < len(header_cells):
+        alignments.append('left')
+    
+    # Build HTML table
+    html = ['<table>']
+    
+    # Header row
+    header_html = '  <tr>'
+    for i, cell in enumerate(header_cells):
+        align = alignments[i] if i < len(alignments) else 'left'
+        header_html += f'<th align="{align}">{cell}</th>'
+    header_html += '</tr>'
+    html.append(header_html)
+    
+    # Data rows
+    for line in table_lines[2:]:
+        if not line.strip():
+            continue
+        cells = [cell.strip() for cell in line.split('|')[1:-1]]
+        row_html = '  <tr>'
+        for i, cell in enumerate(cells):
+            align = alignments[i] if i < len(alignments) else 'left'
+            row_html += f'<td align="{align}">{cell}</td>'
+        row_html += '</tr>'
+        html.append(row_html)
+    
+    html.append('</table>')
+    return '\n'.join(html)
+
+# -------------------------------------------------------------------------
+def create_new_oscal_content(model_name: str, title: str="", version: str="", published: str="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE) -> OSCAL:
+    """
+    Returns minimally valid OSCAL content based on the specified model name.
+    Currently this is based on loading a template file from package data.
+    In the future, this should be generated based on the latest metaschema definition.
+    Args:
+        model_name (str): The OSCAL model name (e.g., "system-security-plan").
+    """
+    # TODO: Generate new content based on newest metaschema definition for the model
+    oscal_object = None
+    support = get_shared_oscal_support(db_conn=support_db_conn, db_type=support_db_type)
+
+    if support.is_model_valid(model_name): # is the specified model name an actual OSCAL model?
+        content = support.load_file(f"{model_name}.xml", binary=False)
+        # If content is found and is of type string, load it as XML
+        if content and isinstance(content, str):
+
+            try:
+                oscal_object = OSCAL(content=content)
+
+                if oscal_object is not None:
+                    metadata = {}
+                    if title != "":
+                        metadata["title"] = title
+                    if version != "":
+                        metadata["version"] = version
+                    if published != "":
+                        metadata["published"] = published
+                
+                    if metadata:
+                        oscal_object.set_metadata(metadata)
+
+                    oscal_object.content_modified() # mark content as modified to update last-modified and uuid
+            except Exception as error:
+                logger.error(f"Error creating new OSCAL content for model {model_name}: {type(error).__name__} - {str(error)}")
+                oscal_object = None
+
+    else:
+        logger.error(f"Unsupported OSCAL model for new content: {model_name}")
+    
+    return oscal_object
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 

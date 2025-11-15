@@ -86,34 +86,10 @@ OSCAL_SUPPORT_TABLES["filecache"] = database.OSCAL_COMMON_TABLES["filecache"]
 OSCAL_DATA_TYPES = {}
 
 # ========================================================================
-def setup_support_sync(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
-    """Synchronous version of setup_support"""
-    logger.debug(f"Setting up support file (sync): {support_file}")
-    
-    support = OSCAL_support.create_sync(support_file, db_init_mode=db_init_mode)
-    cycle = 0
-    while not support.ready:
-        logger.debug("Waiting for support object to be ready...")
-        if support.db_state != "unknown":
-            logger.debug(f"Support file status {support.db_state}")
-            break
-        cycle += 1
-        if cycle > 20:
-            logger.error(f"Support object took too long to be ready.({support.db_state})")
-            break
-        sleep(0.25)
-    if not support.ready:
-        logger.error("Support object is not ready.")
-    else:
-        logger.debug("Support file is ready.")
-
-    return support
-
-# ========================================================================
 def setup_support(support_file= SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
     logger.debug(f"Setting up support file: {support_file}")
     
-    support = OSCAL_support.create_sync(support_file, db_init_mode=db_init_mode)
+    support = OSCAL_support.create(support_file, db_init_mode=db_init_mode)
     cycle = 0
     while not support.ready:
         logger.debug("Waiting for support object to be ready...")
@@ -333,9 +309,9 @@ class OSCAL_support:
 
     # -------------------------------------------------------------------------
     @classmethod
-    def create_sync(cls, db_conn, db_type="sqlite3", db_init_mode="auto"):
+    def create(cls, db_conn, db_type="sqlite3", db_init_mode="auto"):
         """Synchronous factory method to create and initialize OSCAL_support"""
-        logger.debug("Support: create_sync")
+        logger.debug("Support: create")
         instance = cls(db_conn, db_type, db_init_mode)
         if instance.db is not None:
             instance.sync_init()
@@ -352,7 +328,7 @@ class OSCAL_support:
     def create_auto(cls, db_conn, db_type="sqlite3", db_init_mode="auto"):
         """Auto-detecting factory method - now just returns sync version"""
         logger.debug("Support: create_auto")
-        return cls.create_sync(db_conn, db_type, db_init_mode)
+        return cls.create(db_conn, db_type, db_init_mode)
 
     # -------------------------------------------------------------------------
     def startup(self, check_for_updates=False, refresh_all=False):
@@ -459,7 +435,7 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def asset_sync(self, oscal_version, model_name, asset_type):
+    def asset(self, oscal_version, model_name, asset_type):
         """
         Returns the asset for the specified OSCAL version and model name.
         Args:
@@ -504,7 +480,7 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def is_model_valid_sync(self, model_name, version="all") -> bool:
+    def is_model_valid(self, model_name, version="all") -> bool:
         """
         Check if the specified OSCAL model is valid for the given version.
         Args:
@@ -514,12 +490,12 @@ class OSCAL_support:
             bool: True if the model is valid for the specified version, False otherwise.
         """
         is_valid = False
-        models = self.enumerate_models_sync(version)
+        models = self.enumerate_models(version)
         if model_name in models:
             is_valid = True
         return is_valid
     # -------------------------------------------------------------------------
-    def enumerate_models_sync(self, version: str = "all") -> list[str]:
+    def enumerate_models(self, version: str = "all") -> list[str]:
         """
         Enumerate the supported models for a given OSCAL version.
         Args:
@@ -645,42 +621,6 @@ class OSCAL_support:
             bool: True if the version is valid and supported, False otherwise.
         """
         return version in self.versions
-
-    # -------------------------------------------------------------------------
-    def enumerate_models(self, version: str = "all") -> list[str]:
-        """
-        Enumerate the supported models for a given OSCAL version.
-        Args:
-            version (str): The OSCAL version to enumerate models for (e.g., "v1.0.0").
-        Returns:
-            list[str]: A list of model-name strings supported for the specified OSCAL version.
-        """
-        return self.enumerate_models_sync(version)
-
-    # -------------------------------------------------------------------------
-    def is_model_valid(self, model_name, version="all") -> bool:
-        """
-        Check if the specified OSCAL model is valid for the given version.
-        Args:
-            model_name (str): The OSCAL model name to check.
-            version (str): The OSCAL version to check against.
-        Returns:
-            bool: True if the model is valid for the specified version.
-        """
-        return self.is_model_valid_sync(model_name, version)
-
-    # -------------------------------------------------------------------------
-    def asset(self, oscal_version, model_name, asset_type):
-        """
-        Returns the asset for the specified OSCAL version and model name.
-        Args:
-            oscal_version (str): The OSCAL version (e.g., "v1.0.0").
-            model_name (str): The OSCAL model name (e.g., "system-security-plan").
-            asset_type (str): The type of asset to retrieve (e.g., "xml-schema").
-        Returns:
-            The asset content if found, None otherwise.
-        """
-        return self.asset_sync(oscal_version, model_name, asset_type)
 
     # -------------------------------------------------------------------------
     def __load_versions(self):     
