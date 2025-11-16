@@ -682,9 +682,13 @@ class OSCAL(LoggableMixin):
                     control = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}control")
                     control.set("id", id)
 
-                    if title != "":
-                        title_node = ElementTree.SubElement(control, "title")
-                        title_node.text = title
+                    title_node = ElementTree.SubElement(control, "title")
+                    if title == "":
+                        if label != "":
+                            title = label
+                        else:
+                            title = id
+                    title_node.text = title
 
                     if label != "":
                         label_node = ElementTree.SubElement(control, "prop")
@@ -709,6 +713,7 @@ class OSCAL(LoggableMixin):
                     
                     if len(props) > 0:
                         for prop in props:
+                            logger.debug(f"Adding prop: {prop}")
                             prop_node = ElementTree.SubElement(control, "prop")
                             prop_node.set("name", prop['name'])
                             prop_node.set("value", prop['value'])
