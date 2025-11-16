@@ -252,7 +252,7 @@ class OSCAL(LoggableMixin):
         if filename == "":
             filename = self.original_location
 
-        file_path = os.path.abspath(filename)
+        file_path = os.path.dirname(os.path.abspath(filename))
         if not chkdir(file_path, make_if_not_present=True):
             logger.error(f"Directory does not exist and could not be created: {os.path.dirname(file_path)}")
             return
@@ -707,9 +707,21 @@ class OSCAL(LoggableMixin):
                         param_node = ElementTree.SubElement(control, "param")
                         param_node.set("id", param)
                     
-                    # for prop in props:
-                    #     prop_node = ElementTree.SubElement(control, "prop")
-                    #     prop_node.text = prop
+                    if len(props) > 0:
+                        for prop in props:
+                            prop_node = ElementTree.SubElement(control, "prop")
+                            prop_node.set("name", prop['name'])
+                            prop_node.set("value", prop['value'])
+                            if 'class' in prop:
+                                prop_node.set("class", prop.get('class', ''))
+                            if 'group' in prop:
+                                prop_node.set("group", prop.get('group', ''))
+                            if 'ns' in prop:
+                                prop_node.set("ns", prop.get('ns', ''))
+                            if 'remarks' in prop:
+                                remarks_node = ElementTree.SubElement(prop_node, "remarks")
+                                self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(prop.get('remarks', '')))
+                        # control.append(prop_node)
                     
                     for link in links:
                         link_node = ElementTree.SubElement(control, "link")
@@ -725,9 +737,11 @@ class OSCAL(LoggableMixin):
                         statement_node = ElementTree.SubElement(control, "part")
                         statement_node.set("name", "statement")
                         statement_node.set("id", f"{id}_smt")
+                        logger.debug(f"STATEMENTS TYPE: {type(statements)} with {len(statements)} items.")
                         if len(statements) == 1 and "" in statements:
                             # Single statement without id
-                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0]))
+                            logger.debug("Single statement without id detected.")
+                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[""]))
                         # else:
                         #     for stmt_id, stmt_content in statements.items():
                         #         statement_child_node = ElementTree.SubElement(control, "part")
