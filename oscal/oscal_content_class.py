@@ -311,12 +311,12 @@ class OSCAL(LoggableMixin):
             field_name (str): The name of the metadata field to set.
             field_value (str): The value to set for the metadata field.
         """
-        logger.debug(f"Setting field or attribute at '{path}' to value '{field_value}'")
+        # logger.debug(f"Setting field or attribute at '{path}' to value '{field_value}'")
         basename = os.path.basename(path)
 
         if "@" in basename: # Attribute
             base_path = path.rsplit("/", 1)[0] # Remove attribute part
-            logger.debug(f"Setting attribute on '{base_path}' to value '{field_value}'")
+            # logger.debug(f"Setting attribute on '{base_path}' to value '{field_value}'")
             attr_name = basename.replace("@", "")
             parent_nodes = self.xpath(base_path)
             if not parent_nodes or len(parent_nodes) != 1:
@@ -360,7 +360,7 @@ class OSCAL(LoggableMixin):
             content (dict): A dictionary containing metadata fields to set.
         """
         for item in content:
-            logger.debug(f"Metadata field to set: {item} = {content[item]}")
+            # logger.debug(f"Metadata field to set: {item} = {content[item]}")
             if item in ['revisions', 'document-ids', 'roles', 'locations', 'parties', 'links', 'props', 'responsible-parties']:
                 # These are complex fields - skip for now
                 logger.warning(f"Setting complex metadata field '{item}' is not yet implemented.")
@@ -529,7 +529,7 @@ class OSCAL(LoggableMixin):
         try:
 
             ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
-            logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
+            # logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
         except Exception as error:
             logger.error(f"XPath expression '{xExpr}' failed: {str(error)}")
             ret_value = None
@@ -549,7 +549,7 @@ class OSCAL(LoggableMixin):
         ElementTree.indent(root, space=" "* INDENT)
 
         out_string = ElementTree.tostring(root, 'utf-8')
-        logger.debug("LEN: " + str(len(out_string)))
+        # logger.debug("LEN: " + str(len(out_string)))
         out_string = normalize_content(out_string)
         out_string = out_string.replace("ns0:", "")
         out_string = out_string.replace(":ns0", "")
@@ -649,7 +649,7 @@ class OSCAL(LoggableMixin):
         except Exception as error:
             logger.error(f"Error assigning HTML string to node: {type(error).__name__} - {str(error)}")
     # -------------------------------------------------------------------------
-    def create_control(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", statements={}, guidance="", example="", objectives=[], objects=[], methods=[], remarks=""):
+    def create_control(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", statements=[], guidance="", example="", objectives=[], objects=[], methods=[], remarks=""):
         """
         Creates a new control under the specified parent group.
         Parameters:
@@ -733,22 +733,22 @@ class OSCAL(LoggableMixin):
                         self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview))
                                             
                     
-                    if statements:
+                    if len(statements) > 0:
                         statement_node = ElementTree.SubElement(control, "part")
                         statement_node.set("name", "statement")
                         statement_node.set("id", f"{id}_smt")
                         logger.debug(f"STATEMENTS TYPE: {type(statements)} with {len(statements)} items.")
-                        if len(statements) == 1 and "" in statements:
+                        if len(statements)  == 1:
                             # Single statement without id
                             logger.debug("Single statement without id detected.")
-                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[""]))
-                        # else:
-                        #     for stmt_id, stmt_content in statements.items():
-                        #         statement_child_node = ElementTree.SubElement(control, "part")
-                        #         statement_child_node.set("name", "item")
-                        #         if stmt_id != "":
-                        #             statement_child_node.set("id", f"{id}_smt")
-                        #         self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(stmt_content))
+                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0]))
+                        else:
+                            for item in statements:
+                                statement_child_node = ElementTree.SubElement(control, "part")
+                                statement_child_node.set("name", "item")
+                                if item.get('id', "") != "":
+                                    statement_child_node.set("id", f"{id}_smt")
+                                self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(item['prose']))
                     
                     if guidance != "":
                         guidance_node = ElementTree.SubElement(control, "guidance")
