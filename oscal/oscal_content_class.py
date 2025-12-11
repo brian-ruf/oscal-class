@@ -1,27 +1,24 @@
 """
-OSCAL Class
+    OSCAL Class
 
-A class for creation, manipulation, validation and format convertion of OSCAL content.
-All published OSCAL versions, formats and models can be validated and converted. 
-Creation and manipulation is OSCAL 1.1.3 compliant.
+    A class for creation, manipulation, validation and format convertion of OSCAL content.
+    All published OSCAL versions, formats and models can be validated and converted. 
+    Creation and manipulation is OSCAL 1.1.3 compliant.
 
-This class ingests XML, JSON or YAML OSCAL content and validates it in its native format
-using the appropriate NIST-published OSCAL schema.
+    This class ingests XML, JSON or YAML OSCAL content and validates it in its native format
+    using the appropriate NIST-published OSCAL schema.
 
-The class converts YAML and JSON to XML for manipulation. New content starts as XML.
+    The class converts YAML and JSON to XML for manipulation. New content starts as XML.
 
-The class can export the content back to any of the three supported formats (XML, JSON, YAML).
+    The class can export the content back to any of the three supported formats (XML, JSON, YAML).
 
-Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
-Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
+    Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
+    Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
 
-Future versions will include direct validation and conversion using the NIST-published OSCAL metaschema.
+    Future versions will include direct validation and conversion using the NIST-published OSCAL metaschema.
 """
 from loguru import logger
-# import re
 import os
-# from elementpath.xpath3 import XPath3Parser
-# from xml.dom import minidom
 import json
 import yaml
 from common.logging import LoggableMixin
@@ -29,7 +26,6 @@ from common.data import detect_data_format, safe_load, safe_load_xml
 from xml.etree import ElementTree
 import elementpath
 from common.lfs import getfile, chkfile, chkdir, putfile, normalize_content
-# from common.xml_formatter import format_xml_string
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
 import uuid
 
@@ -66,10 +62,10 @@ def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPP
 class OSCAL(LoggableMixin):
     """
 
-    Properties:
+        Properties:
 
 
-    Methods:
+        Methods:
 
     """
     def __init__(self, content="", filename="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
@@ -908,6 +904,85 @@ class OSCAL(LoggableMixin):
         else:
             return None
 
+    # -------------------------------------------------------------------------
+    def append_resource(self, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remarks=None):
+        """
+        Appends a resource element to the back-matter section.
+        """
+        return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)        
+
+    # -------------------------------------------------------------------------
+    def add_or_update_profile_import(self, href: str, include_all: bool = False, import_ids =[]):
+        """
+        If an import with the provided href already exists, updates it with the 
+            provided include details.
+        If an import with the provided href does not exist, but an import with an 
+            empty href (href='#'), updates it with the provided href and include details.
+        Otherwise, adds a new import statement with the provided href and include details.
+
+        Parameters:
+        - href (str): The href of the profile to import.
+        - include_all (bool): Whether to include all controls from the imported profile.
+        - import_id (str): An optional id for the import element.
+        """
+        if self.oscal_model != "profile":
+            logger.warning(f"Current model is not a profile. Ignoring add_or_update_profile_import. [{href}]")
+            return False
+
+        import_obj = self.xpath(f"/*/import[@href='{href}']")
+        if import_obj:
+            import_obj = import_obj[0]
+        else:
+            import_obj = self.xpath(f"/*/import[@href='#']")
+            if  import_obj:
+                import_obj = import_obj[0]
+            else:
+                import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
+        
+        if import_obj is None:
+            logger.error(f"Unable to create or update import for href '{href}'.")
+            return False
+
+        if import_obj.get("href", "") != href:
+            import_obj.set("href", href)
+
+        # Remove existing include/include-all elements
+        include_obj = import_obj.find("include-controls")
+        if include_obj is not None:
+            import_obj.remove(include_obj)
+        include_all_obj = import_obj.find("include-all")
+        if include_all_obj is not None:
+            import_obj.remove(include_all_obj)
+
+        # Add new include/include-all elements
+        if include_all:
+            include_obj = ElementTree.SubElement(import_obj, "include-all")
+        elif len(import_ids) > 0:
+            include_obj = ElementTree.SubElement(import_obj, "include-controls")
+            for control_id in import_ids:
+                with_id_obj = ElementTree.SubElement(include_obj, "with-id")
+                with_id_obj.text = control_id
+
+        return True
+    # -------------------------------------------------------------------------
+    def append_profile_with_id(self, href, control_ids=[]):
+        """
+        Appends a profile with-id element to the profile imports.
+        """
+        import_obj = self.xpath(f"/*/import[@href='{href}']")
+        if import_obj:
+            import_obj = import_obj[0]
+            include_obj = import_obj.find("include-controls")
+            if include_obj is None:
+                include_obj = ElementTree.SubElement(import_obj, "include-controls")
+            for control_id in control_ids:
+                with_id_obj = ElementTree.SubElement(include_obj, "with-id")
+                with_id_obj.text = control_id
+        else:
+            logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
+
+        return True
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def get_root_element_name(content: str) -> str:
     """
@@ -1437,8 +1512,228 @@ def create_new_oscal_content(model_name: str, title: str, version: str="", publi
     
     return oscal_object
 
+# -------------------------------------------------------------------------
+def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remkarks=None):
+    """
+    Appends a resource element to the back-matter section.
+    """
+    resource = ElementTree.Element("resource")
+    if uuid is None:
+        uuid = new_uuid()
+    resource.set("uuid", uuid)
+    if title is not None:
+        title_node = ElementTree.SubElement(resource, "title")
+        title_node.text = title
+    if description is not None:
+        desc_node = ElementTree.SubElement(resource, "description")
+        desc_node.text = description
+    for prop in props:
+        prop_node = ElementTree.SubElement(resource, "prop")
+        prop_node.set("name", prop.get("name", ""))
+        prop_node.set("value", prop.get("value", ""))
+        if "ns" in prop:
+            prop_node.set("ns", prop.get("ns", ""))
+        if "class" in prop:
+            prop_node.set("class", prop.get("class", ""))
+        if "group" in prop:
+            prop_node.set("group", prop.get("group", ""))
+    for rlink in rlinks:
+        rlink_node = ElementTree.SubElement(resource, "rlink")
+        rlink_node.set("href", rlink.get("href", ""))
+        if "media-type" in rlink:
+            rlink_node.set("media-type", rlink.get("media-type", ""))
+    if base64 is not None:
+        logger.warning("Base64 content in resource is not yet implemented.")
+        if remarks:
+            remarks_obj = ElementTree.SubElement(resource,"remarks") # Create the description element
+            remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+    back_matter = oscal_obj.xpath("//back-matter")
+
+    if back_matter:
+        back_matter = back_matter[0]
+    else:
+        back_matter = ElementTree.Element("back-matter")
+        oscal_obj.tree.append(back_matter)
+
+    back_matter.append(resource)
+
+    return resource
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# -----------------------------------------------------------------------------
+def append_component(ssp_obj, component_type, component_title, component_description, op_status="operational", component_uuid=None, props=[], links=[], remarks=None):
+    """
+    Adds a "component" to an SSP's system implementation section.
+    """
+    if component_uuid is None:
+        component_uuid = new_uuid()
+
+    try: 
+        component_obj = ElementTree.Element("component") # Create the component element
+        component_obj.set("uuid", component_uuid) # Set the component-uuid attribute
+        component_obj.set("type", component_type) # Set the uuid attribute
+
+        # Description
+        description_obj = ElementTree.Element("description") # Create the description element
+        # paragraph = ElementTree.Element("p")  # Need a p element as description is markup multi-line
+        # paragraph.text = component_description
+        # description.append(paragraph)
+        description_obj.append(oscal_markdown_to_html_tree(component_description))
+        component_obj.append(description_obj)
+
+        # Implementation Status
+        implementation_status = ElementTree.Element("status")
+        implementation_status.set("state", op_status)
+        component_obj.append(implementation_status)
+
+        # TODO: props, links, responsible roles
+
+        # # Responsibe Roles
+        # responsible_roles = ElementTree.Element("responsible-role")
+        # responsible_roles.set("role-id", "isso")
+        # component_obj.append(responsible_roles)
+
+        # # Party UUID
+        # party_uuid = ElementTree.Element("party-uuid")
+        # party_uuid.text = "11111111-2222-4000-8000-004000000008"
+        # responsible_roles.append(party_uuid)
+
+        system_imiplementation_obj = ssp_obj.xpath("//system-implementation")
+        system_imiplementation_obj[0].append(component_obj)
+        logger.debug(f"Adding component: {ElementTree.tostring(component_obj, 'utf-8')}")
+    except (Exception, BaseException) as error:
+        logger.error(f"Error appending component (type={component_type}) {component_title}: " + type(error).__name__ + " - " + str(error))
+        component_obj = None
+
+    return component_obj
+
+# -----------------------------------------------------------------------------
+def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks=None):
+    """
+    Adds an "imiplemented-requirement" to an SSP's control implementation section.
+    """
+
+    try: 
+        logger.debug("setting up imiplemented-requirement")
+        impl_req_uuid = new_uuid()
+        impl_req_obj = ElementTree.Element("implemented-requirement") # Create the component element
+        impl_req_obj.set("uuid", impl_req_uuid) # Set the component-uuid attribute
+        impl_req_obj.set("control-id", control_id) # Set the uuid attribute
+
+        # TODO: props, links, responsible roles
+
+        # Remarks
+        if remarks:
+            logger.debug("Adding remarks")
+            remarks_obj = ElementTree.Element("remarks") # Create the description element
+            remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+            impl_req_obj.append(remarks_obj)
+
+        logger.debug("Fetching control-implementation element.")
+        system_imiplementation_obj = ssp_obj.xpath("//control-implementation")
+        if system_imiplementation_obj is not None:
+            logger.debug("Adding implemented-requirement")
+            system_imiplementation_obj[0].append(impl_req_obj)
+        else:
+            logger.error("Failed to find system-implementation element in SSP.")
+    except (Exception, BaseException) as error:
+        logger.error(f"Error appending implemented-requirement for control: {control_id}: " + type(error).__name__ + " - " + str(error))
+        impl_req_obj = None
+
+    return impl_req_obj
+
+
+
+# -----------------------------------------------------------------------------
+def append_by_component(impl_req_obj, component_uuid, description, by_component_uuid=None, implementation_status="implemented", remarks=None):
+    """
+    Adds a "by-component" statement to an SSP's contrtol response statement.
+
+    """
+    logger.debug("Appending by-component assembly")
+    if by_component_uuid is None:
+        logger.debug("Generating new UUID for by-component")
+        by_component_uuid = new_uuid()
+
+    try:
+        logger.debug("Appending by-component")
+        by_component_obj = ElementTree.Element("by-component") # Create the by-component element
+        by_component_obj.set("component-uuid", component_uuid) # Set the component-uuid attribute
+        by_component_obj.set("uuid", by_component_uuid) # Set the uuid attribute
+
+        logger.debug("Appending by-component description")
+        # Description
+        description_obj = ElementTree.Element("description") # Create the description element
+        description_obj.append(oscal_markdown_to_html_tree(description))
+        by_component_obj.append(description_obj)
+
+        logger.debug("Appending by-component implementation status")
+        # Implementation Status
+        implementation_status_obj = ElementTree.Element("implementation-status")
+        implementation_status_obj.set("state", implementation_status)
+        by_component_obj.append(implementation_status_obj)
+
+        if remarks:
+            logger.debug("Adding remarks")
+            remarks_obj = ElementTree.Element("remarks") # Create the description element
+            remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+            by_component_obj.append(remarks_obj)
+
+        logger.debug("Appending by-component to implemented-requirement")
+        impl_req_obj.append(by_component_obj)
+    except (Exception, BaseException) as error:
+        logger.error("Error appending by-component: " + type(error).__name__ + " - " + str(error))
+        by_component_obj = None
+
+    return by_component_obj
+
+
+# -----------------------------------------------------------------------------
+def append_responsible_role(oscal_obj, role_id, party_uuids=[], remarks=None):
+    """
+    Adds a "responsible-role" statement to an object.
+    """
+    logger.debug("Appending 'responsible-role' implementation status")
+    # Implementation Status
+    resp_role_obj = ElementTree.Element("responsible-role")
+    resp_role_obj.set("role-id", role_id)
+    oscal_obj.append(resp_role_obj)
+
+    for party_uuid in party_uuids:
+        party_uuid_obj = ElementTree.Element("party-uuid")
+        party_uuid_obj.text = party_uuid
+        resp_role_obj.append(party_uuid_obj)
+
+    if remarks:
+        logger.debug("Adding remarks")
+        remarks_obj = ElementTree.Element("remarks") # Create the description element
+        remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+        resp_role_obj.append(remarks_obj)
+
+    return resp_role_obj
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+def serializer(xml_object):
+    """
+    Converts the XML tree object to string, suitable for saving and inspecting.
+    """
+    logger.debug("Serializing for output")
+    if xml_object is not None:
+        ElementTree.indent(xml_object)
+        out_string = ElementTree.tostring(xml_object, 'utf-8')
+        out_string = normalize_content(out_string)
+        out_string = out_string.replace("ns0:", "")
+        out_string = out_string.replace(":ns0", "")
+        # out_string = out_string.decode('utf-8')
+    else:
+        out_string = ""
+
+    return out_string
+# -----------------------------------------------------------------------------
+def new_uuid():
+    return str(uuid.uuid4())
 
 
 if __name__ == '__main__':
