@@ -967,7 +967,7 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     def append_profile_with_id(self, href, control_ids=[]):
         """
-        Appends a profile with-id element to the profile imports.
+        Adds with-id element to a profile's import statement.
         """
         import_obj = self.xpath(f"/*/import[@href='{href}']")
         if import_obj:
