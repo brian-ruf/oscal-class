@@ -21,13 +21,16 @@ from loguru import logger
 import os
 import json
 import yaml
+import uuid
+from typing import Optional
+
 from common.logging import LoggableMixin
 from common.data import detect_data_format, safe_load, safe_load_xml
 from xml.etree import ElementTree
 import elementpath
-from common.lfs import getfile, chkfile, chkdir, putfile, normalize_content
+from common.lfs import getfile, chkdir, putfile, normalize_content, save_json
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
-import uuid
+from .oscal_markdown import oscal_markdown_to_html
 
 INDENT = 2
 
@@ -68,7 +71,7 @@ class OSCAL(LoggableMixin):
         Methods:
 
     """
-    def __init__(self, content="", filename="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
+    def __init__(self, content="", filename="", support_db_conn="", support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
         """
         OSCAL Class Constructor
         Must provide at least one of the following parameters:
@@ -260,11 +263,13 @@ class OSCAL(LoggableMixin):
                 status = putfile(filename, self.xml)
 
             case "json":
-                self.json = self.to_json()
-                status = putfile(filename, self.json)
+                # self.json = self.to_json()
+                logger.warning("JSON saving not yet implemented.")
+                status = save_json(filename, self.dict) # pretty_print=pretty_print)
 
             case "yaml", "yml":
                 self.yaml = self.to_yaml()
+                logger.warning("YAML saving not yet implemented.")
                 status = putfile(filename, self.yaml)
             case _:
                 logger.error(f"Unsupported format for saving: {format}")
@@ -540,12 +545,25 @@ class OSCAL(LoggableMixin):
         - str: The serialized XML content as a string.        
         """
         logger.debug("Serializing the XML tree for text output.")
+        
+        # Check if tree exists
+        if self.tree is None:
+            logger.error("No XML tree available for serialization")
+            return ""
+        
         # Handle both ElementTree and Element objects
-        root = self.tree.getroot() if hasattr(self.tree, 'getroot') else self.tree
-        ElementTree.indent(root, space=" "* INDENT)
+        if isinstance(self.tree, ElementTree.ElementTree):
+            root = self.tree.getroot()
+        else:
+            root = self.tree  # Already an Element
+        
+        # Additional safety check
+        if root is None:
+            logger.error("No root element available for serialization")
+            return ""
 
+        ElementTree.indent(root, space=" "* INDENT)
         out_string = ElementTree.tostring(root, 'utf-8')
-        # logger.debug("LEN: " + str(len(out_string)))
         out_string = normalize_content(out_string)
         out_string = out_string.replace("ns0:", "")
         out_string = out_string.replace(":ns0", "")
@@ -578,55 +596,56 @@ class OSCAL(LoggableMixin):
         
         return out_string
     # -------------------------------------------------------------------------
-    def lookup(self, xExpr: str, attributes: list=[], children: list=[]):
-        """
-        Checks for the existence of an element basedon an xpath expression.
-        Returns a dict containing any of the following if available: id, uuid, title
-        If aditional attributes or children are specified in the function call
-        and found to be present, they are included in the dict as well. 
-        Parameters:
-        - xExpr (str): xpath expression. This should always evaluate to 0 or 1 nodes
-        - attributes(list)[Optional]: a list of additional attributes to return
-        - children(list)[Optional]: a list of additional children to return
+    # def lookup(self, xExpr: str, attributes: list=[], children: list=[]):
+    #     """
+    #     Checks for the existence of an element basedon an xpath expression.
+    #     Returns a dict containing any of the following if available: id, uuid, title
+    #     If aditional attributes or children are specified in the function call
+    #     and found to be present, they are included in the dict as well. 
+    #     Parameters:
+    #     - xExpr (str): xpath expression. This should always evaluate to 0 or 1 nodes
+    #     - attributes(list)[Optional]: a list of additional attributes to return
+    #     - children(list)[Optional]: a list of additional children to return
 
-        Return:
-        - dict or None
-        dict = {
-           {'attribute/field name', 'value'},
-           {'attribute/field name', 'value'}        
-        }
-        """
-        ret_value = None
-        target_node = self.xpath(xExpr)
-        if target_node:
-            ret_value = {}
-            if 'id' in target_node.attrib:
-                ret_value.append({"id", target_node.get("id")})
-            if 'uuid' in target_node.attrib:
-                ret_value.append({"uuid", target_node.get("uuid")})
+    #     Return:
+    #     - dict or None
+    #     dict = {
+    #        {'attribute/field name', 'value'},
+    #        {'attribute/field name', 'value'}        
+    #     }
+    #     """
+    #     ret_value = None
+    #     target_node = self.xpath(xExpr)
+    #     if target_node:
+    #         ret_value = {}
+    #         if 'id' in target_node.attrib:
+    #             ret_value.append({"id", target_node.get("id")})
+    #         if 'uuid' in target_node.attrib:
+    #             ret_value.append({"uuid", target_node.get("uuid")})
 
-            # Use elementpath for reliable XPath processing
-            title_nodes = elementpath.select(target_node, './title', namespaces=self.nsmap)
-            title = title_nodes[0] if title_nodes else None
-            if title:
-                ret_value.append({"title", title.text})
+    #         # Use elementpath for reliable XPath processing
+    #         title_nodes = elementpath.select(target_node, './title', namespaces=self.nsmap)
+    #         title = title_nodes[0] if title_nodes else None
+    #         if title:
+    #             ret_value.append({"title", title.text})
 
-            for attribute in attributes:
-                ret_value.append({attribute, target_node.get(attribute)})
+    #         for attribute in attributes:
+    #             ret_value.append({attribute, target_node.get(attribute)})
 
-            for child in children:
-                # Use elementpath for reliable XPath processing
-                child_nodes = elementpath.select(target_node, './' + child, namespaces=self.nsmap)
-                child_node = child_nodes[0] if child_nodes else None
-                if child_node:
-                    ret_value.append({child, child_node.text})
+    #         for child in children:
+    #             # Use elementpath for reliable XPath processing
+    #             child_nodes = elementpath.select(target_node, './' + child, namespaces=self.nsmap)
+    #             child_node = child_nodes[0] if child_nodes else None
+    #             if child_node:
+    #                 ret_value.append({child, child_node.text})
 
 
-        return ret_value
+    #     return ret_value
     # -------------------------------------------------------------------------
     def assign_html_string_to_node(self, parent_node, html_string: str):
         """
         Assigns an HTML string to an XML node, converting it to proper XML structure.
+        This properly handles mixed content (text + elements).
         Parameters:
         - parent_node (ElementTree.Element): The parent XML node to which the HTML content will be added.
         - html_string (str): The HTML string to convert and assign.
@@ -634,16 +653,25 @@ class OSCAL(LoggableMixin):
         try:
             # Wrap the HTML string in a temporary root element
             wrapped_html = f"<div>{html_string}</div>"
-            temp_tree = ElementTree.ElementTree(ElementTree.fromstring(wrapped_html))
-            temp_root = temp_tree.getroot()
+            temp_root = ElementTree.fromstring(wrapped_html)
 
-            # Append each child of the temporary root to the parent node
+            # Handle mixed content properly
+            # First, add any initial text content
+            if temp_root.text:
+                if parent_node.text is None:
+                    parent_node.text = temp_root.text
+                else:
+                    parent_node.text += temp_root.text
+
+            # Then append each child element with its tail text
             for child in temp_root:
                 parent_node.append(child)
+                # The tail text is automatically preserved when appending
 
             logger.debug("HTML string successfully assigned to node.")
         except Exception as error:
             logger.error(f"Error assigning HTML string to node: {type(error).__name__} - {str(error)}")
+            logger.error("HTML String: " + html_string)
     # -------------------------------------------------------------------------
     def create_control(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", statements=[], guidance="", example="", objectives=[], objects=[], methods=[], remarks=""):
         """
@@ -664,6 +692,7 @@ class OSCAL(LoggableMixin):
         - remarks (str): The remarks of the new control. 
         """
         status = False
+        control = None
         if self.oscal_model == "catalog":
             try:
                 parent_xpath = f"//group[@id='{parent_id}']"
@@ -671,7 +700,6 @@ class OSCAL(LoggableMixin):
 
                 # Use elementpath for reliable XPath processing
                 parent_nodes = self.xpath(parent_xpath)
-                logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
                 parent_node = parent_nodes[0] if parent_nodes else None
                 if parent_node is not None:
                     logger.debug("TAG: " + parent_node.tag)
@@ -707,26 +735,10 @@ class OSCAL(LoggableMixin):
                         param_node = ElementTree.SubElement(control, "param")
                         param_node.set("id", param)
                     
-                    if len(props) > 0:
-                        for prop in props:
-                            logger.debug(f"Adding prop: {prop}")
-                            prop_node = ElementTree.SubElement(control, "prop")
-                            prop_node.set("name", prop['name'])
-                            prop_node.set("value", prop['value'])
-                            if 'class' in prop:
-                                prop_node.set("class", prop.get('class', ''))
-                            if 'group' in prop:
-                                prop_node.set("group", prop.get('group', ''))
-                            if 'ns' in prop:
-                                prop_node.set("ns", prop.get('ns', ''))
-                            if 'remarks' in prop:
-                                remarks_node = ElementTree.SubElement(prop_node, "remarks")
-                                self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(prop.get('remarks', '')))
-                        # control.append(prop_node)
                     
-                    for link in links:
-                        link_node = ElementTree.SubElement(control, "link")
-                        link_node.text = link
+                    append_props(control, props)
+                    
+                    append_links(control, links)
                     
                     if overview != "":
                         overview_node = ElementTree.SubElement(control, "part")
@@ -779,7 +791,7 @@ class OSCAL(LoggableMixin):
         return control
 
     # -------------------------------------------------------------------------
-    def create_control_group(self, parent_id, id, title="", params={}, props={}, links={}, label="", sort_id="", alt_identifier="", overview="", instruction="", remarks=""):
+    def create_control_group(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", instruction="", remarks=""):
         """
         Creates a new catalog group.
         Parameters:
@@ -798,6 +810,7 @@ class OSCAL(LoggableMixin):
         - remarks (str): The remarks of the new group. 
         """
         status = False
+        group = None
         if parent_id == "":
             parent_id = "[root]"
         if self.oscal_model == "catalog":
@@ -811,9 +824,10 @@ class OSCAL(LoggableMixin):
 
                 # Use elementpath for reliable XPath processing
                 parent_nodes = self.xpath(parent_xpath)
-                logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
-                parent_node = parent_nodes[0] if parent_nodes else None
-                if parent_node is not None:
+                if parent_nodes is not None:
+                    logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
+                    parent_node = parent_nodes[0] # if parent_nodes else None
+
                     logger.debug("TAG: " + parent_node.tag)
                     group = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}group")
                     group.set("id", id)
@@ -836,6 +850,10 @@ class OSCAL(LoggableMixin):
                         alt_id_node = ElementTree.SubElement(group, "prop")
                         alt_id_node.set("name", "alt-identifier")
                         alt_id_node.set("value", alt_identifier)
+
+                    append_props(group, props)
+
+                    append_links(group, links)
 
                     if overview != "":
                         overview_node = ElementTree.SubElement(group, "part")
@@ -873,6 +891,7 @@ class OSCAL(LoggableMixin):
     def append_child(self, xpath, node_name, node_content = None, attribute_list = []):
         # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
         status = False
+        child = None
         try:
             logger.debug("Fetching parent at " + xpath)
             # Use elementpath for reliable XPath processing
@@ -885,7 +904,7 @@ class OSCAL(LoggableMixin):
                 child = ElementTree.Element(node_name)
 
                 logger.debug("SETTING CONTENT")
-                if node_content is str:
+                if isinstance(node_content, str):
                     child.text = node_content
 
                 logger.debug("SETTING ATTRIBUTES")
@@ -905,14 +924,14 @@ class OSCAL(LoggableMixin):
             return None
 
     # -------------------------------------------------------------------------
-    def append_resource(self, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remarks=None):
+    def append_resource(self, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remarks=""):
         """
         Appends a resource element to the back-matter section.
         """
         return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)        
 
     # -------------------------------------------------------------------------
-    def add_or_update_profile_import(self, href: str, include_all: bool = False, import_ids =[]):
+    def add_or_update_profile_import(self, href: str, include_all: bool = False, include_ids =[], include_with_child = False, exclude_ids =[], exclude_with_child = False):
         """
         If an import with the provided href already exists, updates it with the 
             provided include details.
@@ -925,42 +944,73 @@ class OSCAL(LoggableMixin):
         - include_all (bool): Whether to include all controls from the imported profile.
         - import_id (str): An optional id for the import element.
         """
+        logger.debug(f"Adding or updating profile import for href '{href}' with include_all={include_all} and import_ids={include_ids}")
+        # if this isn't a profile, log warning and exit function
         if self.oscal_model != "profile":
             logger.warning(f"Current model is not a profile. Ignoring add_or_update_profile_import. [{href}]")
             return False
 
+        # Find existing import by href. If it doesn't exist, look for empty href.
+        # NOTE: This library's new/empty profile includes an import with href='#' by default.
+        # If neither is found, create a new import element.
         import_obj = self.xpath(f"/*/import[@href='{href}']")
         if import_obj:
+            logger.debug(f"Found existing import for href '{href}'. Updating it.")
             import_obj = import_obj[0]
         else:
-            import_obj = self.xpath(f"/*/import[@href='#']")
+            import_obj = self.xpath("/*/import[@href='#']")
             if  import_obj:
+                logger.debug(f"Found existing import with empty href. Updating it to '{href}'.")
                 import_obj = import_obj[0]
             else:
+                logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
                 import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
         
+        # If unable to find nor create an import element, log error and exit function
         if import_obj is None:
             logger.error(f"Unable to create or update import for href '{href}'.")
             return False
 
+        # Set the href attribute if needed
         if import_obj.get("href", "") != href:
+            logger.debug(f"Setting import href to '{href}'.")
             import_obj.set("href", href)
 
         # Remove existing include/include-all elements
         include_obj = import_obj.find("include-controls")
         if include_obj is not None:
+            logger.debug("Removing existing include-controls element")
             import_obj.remove(include_obj)
+
+        # If include-all is specified and present, leave it.
+        # If include-all is not specified but present, remove it.
+        # If include-all is specified but not present, add it.
         include_all_obj = import_obj.find("include-all")
-        if include_all_obj is not None:
+        if include_all and include_all_obj:
+            logger.debug("Include-all already present.")
+        elif not include_all and include_all_obj:
+            logger.debug("Removing existing include-all element")
             import_obj.remove(include_all_obj)
+        elif include_all and not include_all_obj:
+            logger.debug("Adding include-all element.")
+            include_obj = ElementTree.SubElement(import_obj, "include-all")
 
         # Add new include/include-all elements
-        if include_all:
-            include_obj = ElementTree.SubElement(import_obj, "include-all")
-        elif len(import_ids) > 0:
+        if not include_all and len(include_ids) > 0:
             include_obj = ElementTree.SubElement(import_obj, "include-controls")
-            for control_id in import_ids:
+            if include_with_child:
+                include_obj.set("with-child-controls", "yes")
+            for control_id in include_ids:
                 with_id_obj = ElementTree.SubElement(include_obj, "with-id")
+                with_id_obj.text = control_id
+
+        # Add new include/include-all elements
+        if include_all and len(exclude_ids) > 0:
+            exclude_obj = ElementTree.SubElement(import_obj, "exclude-controls")
+            if exclude_with_child:
+                exclude_obj.set("with-child-controls", "yes")
+            for control_id in include_ids:
+                with_id_obj = ElementTree.SubElement(exclude_obj, "with-id")
                 with_id_obj.text = control_id
 
         return True
@@ -1005,6 +1055,74 @@ def get_root_element_name(content: str) -> str:
     return root_name
 
 # -------------------------------------------------------------------------
+def append_props(parent_node, props: list):
+    """
+    Appends multiple property elements to the provided parent XML node.
+    Parameters:
+    - parent_node (ElementTree.Element): The parent XML node to which the properties will be added.
+    - props (list): A list of dictionaries, each containing property attributes and optional remarks.
+    """
+    for prop in props:
+        append_prop(parent_node, prop)
+# -------------------------------------------------------------------------
+def append_prop(parent_node, prop: dict):
+    """
+    Appends a property element to the provided parent XML node.
+    Parameters:
+    - parent_node (ElementTree.Element): The parent XML node to which the property will be added.
+    - prop (dict): A dictionary containing property attributes and optional remarks.
+    """
+    prop_node = ElementTree.SubElement(parent_node, "prop")
+    prop_node.set("name", prop['name'])
+    prop_node.set("value", prop['value'])
+    if 'class' in prop:
+        prop_node.set("class", prop.get('class', ''))
+    if 'group' in prop:
+        prop_node.set("group", prop.get('group', ''))
+    if 'ns' in prop:
+        prop_node.set("ns", prop.get('ns', ''))
+    if 'remarks' in prop:
+        remarks_node = ElementTree.SubElement(prop_node, "remarks")
+        remarks_html = oscal_markdown_to_html(prop.get('remarks', ''))
+        if remarks_html:
+            try:
+                wrapped_html = f"<div>{remarks_html}</div>"
+                temp_root = ElementTree.fromstring(wrapped_html)  # Use fromstring directly
+                for child in temp_root:
+                    remarks_node.append(child)
+            except ElementTree.ParseError as e:
+                logger.error(f"Error parsing remarks HTML: {e}")
+                remarks_node.text = prop.get('remarks', '')
+# -----------------------------------------------------------------------------
+def append_links(parent_node, links: list):
+    """
+    Appends multiple link elements to the provided parent XML node.
+    Parameters:
+    - parent_node (ElementTree.Element): The parent XML node to which the links will be added.
+    - links (list): A list of link URLs as strings.
+    """
+    for link in links:
+        append_link(parent_node, link)
+# -----------------------------------------------------------------------------
+def append_link(parent_node, link: dict):
+    """
+    Appends a link element to the provided parent XML node.
+    Parameters:
+    - parent_node (ElementTree.Element): The parent XML node to which the link will be added.
+    - link (dict): A dictionary containing link attributes.
+    """
+    link_node = ElementTree.SubElement(parent_node, "link")
+    link_node.text = link['href']
+    if 'rel' in link:
+        link_node.set("rel", link.get('rel', ''))
+    if 'media-type' in link:
+        link_node.set("media-type", link.get('media-type', ''))
+    if 'resource-fragment' in link:
+        link_node.set("resource-fragment", link.get('resource-fragment', ''))
+    if 'text' in link:
+        text_node = ElementTree.SubElement(link_node, "text")
+        text_node.text = link.get('text', '')
+# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
     """
@@ -1044,209 +1162,391 @@ def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ
     except Exception as error:
         logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
     return ret_value
-
-# -------------------------------------------------------------------------
-def oscal_markdown_to_html(markdown_text: str, multiline: bool = True) -> str:
+# -----------------------------------------------------------------------------
+def oscal_markdown_to_html_tree(markdown_text: str):
     """
-    Converts OSCAL markup-line or markup-multiline formatted markdown to HTML.
-    
-    This function handles the specific markdown subset defined in the NIST Metaschema
-    specification for OSCAL markup-line and markup-multiline data types.
-    
+    Callls oscal_markdown_to_html, which Formats markdown text into HTML
+    consistent with the OSCAL XML specification for markup-multiline. 
+
+    Converts the resulting string into an XML object suitable for appending 
+    into a a parent XML object.
+
     Args:
-        markdown_text (str): The markdown text to convert
-        multiline (bool): If True, handles markup-multiline (supports block elements).
-                         If False, handles markup-line (inline elements only).
+    markdown_text (str): The markdown text to convert
+    multiline (bool): If True, handles markup-multiline (supports block elements).
+                        If False, handles markup-line (inline elements only).
     
     Returns:
-        str: HTML representation of the markdown text
-    
-    References:
-        https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline 
-        https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
+        obj: ElementTree XML object
     """
-    import re
-    
-    if not markdown_text:
-        return ""
-    
-    # Store escaped characters temporarily
-    escape_map = {
-        '\\*': '___ESCAPED_ASTERISK___',
-        '\\`': '___ESCAPED_BACKTICK___',
-        '\\~': '___ESCAPED_TILDE___',
-        '\\^': '___ESCAPED_CARET___',
-        '\\_': '___ESCAPED_UNDERSCORE___',
-        '\\[': '___ESCAPED_LEFT_BRACKET___',
-        '\\]': '___ESCAPED_RIGHT_BRACKET___',
-        '\\{': '___ESCAPED_LEFT_BRACE___',
-        '\\}': '___ESCAPED_RIGHT_BRACE___',
-        '\\\\': '___ESCAPED_BACKSLASH___'
-    }
-    
-    html = markdown_text
-    for escaped, placeholder in escape_map.items():
-        html = html.replace(escaped, placeholder)
-    
-    # Handle OSCAL parameter insertion syntax: {{ insert: param, pm-9_prm_1 }}
-    def replace_param_insertion(match):
-        parts = [p.strip() for p in match.group(1).split(',')]
-        if len(parts) >= 2:
-            insert_type = parts[0].replace('insert:', '').strip()
-            id_ref = parts[1].strip()
-            return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
-        return match.group(0)
-    
-    html = re.sub(r'\{\{\s*([^}]+)\s*\}\}', replace_param_insertion, html)
-    
-    # For markup-line, only apply inline formatting
-    if not multiline:
-        # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
-        html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
-                      lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}"' + 
-                               (f' title="{m.group(3)}"' if m.group(3) else '') + '/>', html)
-        
-        # Links: [text](url "title") -> <a href="url" title="title">text</a>  
-        html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
-                      lambda m: f'<a href="{m.group(2)}"' + 
-                               (f' title="{m.group(3)}"' if m.group(3) else '') + 
-                               f'>{m.group(1)}</a>', html)
-        
-        # Strong emphasis (bold) - **text** -> <strong>text</strong>
-        html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
-        
-        # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
-        html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
-        
-        # Inline code - `text` -> <code>text</code>
-        html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
-        
-        # Superscript - ^text^ -> <sup>text</sup>
-        html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
-        
-        # Subscript - ~text~ -> <sub>text</sub>
-        html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
+    html_str = oscal_markdown_to_html(markdown_text)
+    if html_str:
+        return ElementTree.fromstring(html_str.encode('utf_8'))
     else:
-        # Handle block-level elements (only for markup-multiline)
-        lines = html.split('\n')
-        result = []
-        i = 0
+        return None
+# -------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------
+# def oscal_markdown_to_html(markdown_text: str, multiline: bool = True) -> str:
+#     """
+#     Converts OSCAL markup-line or markup-multiline formatted markdown to HTML.
+    
+#     This function handles the specific markdown subset defined in the NIST Metaschema
+#     specification for OSCAL markup-line and markup-multiline data types.
+    
+#     Args:
+#         markdown_text (str): The markdown text to convert
+#         multiline (bool): If True, handles markup-multiline (supports block elements).
+#                          If False, handles markup-line (inline elements only).
+    
+#     Returns:
+#         str: HTML representation of the markdown text
+    
+#     References:
+#         https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline 
+#         https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
+#     """
+#     import re
+    
+#     if not markdown_text:
+#         return ""
+    
+#     # Store escaped characters temporarily (per OSCAL specification)
+#     escape_map = {
+#         '\\*': '§§§ESC§ASTERISK§§§',
+#         '\\`': '§§§ESC§BACKTICK§§§',
+#         '\\~': '§§§ESC§TILDE§§§',
+#         '\\^': '§§§ESC§CARET§§§',
+#         '\\_': '§§§ESC§UNDERSCORE§§§',
+#         '\\[': '§§§ESC§LEFT§BRACKET§§§',
+#         '\\]': '§§§ESC§RIGHT§BRACKET§§§',
+#         '\\{': '§§§ESC§LEFT§BRACE§§§',
+#         '\\}': '§§§ESC§RIGHT§BRACE§§§',
+#         '\\"': '§§§ESC§DOUBLE§QUOTE§§§',
+#         "\\'": '§§§ESC§SINGLE§QUOTE§§§',
+#         '\\\\': '§§§ESC§BACKSLASH§§§'
+#     }
+    
+#     html = markdown_text
+#     for escaped, placeholder in escape_map.items():
+#         html = html.replace(escaped, placeholder)
+    
+#     # Handle OSCAL parameter insertion syntax FIRST: {{ insert: param, pm-9_prm_1 }}
+#     def replace_param_insertion(match):
+#         parts = [p.strip() for p in match.group(1).split(',')]
+#         if len(parts) >= 2:
+#             insert_type = parts[0].replace('insert:', '').strip()
+#             id_ref = parts[1].strip()
+#             # Protect underscores in id_ref from being processed as emphasis  
+#             protected_id_ref = id_ref.replace('_', '❖UNDERSCORE❖')
+#             # Use a safe placeholder that won't conflict with any formatting patterns
+#             return f'§§§INSERT§PLACEHOLDER§{insert_type}§{protected_id_ref}§§§'
+#         return match.group(0)
+    
+#     html = re.sub(r'\{\{\s*([^}]+)\s*\}\}', replace_param_insertion, html)
+    
+#     # Encode ampersands first (but not < and > yet, as they interfere with link processing)
+#     html = html.replace('&', '&amp;')
+    
+#     # For markup-line, only apply inline formatting
+#     if not multiline:
+#         # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
+#         html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
+#                       lambda m: f'<img alt=§§§QUOTE§§§{m.group(1)}§§§QUOTE§§§ src=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
+#                                (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + '/>', html)
         
-        while i < len(lines):
-            line = lines[i].strip()
+#         # Links: [text](url "title") -> <a href="url" title="title">text</a>  
+#         html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
+#                       lambda m: f'<a href=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
+#                                (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + 
+#                                f'>{m.group(1)}</a>', html)
+        
+#         # Strong emphasis (bold) - **text** or __text__ -> <strong>text</strong>
+#         html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
+#         html = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', html)
+        
+#         # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
+#         html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
+        
+#         # Emphasis (italic) - _text_ -> <em>text</em> (avoid matching __)
+#         html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<em>\1</em>', html)
+        
+#         # Quoted text - "text" -> <q>text</q> (per OSCAL spec)
+#         html = re.sub(r'"([^"]+)"', r'<q>\1</q>', html)
+        
+#         # Inline code - `text` -> <code>text</code>
+#         html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+        
+#         # Superscript - ^text^ -> <sup>text</sup>
+#         html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
+        
+#         # Subscript - ~text~ -> <sub>text</sub>
+#         html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
+        
+#         # Restore escaped characters for markup-line
+#         reverse_escape_map = {
+#             '§§§ESC§ASTERISK§§§': '*',
+#             '§§§ESC§BACKTICK§§§': '`',
+#             '§§§ESC§TILDE§§§': '~',
+#             '§§§ESC§CARET§§§': '^',
+#             '§§§ESC§UNDERSCORE§§§': '_',
+#             '§§§ESC§LEFT§BRACKET§§§': '[',
+#             '§§§ESC§RIGHT§BRACKET§§§': ']',
+#             '§§§ESC§LEFT§BRACE§§§': '{',
+#             '§§§ESC§RIGHT§BRACE§§§': '}',
+#             '§§§ESC§DOUBLE§QUOTE§§§': '"',
+#             '§§§ESC§SINGLE§QUOTE§§§': "'",
+#             '§§§ESC§BACKSLASH§§§': '\\'
+#         }
+        
+#         for placeholder, original in reverse_escape_map.items():
+#             html = html.replace(placeholder, original)
+        
+#         # Restore parameter insertion placeholders
+#         def restore_param_insertion(match):
+#             insert_type = match.group(1)
+#             id_ref = match.group(2).replace('❖UNDERSCORE❖', '_')
+#             return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
+        
+#         html = re.sub(r'§§§INSERT§PLACEHOLDER§([^§]+)§([^§]+)§§§', 
+#                       restore_param_insertion, html)
+        
+#         # Restore quotes in HTML attributes
+#         html = html.replace('§§§QUOTE§§§', '"')
+        
+#         # Encode remaining HTML entities (< and > for text content, not HTML tags)
+#         # We need to be careful not to encode the HTML tags we just created
+#         # So we'll protect HTML tags first
+#         html = re.sub(r'<(/?\w+(?:\s+[^>]*)?)>', r'§§§HTML§TAG§\1§§§', html)
+#         html = html.replace('<', '&lt;')
+#         html = html.replace('>', '&gt;')
+#         html = re.sub(r'§§§HTML§TAG§([^§]+)§§§', r'<\1>', html)
+        
+#         return html
+#     else:
+#         # Handle block-level elements (only for markup-multiline)
+#         lines = html.split('\n')
+#         result = []
+#         i = 0
+        
+#         # If it's a single line without block-level elements, apply inline formatting only
+#         if (len(lines) == 1 and 
+#             not lines[0].strip().startswith(('#', '>', '|', '```')) and
+#             not re.match(r'^\d+\.', lines[0].strip()) and
+#             not (lines[0].strip().startswith('-') or lines[0].strip().startswith('*')) and
+#             '|' not in lines[0]):
+#             # Just apply inline formatting without paragraph wrapping
+#             html = lines[0]
+#             # Apply inline formatting (same as non-multiline mode)
+#             # Images FIRST (to avoid conflict with links)
+#             html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
+#                           lambda m: f'<img alt=§§§QUOTE§§§{m.group(1)}§§§QUOTE§§§ src=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
+#                                    (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + '/>', html)
             
-            if not line:
-                i += 1
-                continue
+#             # Links
+#             html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
+#                           lambda m: f'<a href=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
+#                                    (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + 
+#                                    f'>{m.group(1)}</a>', html)
             
-            # Headers - # text -> <h1>text</h1> (and so on)
-            if line.startswith('#'):
-                level = len(line) - len(line.lstrip('#'))
-                if 1 <= level <= 6:
-                    header_text = line[level:].strip()
-                    result.append(f'<h{level}>{header_text}</h{level}>')
-                    i += 1
-                    continue
+#             # Strong emphasis (bold) - **text** or __text__ -> <strong>text</strong>
+#             html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
+#             html = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', html)
             
-            # Code blocks - ```text``` -> <pre>text</pre>
-            if line == '```':
-                code_lines = []
-                i += 1
-                while i < len(lines) and lines[i].strip() != '```':
-                    code_lines.append(lines[i])
-                    i += 1
-                if i < len(lines):  # Skip closing ```
-                    i += 1
-                result.append(f'<pre>{"\n".join(code_lines)}</pre>')
-                continue
+#             # Emphasis (italic) - *text*
+#             html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
             
-            # Tables
-            if '|' in line:
-                table_lines = [line]
-                j = i + 1
-                # Collect all consecutive table lines
-                while j < len(lines) and '|' in lines[j].strip():
-                    table_lines.append(lines[j].strip())
-                    j += 1
+#             # Emphasis (italic) - _text_
+#             html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<em>\1</em>', html)
+            
+#             # Quoted text - "text" -> <q>text</q> (per OSCAL spec)
+#             html = re.sub(r'"([^"]+)"', r'<q>\1</q>', html)
+            
+#             # Inline code
+#             html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+            
+#             # Superscript
+#             html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
+            
+#             # Subscript
+#             html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
+            
+#             # Restore escaped characters for single-line within multiline
+#             reverse_escape_map = {
+#                 '§§§ESC§ASTERISK§§§': '*',
+#                 '§§§ESC§BACKTICK§§§': '`',
+#                 '§§§ESC§TILDE§§§': '~',
+#                 '§§§ESC§CARET§§§': '^',
+#                 '§§§ESC§UNDERSCORE§§§': '_',
+#                 '§§§ESC§LEFT§BRACKET§§§': '[',
+#                 '§§§ESC§RIGHT§BRACKET§§§': ']',
+#                 '§§§ESC§LEFT§BRACE§§§': '{',
+#                 '§§§ESC§RIGHT§BRACE§§§': '}',
+#                 '§§§ESC§DOUBLE§QUOTE§§§': '"',
+#                 '§§§ESC§SINGLE§QUOTE§§§': "'",
+#                 '§§§ESC§BACKSLASH§§§': '\\'
+#             }
+            
+#             for placeholder, original in reverse_escape_map.items():
+#                 html = html.replace(placeholder, original)
+            
+#             # Restore parameter insertion placeholders
+#             def restore_param_insertion(match):
+#                 insert_type = match.group(1)
+#                 id_ref = match.group(2).replace('❖UNDERSCORE❖', '_')
+#                 return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
+            
+#             html = re.sub(r'§§§INSERT§PLACEHOLDER§([^§]+)§([^§]+)§§§', 
+#                           restore_param_insertion, html)
+            
+#             # Restore quotes in HTML attributes
+#             html = html.replace('§§§QUOTE§§§', '"')
+            
+#             # Encode remaining HTML entities (< and > for text content, not HTML tags)
+#             html = re.sub(r'<(/?\w+(?:\s+[^>]*)?)>', r'§§§HTML§TAG§\1§§§', html)
+#             html = html.replace('<', '&lt;')
+#             html = html.replace('>', '&gt;')
+#             html = re.sub(r'§§§HTML§TAG§([^§]+)§§§', r'<\1>', html)
+            
+#             return html
+
+#         else:
+#             # Multi-line processing for actual block content
+#             while i < len(lines):
+#                 line = lines[i].strip()
                 
-                if len(table_lines) >= 2:  # At least header and separator
-                    table_html = _format_table_helper(table_lines)
-                    result.append(table_html)
-                    i = j
-                    continue
+#                 if not line:
+#                     i += 1
+#                     continue
+                
+#                 # Headers - # text -> <h1>text</h1> (and so on)
+#                 if line.startswith('#'):
+#                     level = len(line) - len(line.lstrip('#'))
+#                     if 1 <= level <= 6:
+#                         header_text = line[level:].strip()
+#                         result.append(f'<h{level}>{header_text}</h{level}>')
+#                         i += 1
+#                         continue
             
-            # Blockquotes - > text -> <blockquote>text</blockquote>
-            if line.startswith('>'):
-                quote_text = line[1:].strip()
-                result.append(f'<blockquote>{quote_text}</blockquote>')
-                i += 1
-                continue
+#                 # Code blocks - ```text``` -> <pre>text</pre>
+#                 if line == '```':
+#                     code_lines = []
+#                     i += 1
+#                     while i < len(lines) and lines[i].strip() != '```':
+#                         code_lines.append(lines[i])
+#                         i += 1
+#                     if i < len(lines):  # Skip closing ```
+#                         i += 1
+#                     result.append(f'<pre>{"\n".join(code_lines)}</pre>')
+#                     continue
             
-            # Lists - unordered
-            if line.startswith('-') or line.startswith('*'):
-                list_item = line[1:].strip()
-                result.append(f'<ul><li>{list_item}</li></ul>')
-                i += 1
-                continue
+#                 # Tables (per OSCAL specification)
+#                 if '|' in line and line.strip().startswith('|'):
+#                     table_lines = [line]
+#                     j = i + 1
+#                     # Collect all consecutive table lines
+#                     while j < len(lines) and lines[j].strip() and '|' in lines[j].strip():
+#                         table_lines.append(lines[j].strip())
+#                         j += 1
+                    
+#                     if len(table_lines) >= 2:  # At least header and separator
+#                         table_html = _format_table_helper(table_lines)
+#                         result.append(table_html)
+#                         i = j
+#                         continue
             
-            # Lists - ordered
-            if re.match(r'^\d+\.', line):
-                list_item = re.sub(r'^\d+\.\s*', '', line)
-                result.append(f'<ol><li>{list_item}</li></ol>')
-                i += 1
-                continue
+#                 # Blockquotes - > text -> <blockquote>text</blockquote>
+#                 if line.startswith('>'):
+#                     quote_text = line[1:].strip()
+#                     result.append(f'<blockquote>{quote_text}</blockquote>')
+#                     i += 1
+#                     continue
+                
+#                 # Lists - unordered
+#                 if line.startswith('-') or line.startswith('*'):
+#                     list_item = line[1:].strip()
+#                     result.append(f'<ul><li>{list_item}</li></ul>')
+#                     i += 1
+#                     continue
+                
+#                 # Lists - ordered
+#                 if re.match(r'^\d+\.', line):
+#                     list_item = re.sub(r'^\d+\.\s*', '', line)
+#                     result.append(f'<ol><li>{list_item}</li></ol>')
+#                     i += 1
+#                     continue
+                
+#                 # Regular paragraph
+#                 result.append(f'<p>{line}</p>')
+#                 i += 1
             
-            # Regular paragraph
-            result.append(f'<p>{line}</p>')
-            i += 1
+#             html = '\n'.join(result)
         
-        html = '\n'.join(result)
+#         html = '\n'.join(result)
         
-        # Now apply inline formatting to the result
-        # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
-        html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
-                      lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}"' + 
-                               (f' title="{m.group(3)}"' if m.group(3) else '') + '/>', html)
+#         # Now apply inline formatting to the result
+#         # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
+#         html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
+#                       lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}"' + 
+#                                (f' title="{m.group(3)}"' if m.group(3) else '') + '/>', html)
         
-        # Links: [text](url "title") -> <a href="url" title="title">text</a>  
-        html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
-                      lambda m: f'<a href="{m.group(2)}"' + 
-                               (f' title="{m.group(3)}"' if m.group(3) else '') + 
-                               f'>{m.group(1)}</a>', html)
+#         # Links: [text](url "title") -> <a href="url" title="title">text</a>  
+#         html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
+#                       lambda m: f'<a href="{m.group(2)}"' + 
+#                                (f' title="{m.group(3)}"' if m.group(3) else '') + 
+#                                f'>{m.group(1)}</a>', html)
         
-        # Strong emphasis (bold) - **text** -> <strong>text</strong>
-        html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
+#         # Strong emphasis (bold) - **text** or __text__ -> <strong>text</strong>
+#         html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
+#         html = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', html)
         
-        # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
-        html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
+#         # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
+#         html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
         
-        # Inline code - `text` -> <code>text</code>
-        html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+#         # Emphasis (italic) - _text_ -> <em>text</em> (avoid matching __)
+#         html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<em>\1</em>', html)
         
-        # Superscript - ^text^ -> <sup>text</sup>
-        html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
+#         # Quoted text - "text" -> <q>text</q> (per OSCAL spec)
+#         html = re.sub(r'"([^"]+)"', r'<q>\1</q>', html)
         
-        # Subscript - ~text~ -> <sub>text</sub>
-        html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
+#         # Inline code - `text` -> <code>text</code>
+#         html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+        
+#         # Superscript - ^text^ -> <sup>text</sup>
+#         html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
+        
+#         # Subscript - ~text~ -> <sub>text</sub>
+#         html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
     
-    # Restore escaped characters
-    reverse_escape_map = {
-        '___ESCAPED_ASTERISK___': '*',
-        '___ESCAPED_BACKTICK___': '`',
-        '___ESCAPED_TILDE___': '~',
-        '___ESCAPED_CARET___': '^',
-        '___ESCAPED_UNDERSCORE___': '_',
-        '___ESCAPED_LEFT_BRACKET___': '[',
-        '___ESCAPED_RIGHT_BRACKET___': ']',
-        '___ESCAPED_LEFT_BRACE___': '{',
-        '___ESCAPED_RIGHT_BRACE___': '}',
-        '___ESCAPED_BACKSLASH___': '\\'
-    }
+#     # Restore escaped characters
+#     reverse_escape_map = {
+#         '§§§ESC§ASTERISK§§§': '*',
+#         '§§§ESC§BACKTICK§§§': '`',
+#         '§§§ESC§TILDE§§§': '~',
+#         '§§§ESC§CARET§§§': '^',
+#         '§§§ESC§UNDERSCORE§§§': '_',
+#         '§§§ESC§LEFT§BRACKET§§§': '[',
+#         '§§§ESC§RIGHT§BRACKET§§§': ']',
+#         '§§§ESC§LEFT§BRACE§§§': '{',
+#         '§§§ESC§RIGHT§BRACE§§§': '}',
+#         '§§§ESC§DOUBLE§QUOTE§§§': '"',
+#         '§§§ESC§SINGLE§QUOTE§§§': "'",
+#         '§§§ESC§BACKSLASH§§§': '\\'
+#     }
     
-    for placeholder, original in reverse_escape_map.items():
-        html = html.replace(placeholder, original)
+#     for placeholder, original in reverse_escape_map.items():
+#         html = html.replace(placeholder, original)
     
-    return html
+#     # Restore parameter insertion placeholders
+#     def restore_param_insertion(match):
+#         insert_type = match.group(1)
+#         id_ref = match.group(2).replace('❖UNDERSCORE❖', '_')
+#         return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
+    
+#     html = re.sub(r'§§§INSERT§PLACEHOLDER§([^§]+)§([^§]+)§§§', 
+#                   restore_param_insertion, html)
+    
+#     return html
 
 # -------------------------------------------------------------------------
 def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
@@ -1465,7 +1765,7 @@ def _format_table_helper(table_lines: list) -> str:
     return '\n'.join(html)
 
 # -------------------------------------------------------------------------
-def create_new_oscal_content(model_name: str, title: str, version: str="", published: str="", support_db_conn=None, support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE) -> OSCAL:
+def create_new_oscal_content(model_name: str, title: str, version: str="", published: str="", support_db_conn="", support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE) -> Optional[OSCAL]:
     """
     Returns minimally valid OSCAL content based on the specified model name.
     Currently this is based on loading a template file from package data.
@@ -1513,7 +1813,7 @@ def create_new_oscal_content(model_name: str, title: str, version: str="", publi
     return oscal_object
 
 # -------------------------------------------------------------------------
-def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remkarks=None):
+def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remarks=""):
     """
     Appends a resource element to the back-matter section.
     """
@@ -1544,9 +1844,11 @@ def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[]
             rlink_node.set("media-type", rlink.get("media-type", ""))
     if base64 is not None:
         logger.warning("Base64 content in resource is not yet implemented.")
-        if remarks:
-            remarks_obj = ElementTree.SubElement(resource,"remarks") # Create the description element
-            remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+    if remarks:
+        remarks_obj = ElementTree.SubElement(resource,"remarks") # Create the description element
+        remarks_element = oscal_markdown_to_html_tree(remarks)
+        if remarks_element is not None:
+            remarks_obj.append(remarks_element)
     back_matter = oscal_obj.xpath("//back-matter")
 
     if back_matter:
@@ -1560,7 +1862,7 @@ def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[]
     return resource
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # -----------------------------------------------------------------------------
-def append_component(ssp_obj, component_type, component_title, component_description, op_status="operational", component_uuid=None, props=[], links=[], remarks=None):
+def append_component(ssp_obj, component_type, component_title, component_description, op_status="operational", component_uuid=None, props=[], links=[], remarks=""):
     """
     Adds a "component" to an SSP's system implementation section.
     """
@@ -1577,7 +1879,12 @@ def append_component(ssp_obj, component_type, component_title, component_descrip
         # paragraph = ElementTree.Element("p")  # Need a p element as description is markup multi-line
         # paragraph.text = component_description
         # description.append(paragraph)
-        description_obj.append(oscal_markdown_to_html_tree(component_description))
+
+
+        description_element = oscal_markdown_to_html_tree(component_description)
+        if description_element is not None:
+            description_obj.append(description_element)
+
         component_obj.append(description_obj)
 
         # Implementation Status
@@ -1607,7 +1914,7 @@ def append_component(ssp_obj, component_type, component_title, component_descrip
     return component_obj
 
 # -----------------------------------------------------------------------------
-def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks=None):
+def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks=""):
     """
     Adds an "imiplemented-requirement" to an SSP's control implementation section.
     """
@@ -1625,7 +1932,10 @@ def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks=Non
         if remarks:
             logger.debug("Adding remarks")
             remarks_obj = ElementTree.Element("remarks") # Create the description element
-            remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+
+            remarks_element = oscal_markdown_to_html_tree(remarks)
+            if remarks_element is not None:
+                remarks_obj.append(remarks_element)
             impl_req_obj.append(remarks_obj)
 
         logger.debug("Fetching control-implementation element.")
@@ -1644,7 +1954,7 @@ def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks=Non
 
 
 # -----------------------------------------------------------------------------
-def append_by_component(impl_req_obj, component_uuid, description, by_component_uuid=None, implementation_status="implemented", remarks=None):
+def append_by_component(impl_req_obj, component_uuid, description, by_component_uuid=None, implementation_status="implemented", remarks=""):
     """
     Adds a "by-component" statement to an SSP's contrtol response statement.
 
@@ -1663,7 +1973,11 @@ def append_by_component(impl_req_obj, component_uuid, description, by_component_
         logger.debug("Appending by-component description")
         # Description
         description_obj = ElementTree.Element("description") # Create the description element
-        description_obj.append(oscal_markdown_to_html_tree(description))
+
+        description_element = oscal_markdown_to_html_tree(description)
+        if description_element is not None:
+            description_obj.append(description_element)
+
         by_component_obj.append(description_obj)
 
         logger.debug("Appending by-component implementation status")
@@ -1675,7 +1989,11 @@ def append_by_component(impl_req_obj, component_uuid, description, by_component_
         if remarks:
             logger.debug("Adding remarks")
             remarks_obj = ElementTree.Element("remarks") # Create the description element
-            remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+
+
+            remarks_element = oscal_markdown_to_html_tree(remarks)
+            if remarks_element is not None:
+                remarks_obj.append(remarks_element)
             by_component_obj.append(remarks_obj)
 
         logger.debug("Appending by-component to implemented-requirement")
@@ -1706,7 +2024,10 @@ def append_responsible_role(oscal_obj, role_id, party_uuids=[], remarks=None):
     if remarks:
         logger.debug("Adding remarks")
         remarks_obj = ElementTree.Element("remarks") # Create the description element
-        remarks_obj.append(oscal_markdown_to_html_tree(remarks))
+
+        remarks_element = oscal_markdown_to_html_tree(remarks)
+        if remarks_element is not None:
+            remarks_obj.append(remarks_element)
         resp_role_obj.append(remarks_obj)
 
     return resp_role_obj
