@@ -743,7 +743,7 @@ class OSCAL(LoggableMixin):
                     if overview != "":
                         overview_node = ElementTree.SubElement(control, "part")
                         overview_node.set("name", "overview")
-                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview))
+                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
                                             
                     
                     if len(statements) > 0:
@@ -754,27 +754,27 @@ class OSCAL(LoggableMixin):
                         if len(statements)  == 1:
                             # Single statement without id
                             logger.debug("Single statement without id detected.")
-                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0]))
+                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0], True))
                         else:
                             for item in statements:
                                 statement_child_node = ElementTree.SubElement(control, "part")
                                 statement_child_node.set("name", "item")
                                 if item.get('id', "") != "":
                                     statement_child_node.set("id", f"{id}_smt")
-                                self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(item['prose']))
+                                self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(item['prose'], True))
                     
                     if guidance != "":
                         guidance_node = ElementTree.SubElement(control, "guidance")
-                        self.assign_html_string_to_node(guidance_node, oscal_markdown_to_html(guidance))
+                        self.assign_html_string_to_node(guidance_node, oscal_markdown_to_html(guidance, True))
                     
                     if example != "":
                         example_node = ElementTree.SubElement(control, "part")
                         example_node.set("name", "example")
-                        self.assign_html_string_to_node(example_node, oscal_markdown_to_html(example))
+                        self.assign_html_string_to_node(example_node, oscal_markdown_to_html(example, True))
                     
                     if remarks != "":
                         remarks_node = ElementTree.SubElement(control, "remarks")
-                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks))
+                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
                     parent_node.append(control)
                     self.content_modified()
                     status = True
@@ -858,19 +858,16 @@ class OSCAL(LoggableMixin):
                     if overview != "":
                         overview_node = ElementTree.SubElement(group, "part")
                         overview_node.set("name", "overview")
-                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview))
-                        # overview_node.text = oscal_markdown_to_html(overview)
+                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
 
                     if instruction != "":
                         instruction_node = ElementTree.SubElement(group, "part")
                         instruction_node.set("name", "instruction")
-                        self.assign_html_string_to_node(instruction_node, oscal_markdown_to_html(instruction))
-                        # instruction_node.text = oscal_markdown_to_html(instruction)
+                        self.assign_html_string_to_node(instruction_node, oscal_markdown_to_html(instruction, True))
 
                     if remarks != "":
                         remarks_node = ElementTree.SubElement(group, "remarks")
-                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks))
-                        # remarks_node.text = oscal_markdown_to_html(remarks)
+                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
 
                     parent_node.append(group)
                     self.content_modified()
@@ -1083,7 +1080,7 @@ def append_prop(parent_node, prop: dict):
         prop_node.set("ns", prop.get('ns', ''))
     if 'remarks' in prop:
         remarks_node = ElementTree.SubElement(prop_node, "remarks")
-        remarks_html = oscal_markdown_to_html(prop.get('remarks', ''))
+        remarks_html = oscal_markdown_to_html(prop.get('remarks', ''), multiline=True)
         if remarks_html:
             try:
                 wrapped_html = f"<div>{remarks_html}</div>"
@@ -1163,7 +1160,7 @@ def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ
         logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
     return ret_value
 # -----------------------------------------------------------------------------
-def oscal_markdown_to_html_tree(markdown_text: str):
+def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> object:
     """
     Callls oscal_markdown_to_html, which Formats markdown text into HTML
     consistent with the OSCAL XML specification for markup-multiline. 
@@ -1179,7 +1176,7 @@ def oscal_markdown_to_html_tree(markdown_text: str):
     Returns:
         obj: ElementTree XML object
     """
-    html_str = oscal_markdown_to_html(markdown_text)
+    html_str = oscal_markdown_to_html(markdown_text, multiline=multiline)
     if html_str:
         return ElementTree.fromstring(html_str.encode('utf_8'))
     else:
@@ -1846,7 +1843,7 @@ def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[]
         logger.warning("Base64 content in resource is not yet implemented.")
     if remarks:
         remarks_obj = ElementTree.SubElement(resource,"remarks") # Create the description element
-        remarks_element = oscal_markdown_to_html_tree(remarks)
+        remarks_element = oscal_markdown_to_html_tree(remarks, multiline=True)
         if remarks_element is not None:
             remarks_obj.append(remarks_element)
     back_matter = oscal_obj.xpath("//back-matter")
@@ -1881,7 +1878,7 @@ def append_component(ssp_obj, component_type, component_title, component_descrip
         # description.append(paragraph)
 
 
-        description_element = oscal_markdown_to_html_tree(component_description)
+        description_element = oscal_markdown_to_html_tree(component_description, multiline=True)
         if description_element is not None:
             description_obj.append(description_element)
 
@@ -1933,7 +1930,7 @@ def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks="")
             logger.debug("Adding remarks")
             remarks_obj = ElementTree.Element("remarks") # Create the description element
 
-            remarks_element = oscal_markdown_to_html_tree(remarks)
+            remarks_element = oscal_markdown_to_html_tree(remarks, multiline=True)
             if remarks_element is not None:
                 remarks_obj.append(remarks_element)
             impl_req_obj.append(remarks_obj)
@@ -1974,7 +1971,7 @@ def append_by_component(impl_req_obj, component_uuid, description, by_component_
         # Description
         description_obj = ElementTree.Element("description") # Create the description element
 
-        description_element = oscal_markdown_to_html_tree(description)
+        description_element = oscal_markdown_to_html_tree(description, multiline=True)
         if description_element is not None:
             description_obj.append(description_element)
 
@@ -1991,7 +1988,7 @@ def append_by_component(impl_req_obj, component_uuid, description, by_component_
             remarks_obj = ElementTree.Element("remarks") # Create the description element
 
 
-            remarks_element = oscal_markdown_to_html_tree(remarks)
+            remarks_element = oscal_markdown_to_html_tree(remarks, multiline=True)
             if remarks_element is not None:
                 remarks_obj.append(remarks_element)
             by_component_obj.append(remarks_obj)
@@ -2025,7 +2022,7 @@ def append_responsible_role(oscal_obj, role_id, party_uuids=[], remarks=None):
         logger.debug("Adding remarks")
         remarks_obj = ElementTree.Element("remarks") # Create the description element
 
-        remarks_element = oscal_markdown_to_html_tree(remarks)
+        remarks_element = oscal_markdown_to_html_tree(remarks, multiline=True)
         if remarks_element is not None:
             remarks_obj.append(remarks_element)
         resp_role_obj.append(remarks_obj)

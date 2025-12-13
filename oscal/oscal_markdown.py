@@ -5,10 +5,10 @@ Converts OSCAL-compliant markdown (markup-line and markup-multiline) to HTML,
 with support for the special parameter insertion syntax using {{ insert: type, id }}.
 """
 
-# import re
 import markdown
 from markdown.extensions import Extension
 from markdown.inlinepatterns import InlineProcessor
+from markdown.treeprocessors import Treeprocessor
 from xml.etree import ElementTree as etree
 
 
@@ -62,9 +62,51 @@ class SuperscriptProcessor(InlineProcessor):
         return el, m.start(0), m.end(0)
 
 
+class OscalTableTreeprocessor(Treeprocessor):
+    """
+    Post-processes tables to remove non-OSCAL compliant HTML elements like <thead> and <tbody>.
+    
+    OSCAL only allows: <table>, <tr>, <th>, <td>
+    OSCAL does NOT allow: <thead>, <tbody>, <tfoot>, <col>, <colgroup>, <caption>
+    """
+    
+    def run(self, root):
+        # Find all tables and restructure them
+        for table in root.iter('table'):
+            self._restructure_table(table)
+    
+    def _restructure_table(self, table):
+        """Restructure table to be OSCAL compliant by removing thead/tbody wrappers."""
+        new_rows = []
+        
+        # Collect all rows from thead and tbody elements
+        for child in list(table):
+            if child.tag == 'thead':
+                # Move rows from thead to main table
+                for tr in child:
+                    new_rows.append(tr)
+                table.remove(child)
+            elif child.tag == 'tbody':
+                # Move rows from tbody to main table
+                for tr in child:
+                    new_rows.append(tr)
+                table.remove(child)
+            elif child.tag == 'tr':
+                # Keep direct tr children
+                new_rows.append(child)
+            elif child.tag in ['tfoot', 'col', 'colgroup', 'caption']:
+                # Remove unsupported elements
+                table.remove(child)
+        
+        # Clear the table and add restructured rows
+        table.clear()
+        for row in new_rows:
+            table.append(row)
+
+
 class OscalParameterExtension(Extension):
     """
-    Markdown extension to handle OSCAL parameter insertion syntax.
+    Markdown extension to handle OSCAL parameter insertion syntax and ensure OSCAL-compliant HTML.
     """
     
     def extendMarkdown(self, md):
@@ -91,6 +133,13 @@ class OscalParameterExtension(Extension):
             SuperscriptProcessor(SUPERSCRIPT_PATTERN, md),
             'oscal_superscript',
             173
+        )
+        
+        # Add table post-processor to ensure OSCAL compliance
+        md.treeprocessors.register(
+            OscalTableTreeprocessor(md),
+            'oscal_table_compliance',
+            0  # Run after all other processing
         )
 
 
@@ -140,10 +189,32 @@ def oscal_markdown_to_html(markdown_text, is_multiline=False):
     # Convert to HTML
     html = md.convert(markdown_text)
     
-    # For markup-line (inline only), we may want to strip the wrapping <p> tag
-    # that markdown automatically adds
-    if not is_multiline and html.startswith('<p>') and html.endswith('</p>'):
-        html = html[3:-4]  # Remove <p> and </p>
+    # Handle paragraph wrapping based on multiline setting
+    if not is_multiline:
+        # For markup-line (inline only), strip wrapping <p> tag if present
+        # and convert any newlines to spaces for inline content
+        if html.startswith('<p>') and html.endswith('</p>'):
+            html = html[3:-4]  # Remove <p> and </p>
+        # Replace any remaining newlines with spaces for true inline behavior
+        html = html.replace('\n', ' ').strip()
+    else:
+        # For markup-multiline, ensure single lines get wrapped in <p> tags
+        # Check if we have content that doesn't already have block tags
+        has_block_tags = (
+            html.startswith(('<p>', '<h1>', '<h2>', '<h3>', '<h4>', '<h5>', '<h6>', 
+                           '<ul>', '<ol>', '<li>', '<blockquote>', '<pre>', '<div>', 
+                           '<table>', '<tr>', '<td>', '<th>')) or
+            html.endswith(('</p>', '</h1>', '</h2>', '</h3>', '</h4>', '</h5>', '</h6>', 
+                         '</ul>', '</ol>', '</li>', '</blockquote>', '</pre>', '</div>',
+                         '</table>', '</tr>', '</td>', '</th>')) or
+            '<p>' in html or '<h1>' in html or '<h2>' in html or '<h3>' in html or
+            '<h4>' in html or '<h5>' in html or '<h6>' in html or '<ul>' in html or
+            '<ol>' in html or '<blockquote>' in html or '<table>' in html
+        )
+        
+        # If no block tags present and we have content, wrap in paragraph
+        if not has_block_tags and html.strip():
+            html = f'<p>{html}</p>'
     
     return html
 
