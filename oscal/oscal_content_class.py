@@ -691,6 +691,7 @@ class OSCAL(LoggableMixin):
         - methods (array): A dictionary of assessment methods to add to the control.
         - remarks (str): The remarks of the new control. 
         """
+        logger.info(f"Creating new control with id '{id}' under parent group '{parent_id}'")
         status = False
         control = None
         if self.oscal_model == "catalog":
@@ -745,28 +746,46 @@ class OSCAL(LoggableMixin):
                         overview_node.set("name", "overview")
                         self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
                                             
-                    
+                    # TODO: Handle child parts
+                    # TODO: Handle part titles
+                    # TODO: Handle part labels, sort-ids, alt-identifiers
+                    # TODO: Handle other part properties
+                    # TODO: Handle part references and related
+                    # TODO: Handle part links
                     if len(statements) > 0:
                         statement_node = ElementTree.SubElement(control, "part")
                         statement_node.set("name", "statement")
                         statement_node.set("id", f"{id}_smt")
                         logger.debug(f"STATEMENTS TYPE: {type(statements)} with {len(statements)} items.")
                         if len(statements)  == 1:
-                            # Single statement without id
-                            logger.debug("Single statement without id detected.")
-                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0], True))
+                            if isinstance(statements[0], str):
+                                # Single statement without id
+                                logger.debug("Single statement without id detected.")
+                                self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0], True))
+                            elif isinstance(statements[0], dict):
+                                # Single statement with id
+                                logger.debug("Single statement with id detected.")
+                                statement_item = statements[0]
+                                item_node = ElementTree.SubElement(statement_node, "part")
+                                item_node.set("name", "item")
+                                if statement_item.get('id', "") != "":
+                                    item_node.set("id", f"{id}_smt_01")
+                                self.assign_html_string_to_node(item_node, oscal_markdown_to_html(statement_item['prose'], True))
                         else:
+                            smt_cntr = 0
                             for item in statements:
-                                statement_child_node = ElementTree.SubElement(control, "part")
+                                smt_cntr += 1
+                                statement_child_node = ElementTree.SubElement(statement_node, "part")
                                 statement_child_node.set("name", "item")
                                 if item.get('id', "") != "":
-                                    statement_child_node.set("id", f"{id}_smt")
-                                self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(item['prose'], True))
+                                    statement_child_node.set("id", f"{id}_smt_{smt_cntr:02d}")
+                                self.assign_html_string_to_node(statement_child_node, oscal_markdown_to_html(item['prose'], True))
                     
                     if guidance != "":
-                        guidance_node = ElementTree.SubElement(control, "guidance")
+                        guidance_node = ElementTree.SubElement(control, "part")
+                        guidance_node.set("name", "guidance")
                         self.assign_html_string_to_node(guidance_node, oscal_markdown_to_html(guidance, True))
-                    
+
                     if example != "":
                         example_node = ElementTree.SubElement(control, "part")
                         example_node.set("name", "example")
@@ -1109,7 +1128,7 @@ def append_link(parent_node, link: dict):
     - link (dict): A dictionary containing link attributes.
     """
     link_node = ElementTree.SubElement(parent_node, "link")
-    link_node.text = link['href']
+    link_node.set("href", link.get('href', ''))
     if 'rel' in link:
         link_node.set("rel", link.get('rel', ''))
     if 'media-type' in link:
@@ -1183,367 +1202,6 @@ def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> o
         return None
 # -------------------------------------------------------------------------
 
-# -------------------------------------------------------------------------
-# def oscal_markdown_to_html(markdown_text: str, multiline: bool = True) -> str:
-#     """
-#     Converts OSCAL markup-line or markup-multiline formatted markdown to HTML.
-    
-#     This function handles the specific markdown subset defined in the NIST Metaschema
-#     specification for OSCAL markup-line and markup-multiline data types.
-    
-#     Args:
-#         markdown_text (str): The markdown text to convert
-#         multiline (bool): If True, handles markup-multiline (supports block elements).
-#                          If False, handles markup-line (inline elements only).
-    
-#     Returns:
-#         str: HTML representation of the markdown text
-    
-#     References:
-#         https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline 
-#         https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
-#     """
-#     import re
-    
-#     if not markdown_text:
-#         return ""
-    
-#     # Store escaped characters temporarily (per OSCAL specification)
-#     escape_map = {
-#         '\\*': '§§§ESC§ASTERISK§§§',
-#         '\\`': '§§§ESC§BACKTICK§§§',
-#         '\\~': '§§§ESC§TILDE§§§',
-#         '\\^': '§§§ESC§CARET§§§',
-#         '\\_': '§§§ESC§UNDERSCORE§§§',
-#         '\\[': '§§§ESC§LEFT§BRACKET§§§',
-#         '\\]': '§§§ESC§RIGHT§BRACKET§§§',
-#         '\\{': '§§§ESC§LEFT§BRACE§§§',
-#         '\\}': '§§§ESC§RIGHT§BRACE§§§',
-#         '\\"': '§§§ESC§DOUBLE§QUOTE§§§',
-#         "\\'": '§§§ESC§SINGLE§QUOTE§§§',
-#         '\\\\': '§§§ESC§BACKSLASH§§§'
-#     }
-    
-#     html = markdown_text
-#     for escaped, placeholder in escape_map.items():
-#         html = html.replace(escaped, placeholder)
-    
-#     # Handle OSCAL parameter insertion syntax FIRST: {{ insert: param, pm-9_prm_1 }}
-#     def replace_param_insertion(match):
-#         parts = [p.strip() for p in match.group(1).split(',')]
-#         if len(parts) >= 2:
-#             insert_type = parts[0].replace('insert:', '').strip()
-#             id_ref = parts[1].strip()
-#             # Protect underscores in id_ref from being processed as emphasis  
-#             protected_id_ref = id_ref.replace('_', '❖UNDERSCORE❖')
-#             # Use a safe placeholder that won't conflict with any formatting patterns
-#             return f'§§§INSERT§PLACEHOLDER§{insert_type}§{protected_id_ref}§§§'
-#         return match.group(0)
-    
-#     html = re.sub(r'\{\{\s*([^}]+)\s*\}\}', replace_param_insertion, html)
-    
-#     # Encode ampersands first (but not < and > yet, as they interfere with link processing)
-#     html = html.replace('&', '&amp;')
-    
-#     # For markup-line, only apply inline formatting
-#     if not multiline:
-#         # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
-#         html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
-#                       lambda m: f'<img alt=§§§QUOTE§§§{m.group(1)}§§§QUOTE§§§ src=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
-#                                (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + '/>', html)
-        
-#         # Links: [text](url "title") -> <a href="url" title="title">text</a>  
-#         html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
-#                       lambda m: f'<a href=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
-#                                (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + 
-#                                f'>{m.group(1)}</a>', html)
-        
-#         # Strong emphasis (bold) - **text** or __text__ -> <strong>text</strong>
-#         html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
-#         html = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', html)
-        
-#         # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
-#         html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
-        
-#         # Emphasis (italic) - _text_ -> <em>text</em> (avoid matching __)
-#         html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<em>\1</em>', html)
-        
-#         # Quoted text - "text" -> <q>text</q> (per OSCAL spec)
-#         html = re.sub(r'"([^"]+)"', r'<q>\1</q>', html)
-        
-#         # Inline code - `text` -> <code>text</code>
-#         html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
-        
-#         # Superscript - ^text^ -> <sup>text</sup>
-#         html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
-        
-#         # Subscript - ~text~ -> <sub>text</sub>
-#         html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
-        
-#         # Restore escaped characters for markup-line
-#         reverse_escape_map = {
-#             '§§§ESC§ASTERISK§§§': '*',
-#             '§§§ESC§BACKTICK§§§': '`',
-#             '§§§ESC§TILDE§§§': '~',
-#             '§§§ESC§CARET§§§': '^',
-#             '§§§ESC§UNDERSCORE§§§': '_',
-#             '§§§ESC§LEFT§BRACKET§§§': '[',
-#             '§§§ESC§RIGHT§BRACKET§§§': ']',
-#             '§§§ESC§LEFT§BRACE§§§': '{',
-#             '§§§ESC§RIGHT§BRACE§§§': '}',
-#             '§§§ESC§DOUBLE§QUOTE§§§': '"',
-#             '§§§ESC§SINGLE§QUOTE§§§': "'",
-#             '§§§ESC§BACKSLASH§§§': '\\'
-#         }
-        
-#         for placeholder, original in reverse_escape_map.items():
-#             html = html.replace(placeholder, original)
-        
-#         # Restore parameter insertion placeholders
-#         def restore_param_insertion(match):
-#             insert_type = match.group(1)
-#             id_ref = match.group(2).replace('❖UNDERSCORE❖', '_')
-#             return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
-        
-#         html = re.sub(r'§§§INSERT§PLACEHOLDER§([^§]+)§([^§]+)§§§', 
-#                       restore_param_insertion, html)
-        
-#         # Restore quotes in HTML attributes
-#         html = html.replace('§§§QUOTE§§§', '"')
-        
-#         # Encode remaining HTML entities (< and > for text content, not HTML tags)
-#         # We need to be careful not to encode the HTML tags we just created
-#         # So we'll protect HTML tags first
-#         html = re.sub(r'<(/?\w+(?:\s+[^>]*)?)>', r'§§§HTML§TAG§\1§§§', html)
-#         html = html.replace('<', '&lt;')
-#         html = html.replace('>', '&gt;')
-#         html = re.sub(r'§§§HTML§TAG§([^§]+)§§§', r'<\1>', html)
-        
-#         return html
-#     else:
-#         # Handle block-level elements (only for markup-multiline)
-#         lines = html.split('\n')
-#         result = []
-#         i = 0
-        
-#         # If it's a single line without block-level elements, apply inline formatting only
-#         if (len(lines) == 1 and 
-#             not lines[0].strip().startswith(('#', '>', '|', '```')) and
-#             not re.match(r'^\d+\.', lines[0].strip()) and
-#             not (lines[0].strip().startswith('-') or lines[0].strip().startswith('*')) and
-#             '|' not in lines[0]):
-#             # Just apply inline formatting without paragraph wrapping
-#             html = lines[0]
-#             # Apply inline formatting (same as non-multiline mode)
-#             # Images FIRST (to avoid conflict with links)
-#             html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
-#                           lambda m: f'<img alt=§§§QUOTE§§§{m.group(1)}§§§QUOTE§§§ src=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
-#                                    (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + '/>', html)
-            
-#             # Links
-#             html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
-#                           lambda m: f'<a href=§§§QUOTE§§§{m.group(2)}§§§QUOTE§§§' + 
-#                                    (f' title=§§§QUOTE§§§{m.group(3)}§§§QUOTE§§§' if m.group(3) else '') + 
-#                                    f'>{m.group(1)}</a>', html)
-            
-#             # Strong emphasis (bold) - **text** or __text__ -> <strong>text</strong>
-#             html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
-#             html = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', html)
-            
-#             # Emphasis (italic) - *text*
-#             html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
-            
-#             # Emphasis (italic) - _text_
-#             html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<em>\1</em>', html)
-            
-#             # Quoted text - "text" -> <q>text</q> (per OSCAL spec)
-#             html = re.sub(r'"([^"]+)"', r'<q>\1</q>', html)
-            
-#             # Inline code
-#             html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
-            
-#             # Superscript
-#             html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
-            
-#             # Subscript
-#             html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
-            
-#             # Restore escaped characters for single-line within multiline
-#             reverse_escape_map = {
-#                 '§§§ESC§ASTERISK§§§': '*',
-#                 '§§§ESC§BACKTICK§§§': '`',
-#                 '§§§ESC§TILDE§§§': '~',
-#                 '§§§ESC§CARET§§§': '^',
-#                 '§§§ESC§UNDERSCORE§§§': '_',
-#                 '§§§ESC§LEFT§BRACKET§§§': '[',
-#                 '§§§ESC§RIGHT§BRACKET§§§': ']',
-#                 '§§§ESC§LEFT§BRACE§§§': '{',
-#                 '§§§ESC§RIGHT§BRACE§§§': '}',
-#                 '§§§ESC§DOUBLE§QUOTE§§§': '"',
-#                 '§§§ESC§SINGLE§QUOTE§§§': "'",
-#                 '§§§ESC§BACKSLASH§§§': '\\'
-#             }
-            
-#             for placeholder, original in reverse_escape_map.items():
-#                 html = html.replace(placeholder, original)
-            
-#             # Restore parameter insertion placeholders
-#             def restore_param_insertion(match):
-#                 insert_type = match.group(1)
-#                 id_ref = match.group(2).replace('❖UNDERSCORE❖', '_')
-#                 return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
-            
-#             html = re.sub(r'§§§INSERT§PLACEHOLDER§([^§]+)§([^§]+)§§§', 
-#                           restore_param_insertion, html)
-            
-#             # Restore quotes in HTML attributes
-#             html = html.replace('§§§QUOTE§§§', '"')
-            
-#             # Encode remaining HTML entities (< and > for text content, not HTML tags)
-#             html = re.sub(r'<(/?\w+(?:\s+[^>]*)?)>', r'§§§HTML§TAG§\1§§§', html)
-#             html = html.replace('<', '&lt;')
-#             html = html.replace('>', '&gt;')
-#             html = re.sub(r'§§§HTML§TAG§([^§]+)§§§', r'<\1>', html)
-            
-#             return html
-
-#         else:
-#             # Multi-line processing for actual block content
-#             while i < len(lines):
-#                 line = lines[i].strip()
-                
-#                 if not line:
-#                     i += 1
-#                     continue
-                
-#                 # Headers - # text -> <h1>text</h1> (and so on)
-#                 if line.startswith('#'):
-#                     level = len(line) - len(line.lstrip('#'))
-#                     if 1 <= level <= 6:
-#                         header_text = line[level:].strip()
-#                         result.append(f'<h{level}>{header_text}</h{level}>')
-#                         i += 1
-#                         continue
-            
-#                 # Code blocks - ```text``` -> <pre>text</pre>
-#                 if line == '```':
-#                     code_lines = []
-#                     i += 1
-#                     while i < len(lines) and lines[i].strip() != '```':
-#                         code_lines.append(lines[i])
-#                         i += 1
-#                     if i < len(lines):  # Skip closing ```
-#                         i += 1
-#                     result.append(f'<pre>{"\n".join(code_lines)}</pre>')
-#                     continue
-            
-#                 # Tables (per OSCAL specification)
-#                 if '|' in line and line.strip().startswith('|'):
-#                     table_lines = [line]
-#                     j = i + 1
-#                     # Collect all consecutive table lines
-#                     while j < len(lines) and lines[j].strip() and '|' in lines[j].strip():
-#                         table_lines.append(lines[j].strip())
-#                         j += 1
-                    
-#                     if len(table_lines) >= 2:  # At least header and separator
-#                         table_html = _format_table_helper(table_lines)
-#                         result.append(table_html)
-#                         i = j
-#                         continue
-            
-#                 # Blockquotes - > text -> <blockquote>text</blockquote>
-#                 if line.startswith('>'):
-#                     quote_text = line[1:].strip()
-#                     result.append(f'<blockquote>{quote_text}</blockquote>')
-#                     i += 1
-#                     continue
-                
-#                 # Lists - unordered
-#                 if line.startswith('-') or line.startswith('*'):
-#                     list_item = line[1:].strip()
-#                     result.append(f'<ul><li>{list_item}</li></ul>')
-#                     i += 1
-#                     continue
-                
-#                 # Lists - ordered
-#                 if re.match(r'^\d+\.', line):
-#                     list_item = re.sub(r'^\d+\.\s*', '', line)
-#                     result.append(f'<ol><li>{list_item}</li></ol>')
-#                     i += 1
-#                     continue
-                
-#                 # Regular paragraph
-#                 result.append(f'<p>{line}</p>')
-#                 i += 1
-            
-#             html = '\n'.join(result)
-        
-#         html = '\n'.join(result)
-        
-#         # Now apply inline formatting to the result
-#         # Images FIRST (to avoid conflict with links): ![alt text](url "title") -> <img alt="alt text" src="url" title="title"/>
-#         html = re.sub(r'!\[([^\]]*)\]\(([^")]+)(?:\s+"([^"]*)")?\)', 
-#                       lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}"' + 
-#                                (f' title="{m.group(3)}"' if m.group(3) else '') + '/>', html)
-        
-#         # Links: [text](url "title") -> <a href="url" title="title">text</a>  
-#         html = re.sub(r'\[([^\]]+)\]\(([^")]+)(?:\s+"([^"]*)")?\)',
-#                       lambda m: f'<a href="{m.group(2)}"' + 
-#                                (f' title="{m.group(3)}"' if m.group(3) else '') + 
-#                                f'>{m.group(1)}</a>', html)
-        
-#         # Strong emphasis (bold) - **text** or __text__ -> <strong>text</strong>
-#         html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
-#         html = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', html)
-        
-#         # Emphasis (italic) - *text* -> <em>text</em> (avoid matching **)
-#         html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', html)
-        
-#         # Emphasis (italic) - _text_ -> <em>text</em> (avoid matching __)
-#         html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<em>\1</em>', html)
-        
-#         # Quoted text - "text" -> <q>text</q> (per OSCAL spec)
-#         html = re.sub(r'"([^"]+)"', r'<q>\1</q>', html)
-        
-#         # Inline code - `text` -> <code>text</code>
-#         html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
-        
-#         # Superscript - ^text^ -> <sup>text</sup>
-#         html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', html)
-        
-#         # Subscript - ~text~ -> <sub>text</sub>
-#         html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', html)
-    
-#     # Restore escaped characters
-#     reverse_escape_map = {
-#         '§§§ESC§ASTERISK§§§': '*',
-#         '§§§ESC§BACKTICK§§§': '`',
-#         '§§§ESC§TILDE§§§': '~',
-#         '§§§ESC§CARET§§§': '^',
-#         '§§§ESC§UNDERSCORE§§§': '_',
-#         '§§§ESC§LEFT§BRACKET§§§': '[',
-#         '§§§ESC§RIGHT§BRACKET§§§': ']',
-#         '§§§ESC§LEFT§BRACE§§§': '{',
-#         '§§§ESC§RIGHT§BRACE§§§': '}',
-#         '§§§ESC§DOUBLE§QUOTE§§§': '"',
-#         '§§§ESC§SINGLE§QUOTE§§§': "'",
-#         '§§§ESC§BACKSLASH§§§': '\\'
-#     }
-    
-#     for placeholder, original in reverse_escape_map.items():
-#         html = html.replace(placeholder, original)
-    
-#     # Restore parameter insertion placeholders
-#     def restore_param_insertion(match):
-#         insert_type = match.group(1)
-#         id_ref = match.group(2).replace('❖UNDERSCORE❖', '_')
-#         return f'<insert type="{insert_type}" id-ref="{id_ref}"/>'
-    
-#     html = re.sub(r'§§§INSERT§PLACEHOLDER§([^§]+)§([^§]+)§§§', 
-#                   restore_param_insertion, html)
-    
-#     return html
 
 # -------------------------------------------------------------------------
 def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
