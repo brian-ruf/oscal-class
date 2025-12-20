@@ -15,6 +15,7 @@ from common.lfs import chkdir, putfile, chkfile
 from common import helper 
 from common import database
 from common import network
+from .oscal_content_class import oscal_date_time_with_timezone
 # import inspect
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -568,7 +569,7 @@ class OSCAL_support:
             attributes["original_location"] = ""
             attributes["mime_type"] = "application/octet-stream"
             attributes["file_type"] = asset_type
-            attributes["acquired"] = helper.oscal_date_time_with_timezone()
+            attributes["acquired"] = oscal_date_time_with_timezone()
 
 
             # Check if the asset already exists
@@ -658,17 +659,18 @@ class OSCAL_support:
     def __get_oscal_versions(self, fetch="latest"):
         """Pulls OSCAL version information and support files from GitHub and loads it into the database."""
         status = True
-        OSCAL_versions = []
+        OSCAL_versions: list[str] = []
         fetch_all = (fetch == "all")
         fetch_latest = (fetch == "latest")
         fetch_one = (fetch.startswith("v"))
         
         self.__status_messages("Fetching OSCAL release informaiton from GitHub...")
         
-        repo_releases = network.api_get(GitHub_API_root + "/repos/" + OSCAL_repo + "/releases")
+        response = network.api_get(GitHub_API_root + "/repos/" + OSCAL_repo + "/releases")
         self.__status_messages("Fetching OSCAL release information from GitHub...done.")
 
-        if repo_releases is not None:
+        if response is not None and response.ok:
+            repo_releases: list[dict] = response.json()
             total_releases = len(repo_releases)
             
             self.__status_messages(f"Found {total_releases} releases in the OSCAL GitHub repository.")
@@ -703,7 +705,7 @@ class OSCAL_support:
                                 "title": release_name,
                                 "github_location": github_location,
                                 "documentation_location": documentation_location,
-                                "acquired": helper.oscal_date_time_with_timezone()
+                                "acquired": oscal_date_time_with_timezone()
                             }):
                                 OSCAL_versions.append(oscal_version)
                                 if "assets" in entry:
@@ -776,7 +778,7 @@ class OSCAL_support:
                 "original_location": asset_URL,
                 "mime_type": "application/octet-stream",
                 "file_type": SUPPORT_FILE_PATTERNS[pattern],
-                "acquired": helper.oscal_date_time_with_timezone()
+                "acquired": oscal_date_time_with_timezone()
             }
             self.db.cache_file(content, uuid_value, attributes)
             self.__status_messages(f"Downloaded [{version}] {asset_name}")

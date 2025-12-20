@@ -1179,7 +1179,7 @@ def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ
         logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
     return ret_value
 # -----------------------------------------------------------------------------
-def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> object:
+def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
     """
     Callls oscal_markdown_to_html, which Formats markdown text into HTML
     consistent with the OSCAL XML specification for markup-multiline. 
@@ -1193,7 +1193,7 @@ def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> o
                         If False, handles markup-line (inline elements only).
     
     Returns:
-        obj: ElementTree XML object
+        Optional[ElementTree.Element]: ElementTree XML Element object, or None if conversion fails
     """
     html_str = oscal_markdown_to_html(markdown_text, multiline=multiline)
     if html_str:

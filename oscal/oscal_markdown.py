@@ -143,7 +143,7 @@ class OscalParameterExtension(Extension):
         )
 
 
-def oscal_markdown_to_html(markdown_text, is_multiline=False):
+def oscal_markdown_to_html(markdown_text, multiline=False):
     """
     Convert OSCAL markdown to HTML.
     
@@ -190,7 +190,7 @@ def oscal_markdown_to_html(markdown_text, is_multiline=False):
     html = md.convert(markdown_text)
     
     # Handle paragraph wrapping based on multiline setting
-    if not is_multiline:
+    if not multiline:
         # For markup-line (inline only), strip wrapping <p> tag if present
         # and convert any newlines to spaces for inline content
         if html.startswith('<p>') and html.endswith('</p>'):
@@ -235,7 +235,7 @@ def convert_markup_line(markdown_text):
         >>> convert_markup_line("This implements {{ insert: param, pm-9_prm_1 }} as required.")
         'This implements <insert id-ref="pm-9_prm_1" type="param" /> as required.'
     """
-    return oscal_markdown_to_html(markdown_text, is_multiline=False)
+    return oscal_markdown_to_html(markdown_text, multiline=False)
 
 
 def convert_markup_multiline(markdown_text):
@@ -262,7 +262,7 @@ def convert_markup_multiline(markdown_text):
         >>> convert_markup_multiline(text)
         # Returns HTML with proper structure
     """
-    return oscal_markdown_to_html(markdown_text, is_multiline=True)
+    return oscal_markdown_to_html(markdown_text, multiline=True)
 
 
 def escape_for_json(text):
