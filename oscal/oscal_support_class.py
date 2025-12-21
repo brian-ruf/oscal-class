@@ -10,13 +10,11 @@ from loguru import logger
 from importlib import resources
 import uuid
 from time import sleep
-# from typing import Any, Optional
 from common.lfs import chkdir, putfile, chkfile
 from common import helper 
 from common import database
 from common import network
-from .oscal_content_class import oscal_date_time_with_timezone
-# import inspect
+from .oscal_datatypes import oscal_date_time_with_timezone
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 SUPPORT_DATABASE_DEFAULT_FILE = "./support/oscal_support.db"
@@ -710,7 +708,7 @@ class OSCAL_support:
                                 OSCAL_versions.append(oscal_version)
                                 if "assets" in entry:
                                     # Process assets in chunks
-                                    self.__get_support_files(oscal_version, entry["assets"])
+                                    self.__fetch_support_files(oscal_version, entry["assets"])
                             else:
                                 logger.error(f"Unable to insert OSCAL version {oscal_version} into support database.")
                         else:
@@ -730,7 +728,7 @@ class OSCAL_support:
         return status
   
     # -------------------------------------------------------------------------
-    def __get_support_files(self, version, assets):
+    def __fetch_support_files(self, version, assets):
         """Process assets sequentially"""
         status = False
         

@@ -13,7 +13,7 @@ license = { file = "LICENSE" }
 
 dependencies = [
     "loguru>=0.7.3",  
-    "saxonche==12.5.0",
+    "saxonche==12.9.0",
     "jsonschema_rs>=0.26.1",
     "xmlschema>=3.4.3",
     "PyYAML >= 6.0",

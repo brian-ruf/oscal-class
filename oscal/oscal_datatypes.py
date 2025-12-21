@@ -1,3 +1,44 @@
+from loguru import logger
+
+def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
+    """
+    Converts a date and time to UTC and outputs an OSCAL date-time-with-timezone string. 
+    Optional Parameters:
+    - date_time (datetime or str): A date and time to convert to a formatted string.
+       Can be a datetime object or a string that can be parsed into datetime.
+       Default is the current date and time
+    - format (str): The formatting string to use
+        default is "%Y-%m-%dT%H:%M:%SZ" (OSCAL standard format)
+
+    Returns a formatted date time string.
+    If an error occurs, returns an empty string.
+    """
+    from datetime import datetime, timezone
+    from dateutil import parser as date_parser
+    
+    if date_time is None: 
+        date_time = datetime.now()
+    elif isinstance(date_time, str):
+        # Parse string into datetime object
+        try:
+            date_time = date_parser.parse(date_time)
+        except Exception as error:
+            logger.error(f"{type(error).__name__} error parsing date/time string '{date_time}': {str(error)}")
+            return ""
+    
+    ret_value = ""
+
+    try:
+        # Ensure we have timezone info, default to UTC if naive
+        if date_time.tzinfo is None:
+            date_time = date_time.replace(tzinfo=timezone.utc)
+        else:
+            date_time = date_time.astimezone(timezone.utc)
+        ret_value = date_time.strftime(format)
+    except Exception as error:
+        logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
+    return ret_value
+
 OSCAL_DATATYPES = {
     "base64": {
         "base-type": "string",

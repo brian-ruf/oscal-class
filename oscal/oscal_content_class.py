@@ -3,19 +3,17 @@
 
     A class for creation, manipulation, validation and format convertion of OSCAL content.
     All published OSCAL versions, formats and models can be validated and converted. 
-    Creation and manipulation is OSCAL 1.1.3 compliant.
+    Creation and manipulation is OSCAL 1.2.0 compliant.
 
-    This class ingests XML, JSON or YAML OSCAL content and validates it in its native format
-    using the appropriate NIST-published OSCAL schema.
-
-    The class converts YAML and JSON to XML for manipulation. New content starts as XML.
-
-    The class can export the content back to any of the three supported formats (XML, JSON, YAML).
+    OSCAL XML, JSON and YAML formats are supported, and content can be converted between them.
+    This class can ingest and validate OSCAL content in its native format using the appropriate 
+    NIST-published OSCAL schema.
 
     Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
     Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
 
-    Future versions will include direct validation and conversion using the NIST-published OSCAL metaschema.
+    In the fFuture this library will include direct validation and conversion using the NIST-published 
+    OSCAL metaschema definitions, which include additional rules not addressed by the XML and JSON schemas.
 """
 from loguru import logger
 import os
@@ -31,6 +29,7 @@ import elementpath
 from common.lfs import getfile, chkdir, putfile, normalize_content, save_json
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
 from .oscal_markdown import oscal_markdown_to_html
+from .oscal_datatypes import oscal_date_time_with_timezone
 
 INDENT = 2
 
@@ -64,7 +63,6 @@ def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPP
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCAL(LoggableMixin):
     """
-
         Properties:
 
 
@@ -98,6 +96,13 @@ class OSCAL(LoggableMixin):
         self.oscal_model = ""
         self.oscal_version = ""
 
+        self.dict = None # JSON/YAML constructs
+        self.tree = None # XML constructs
+        self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
+        self.__saxon = None
+        self.synced = False # Boolean indicating whether the tree and dict are in sync
+        self.unsaved = False # Boolean indicating whether there are unsaved modifications
+
         self.well_formed = {}          # A dictionary indicating whether the content is well-formed for each format
         self.well_formed["xml"] = None
         self.well_formed["json"] = None
@@ -105,18 +110,10 @@ class OSCAL(LoggableMixin):
         self.schema_valid = {}       # A dictionary indicating whether the content is valid against the schema for each format
         self.schema_valid["xml"] = None
         self.schema_valid["json"] = None
-        self.schema_valid["yaml"] = None
+        self.schema_valid["yaml"] = None # YAML schema validation uses the JSON schema
         self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
 
         self.imports = []        # A list of imported OSCAL files, by CC-assigned UUID
-
-        self.dict = None # JSON/YAML constructs
-        self.tree = None # XML constructs
-        self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
-        # self.__saxon = None
-        self.synced = False # Boolean indicating whether the tree and dict are in sync
-        self.unsaved = False # Boolean indicating whether there are unsaved modifications
-
         self.support = get_shared_oscal_support(support_db_conn, support_db_type)  # Always gets the same instance
 
         # If just a filename and no content, load the file
@@ -217,14 +214,83 @@ class OSCAL(LoggableMixin):
         return self.valid_oscal
 
     # -------------------------------------------------------------------------
-    def OSCAL_convert(self, directive):
+    def OSCAL_convert(self, target_format: str, pretty_print: bool=False) -> None:
         """
-        Currently does nothing. Will soon accept the following directive values:
-        'xml-to-json'
-        'xml-to-yaml'
+        Convert the current OSCAL content to the target format. Options for pretty printing.
+        Args:
+            target_format: The target format to convert to ("xml", "json", or "yaml")
+            pretty_print: Whether to pretty print the output (applies to JSON and YAML)
         """
-        # TODL: Implement conversion logic here
-        pass
+        from .oscal_converters import oscal_xml_to_json, oscal_json_to_xml
+        logger.debug(f"Converting OSCAL content to {target_format} format (pretty_print={pretty_print})...")
+
+        match target_format.lower():
+            case "xml":
+                if self.original_format == "xml":
+                    logger.debug("Content is already in XML format; no conversion needed.")
+                    return
+                elif self.original_format == "json":
+                    # Convert JSON to XML
+                    logger.debug("Converting JSON to XML...")
+                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
+                    if not xsl_converter:
+                        logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
+                        return
+                    self.content = oscal_json_to_xml(
+                        json_content=self.content,
+                        xsl_converter=xsl_converter,
+                        validate_json=True
+                    )
+                    self.original_format = "xml"
+                elif self.original_format in ["yaml", "yml"]:
+                    # Convert YAML to JSON, then JSON to XML
+                    logger.debug("Converting YAML to XML via JSON...")
+                    json_content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
+                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
+                    if not xsl_converter:
+                        logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
+                        return
+                    self.content = oscal_json_to_xml(
+                        json_content=json_content,
+                        xsl_converter=xsl_converter,
+                        validate_json=True
+                    )
+                    self.original_format = "xml"
+                else:
+                    logger.error(f"Unsupported original format for conversion to XML: {self.original_format}")
+
+            case "json":
+                if self.original_format == "json":
+                    logger.debug("Content is already in JSON format; no conversion needed.")
+                    return
+                elif self.original_format == "xml":
+                    # Convert XML to JSON
+                    logger.debug("Converting XML to JSON...")
+                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
+                    if not xsl_converter:
+                        logger.error("Unable to locate XSLT converter for XML to JSON conversion.")
+                        return
+                    self.content = oscal_xml_to_json(
+                        xml_content=self.content,
+                        xsl_converter=xsl_converter
+                    )
+                    self.original_format = "json"
+                elif self.original_format in ["yaml", "yml"]:
+                    # Convert YAML to JSON
+                    logger.debug("Converting YAML to JSON...")
+                    self.content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
+                    self.original_format = "json"
+                else:
+                    logger.error(f"Unsupported original format for conversion to JSON: {self.original_format}")
+
+            case "yaml" | "yml":
+                if self.original_format in ["yaml", "yml"]:
+                    logger.debug("Content is already in YAML format; no conversion needed.")
+                    return
+                elif self.original_format == "json":
+                    # Convert JSON to YAML
+                    logger.debug("Converting JSON to YAML...")
+
 
     # -------------------------------------------------------------------------
     def save(self, filename: str="", format: str="", pretty_print: bool=False):
@@ -369,114 +435,113 @@ class OSCAL(LoggableMixin):
             else:
                 self.__set_field(f"/*/metadata/{item}", content.get(item, ""))
 
+    # # -------------------------------------------------------------------------
+    # def __setup_saxon(self): # Future - place holder for code for now
+    #     from saxonche import PySaxonProcessor 
+
+    #     self.__saxon = PySaxonProcessor(license=False)
+    #     try: 
+    #         self.xdm = self.__saxon.parse_xml(xml_text=self.xml)
+    #         # self.__saxon.declare_namespace("", "http://csrc.nist.gov/ns/oscal/1.0")
+    #         self.valid = True
+    #         self.oscal_format = "xml"
+    #     except Exception as error:
+    #         logger.error(f"Content does not appear to be valid XML. Unable to rpoceed. {str(error)}")
+
+    #     if self.valid:
+    #         self.xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+    #         self.__saxon_handle_ns()
+    #         self.xp.set_context(xdm_item=self.xdm) # Sets xpath processing context as the whole file
+    #         temp_ret = self.__saxon_xpath_global("/*/name()")
+    #         if temp_ret is not None:
+    #             self.root_node = temp_ret[0].get_atomic_value().string_value
+    #             logger.debug("ROOT: " + self.root_node)
+    #         self.oscal_version = self.__saxon_xpath_global_single("/*/*:metadata/*:oscal-version/text()")
+    #         logger.debug("OSCAL VERSION: " + self.oscal_version)
+
+    # # -------------------------------------------------------------------------
+    # def __saxon_xml_serializer(self):
+    #     return self.xdm.to_string('utf_8')
+
+    # # -------------------------------------------------------------------------
+    # def __saxon_handle_ns(self):
+    #     node_ = self.xdm
+    #     child = node_.children[0]
+    #     assert child is not None
+    #     namespaces = child.axis_nodes(8)
+
+    #     for ns in namespaces:
+    #         uri_str = ns.string_value
+    #         ns_prefix = ns.name
+
+    #         if ns_prefix is not None:
+    #             logger.debug("xmlns:" + ns_prefix + "='" + uri_str + "'")
+    #         else:
+    #             logger.debug("xmlns uri=" + uri_str + "'")
+    #             # set default ns here
+    #             self.xp.declare_namespace("", uri_str)
+
+    # # -------------------------------------------------------------------------
+    # def __saxon_xpath_global(self, expression):
+    #     from saxonche import PyXdmValue
+    #     ret_value = None
+    #     logger.debug("Global Evaluating: " + expression)
+    #     ret = self.xp.evaluate(expression)
+    #     if  isinstance(ret,PyXdmValue):
+    #         logger.debug("--Return Size: " + str(ret.size))
+    #         ret_value = ret
+    #     else:
+    #         logger.debug("--No result")
+
+    #     return ret_value
+
+    # # -------------------------------------------------------------------------
+    # def __saxon_xpath_global_single(self, expression):
+    #     from saxonche import PyXdmValue
+    #     ret_value = ""
+    #     logger.debug("Global Evaluating Single: " + expression)
+    #     ret = self.xp.evaluate_single(expression)
+    #     if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
+    #         ret_value = ret.string_value
+    #     else:
+    #         logger.debug("--No result")
+    #         logger.debug("TYPE: " + str(type(ret)))
+
+    #     return ret_value
+
+    # # -------------------------------------------------------------------------
+    # def __saxon_xpath(self, context, expression):
+    #     from saxonche import PyXdmValue
+    #     ret_value = None
+    #     logger.debug("Evaluating: " + expression)
+    #     xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+    #     xp.set_context(xdm_item=context)
+    #     ret = xp.evaluate(expression)
+    #     if  isinstance(ret,PyXdmValue):
+    #         logger.debug("--Return Size: " + str(ret.size))
+    #         ret_value = ret
+    #     else:
+    #         logger.debug("--No result")
+
+    #     return ret_value
+
+    # # -------------------------------------------------------------------------
+    # def __saxon_xpath_single(self, context, expression):
+    #     from saxonche import PyXdmValue
+    #     ret_value = ""
+    #     logger.debug("Evaluating Single: " + expression)
+    #     xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+    #     xp.set_context(xdm_item=context)
+    #     ret = xp.evaluate_single(expression)
+    #     if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
+    #         ret_value = ret.string_value
+    #     else:
+    #         logger.debug("--No result")
+    #         logger.debug("TYPE: " + str(type(ret)))
+
+    #     return ret_value
+
     # -------------------------------------------------------------------------
-    def __setup_saxon(self): # Future - place holder for code for now
-        from saxonche import PySaxonProcessor 
-
-        self.__saxon = PySaxonProcessor(license=False)
-        try: 
-            self.xdm = self.__saxon.parse_xml(xml_text=self.xml)
-            # self.__saxon.declare_namespace("", "http://csrc.nist.gov/ns/oscal/1.0")
-            self.valid = True
-            self.oscal_format = "xml"
-        except Exception as error:
-            logger.error(f"Content does not appear to be valid XML. Unable to rpoceed. {str(error)}")
-
-        if self.valid:
-            self.xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
-            self.__saxon_handle_ns()
-            self.xp.set_context(xdm_item=self.xdm) # Sets xpath processing context as the whole file
-            temp_ret = self.__saxon_xpath_global("/*/name()")
-            if temp_ret is not None:
-                self.root_node = temp_ret[0].get_atomic_value().string_value
-                logger.debug("ROOT: " + self.root_node)
-            self.oscal_version = self.__saxon_xpath_global_single("/*/*:metadata/*:oscal-version/text()")
-            logger.debug("OSCAL VERSION: " + self.oscal_version)
-
-    # -------------------------------------------------------------------------
-    def __saxon_xml_serializer(self):
-        return self.xdm.to_string('utf_8')
-
-    # -------------------------------------------------------------------------
-    def __saxon_handle_ns(self):
-        node_ = self.xdm
-        child = node_.children[0]
-        assert child is not None
-        namespaces = child.axis_nodes(8)
-
-        for ns in namespaces:
-            uri_str = ns.string_value
-            ns_prefix = ns.name
-
-            if ns_prefix is not None:
-                logger.debug("xmlns:" + ns_prefix + "='" + uri_str + "'")
-            else:
-                logger.debug("xmlns uri=" + uri_str + "'")
-                # set default ns here
-                self.xp.declare_namespace("", uri_str)
-
-    # -------------------------------------------------------------------------
-    def __saxon_xpath_global(self, expression):
-        from saxonche import PyXdmValue
-        ret_value = None
-        logger.debug("Global Evaluating: " + expression)
-        ret = self.xp.evaluate(expression)
-        if  isinstance(ret,PyXdmValue):
-            logger.debug("--Return Size: " + str(ret.size))
-            ret_value = ret
-        else:
-            logger.debug("--No result")
-
-        return ret_value
-
-    # -------------------------------------------------------------------------
-    def __saxon_xpath_global_single(self, expression):
-        from saxonche import PyXdmValue
-        ret_value = ""
-        logger.debug("Global Evaluating Single: " + expression)
-        ret = self.xp.evaluate_single(expression)
-        if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
-            ret_value = ret.string_value
-        else:
-            logger.debug("--No result")
-            logger.debug("TYPE: " + str(type(ret)))
-
-        return ret_value
-
-    # -------------------------------------------------------------------------
-    def __saxon_xpath(self, context, expression):
-        from saxonche import PyXdmValue
-        ret_value = None
-        logger.debug("Evaluating: " + expression)
-        xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
-        xp.set_context(xdm_item=context)
-        ret = xp.evaluate(expression)
-        if  isinstance(ret,PyXdmValue):
-            logger.debug("--Return Size: " + str(ret.size))
-            ret_value = ret
-        else:
-            logger.debug("--No result")
-
-        return ret_value
-
-    # -------------------------------------------------------------------------
-    def __saxon_xpath_single(self, context, expression):
-        from saxonche import PyXdmValue
-        ret_value = ""
-        logger.debug("Evaluating Single: " + expression)
-        xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
-        xp.set_context(xdm_item=context)
-        ret = xp.evaluate_single(expression)
-        if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
-            ret_value = ret.string_value
-        else:
-            logger.debug("--No result")
-            logger.debug("TYPE: " + str(type(ret)))
-
-        return ret_value
-    # -------------------------------------------------------------------------
-
-    
     def xpath_atomic(self, xExpr, context=None):
         """
         Performs an xpath query that is expected to return a single atomic value,
@@ -1140,44 +1205,7 @@ def append_link(parent_node, link: dict):
         text_node.text = link.get('text', '')
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
-def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
-    """
-    Converts a date and time to UTC and outputs an OSCAL date-time-with-timezone string. 
-    Optional Parameters:
-    - date_time (datetime or str): A date and time to convert to a formatted string.
-       Can be a datetime object or a string that can be parsed into datetime.
-       Default is the current date and time
-    - format (str): The formatting string to use
-        default is "%Y-%m-%dT%H:%M:%SZ" (OSCAL standard format)
-
-    Returns a formatted date time string.
-    If an error occurs, returns an empty string.
-    """
-    from datetime import datetime, timezone
-    from dateutil import parser as date_parser
-    
-    if date_time is None: 
-        date_time = datetime.now()
-    elif isinstance(date_time, str):
-        # Parse string into datetime object
-        try:
-            date_time = date_parser.parse(date_time)
-        except Exception as error:
-            logger.error(f"{type(error).__name__} error parsing date/time string '{date_time}': {str(error)}")
-            return ""
-    
-    ret_value = ""
-
-    try:
-        # Ensure we have timezone info, default to UTC if naive
-        if date_time.tzinfo is None:
-            date_time = date_time.replace(tzinfo=timezone.utc)
-        else:
-            date_time = date_time.astimezone(timezone.utc)
-        ret_value = date_time.strftime(format)
-    except Exception as error:
-        logger.error(f"{type(error).__name__} error handling date/time formatting: {str(error)}")
-    return ret_value
+# NOTE: oscal_date_time_with_timezone is imported from oscal_datatypes (moved there to avoid circular imports)
 # -----------------------------------------------------------------------------
 def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
     """
