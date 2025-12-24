@@ -678,9 +678,9 @@ class OSCAL_support:
                 
                 if not entry.get("draft", False):
                     oscal_version = entry.get("tag_name", "").lower()
-                    self.__status_messages(f"Found non-draft OSCAL Version {oscal_version}...")
+                    # self.__status_messages(f"Found non-draft OSCAL Version {oscal_version}...")
                     if (oscal_version not in DEFAULT_EXCLUDE_VERSIONS):
-                        self.__status_messages(f"Found non-excluded OSCAL Version {oscal_version}") 
+                        # self.__status_messages(f"Found non-excluded OSCAL Version {oscal_version}") 
                         
                         ok_to_continue = (fetch_all or 
                                         (fetch_latest and oscal_version not in self.versions) or
@@ -712,9 +712,16 @@ class OSCAL_support:
                             else:
                                 logger.error(f"Unable to insert OSCAL version {oscal_version} into support database.")
                         else:
-                            self.__status_messages(f"Skipping {oscal_version} release.")
+                            if fetch_one and oscal_version != fetch:
+                                self.__status_messages(f"Skipping {oscal_version} release. Not the version specified.")
+                            elif fetch_latest and oscal_version in self.versions:
+                                self.__status_messages(f"Skipping {oscal_version} release. Already have this version.")
+                            else:
+                                self.__status_messages(f"Skipping {oscal_version} release.")
                     else:
                         self.__status_messages(f"Skipping excluded OSCAL Version {oscal_version}...")
+                else:
+                    self.__status_messages(f"Skipping draft OSCAL Version {oscal_version}...")
 
         else:
             logger.error("Unable to fetch release information from GitHub.") 
