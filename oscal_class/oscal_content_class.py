@@ -3,17 +3,17 @@
 
     A class for creation, manipulation, validation and format convertion of OSCAL content.
     All published OSCAL versions, formats and models can be validated and converted. 
-    Creation and manipulation is OSCAL 1.2.0 compliant.
+    Creation and manipulation is OSCAL 1.2.0 compliant where implemented.
 
-    OSCAL XML, JSON and YAML formats are supported, and content can be converted between them.
-    This class can ingest and validate OSCAL content in its native format using the appropriate 
+    OSCAL XML, JSON and YAML formats are supported.
+    This class ingests and validates OSCAL content in its native format using the appropriate 
     NIST-published OSCAL schema.
 
     Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
     Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
 
-    In the fFuture this library will include direct validation and conversion using the NIST-published 
-    OSCAL metaschema definitions, which include additional rules not addressed by the XML and JSON schemas.
+    In the fFuture this library will perform validation and conversion using the NIST-published 
+    OSCAL metaschema definitions, which include additional rules not handled by the XML and JSON schemas.
 """
 from loguru import logger
 import os
@@ -71,23 +71,35 @@ class OSCAL(LoggableMixin):
     """
     def __init__(self, content="", filename="", support_db_conn="", support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
         """
-        OSCAL Class Constructor
+        OSCAL Class
         Must provide at least one of the following parameters:
         - content: A string containing the OSCAL content
         - filename: A path to a file containing the OSCAL content
-        - new_model: A string indicating the type of new OSCAL model to create
         - support_db_conn: Database connection string or path for OSCAL Support instance
         - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
 
         content and new_model are mutually exclusive.
 
         Raises:
-            ValueError: If no content or filename is provided, or if content cannot be loaded
+            ValueError: If no content, filename nor new_model is provided
         """
+        logger.debug("Initializing OSCAL class instance...")
         # Need at least one of content, filename, or new_model
         if not content and not filename:
-            logger.error("No content or filename. Unable to proceed.")
-            raise ValueError("No content or filename provided. Unable to proceed.")
+            # logger.error("No content, filename nor new_model. Unable to proceed.")
+            raise ValueError("No content, filename nor new_model provided. Unable to proceed.")
+
+
+        # If just a filename and no content, load the file
+        if filename and not content:
+            logger.debug(f"Loading OSCAL content from file: {filename}")
+            self.filename = filename
+            content = getfile(filename)
+            if not content:
+                logger.error(f"Unable to get file: {filename}")
+                raise ValueError(f"Unable to get file: {filename}")
+
+        logger.debug("Setting up OSCAL content properties...")
 
         self.content = content
         self.original_location = filename
@@ -95,11 +107,16 @@ class OSCAL(LoggableMixin):
 
         self.oscal_model = ""
         self.oscal_version = ""
+        self.content_title = ""
+        self.content_publication = ""
+        self.content_version = ""
+        self.remarks = ""
 
         self.dict = None # JSON/YAML constructs
         self.tree = None # XML constructs
         self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
         self.__saxon = None
+
         self.synced = False # Boolean indicating whether the tree and dict are in sync
         self.unsaved = False # Boolean indicating whether there are unsaved modifications
 
@@ -116,32 +133,39 @@ class OSCAL(LoggableMixin):
         self.imports = []        # A list of imported OSCAL files, by CC-assigned UUID
         self.support = get_shared_oscal_support(support_db_conn, support_db_type)  # Always gets the same instance
 
-        # If just a filename and no content, load the file
-        if filename and not content:
-            logger.debug(f"Loading OSCAL content from file: {filename}")
-            self.filename = filename
-            self.content = getfile(filename)
-            if not self.content:
-                logger.error(f"Unable to get file: {filename}")
-                raise ValueError(f"Unable to get file: {filename}")
-
         # Process content if we have it
         if self.content:
             logger.debug("Processing provided content...")
             self.initial_validation()
         else:
-            logger.error("No content available after attempting to load from file.")
-            raise ValueError("No content available after attempting to load from file.")
+            raise ValueError("No content available.")
 
     # -------------------------------------------------------------------------
     def __str__(self):
-        return f"OSCAL(model={self.oscal_model}, version={self.oscal_version}, format={self.original_format})"
+        ret_value = "OSCAL:\n"
+        ret_value += "=============================================================================\n"
+        ret_value += f"= Model: {self.oscal_model}\n"
+        ret_value += f"= Version: {self.oscal_version}\n"
+        ret_value += "=============================================================================\n"
+        ret_value += f"= Title: {self.content_title}\n"
+        if self.content_publication:
+            ret_value += f"= Publication Date: {self.content_publication}\n"
+        if self.content_version:
+            ret_value += f"= Content Version: {self.content_version}\n"
+        if self.remarks:
+            ret_value += "=============================================================================\n"
+            ret_value += f" Remarks: {self.remarks}\n"
+        ret_value += "=============================================================================\n"
+
+        return ret_value
     # -------------------------------------------------------------------------
     def initial_validation(self):
         """
         Perform initial validation of content, which includes first ensuring the 
         content is a recognized OSCAL format type (xml, json or yaml) and 
         well formed, before passing it to the OSCAL validation method.
+        Returns:
+            bool: True if initial validation is successful, False otherwise
         """
         logger.debug("Performing initial validation of content...")
         status = False
@@ -159,18 +183,26 @@ class OSCAL(LoggableMixin):
                     self.tree = safe_load_xml(self.content)
                     if self.tree is not None:
                         status = True
+                        self.well_formed["xml"] = True
                         root_element = self.xpath_atomic("/*/name()")
                         oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"
+                        content_title = self.xpath_atomic("/*/metadata/title/text()")
+                        content_version = self.xpath_atomic("/*/metadata/version/text()")
+                        content_publication = self.xpath_atomic("/*/metadata/published/text()")
                     else:
                         status = False
                         logger.error("Content is not well-formed XML.")
 
-                case "json", "yaml":
+                case "json" | "yaml":
                     self.dict = safe_load(self.content, self.original_format)
                     if self.dict is not None:
+                        logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
                         status = True
                         root_element = next(iter(self.dict.keys())) if self.dict else ""
-                        oscal_version = f"v{self.dict.get('metadata', {}).get('oscal-version', '')}"
+                        oscal_version = f"v{self.dict.get(root_element, {}).get('metadata', {}).get('oscal-version', '')}"
+                        content_title = self.dict.get(root_element, {}).get('metadata', {}).get('title', '')
+                        content_version = self.dict.get(root_element, {}).get('metadata', {}).get('version', '')
+                        content_publication = self.dict.get(root_element, {}).get('metadata', {}).get('published', '')
                     else:
                         status = False
                         logger.error(f"Content is not well-formed {self.original_format.upper()}.")
@@ -184,10 +216,13 @@ class OSCAL(LoggableMixin):
                 self.oscal_version = oscal_version
                 if root_element in self.support.enumerate_models(self.oscal_version):
                     self.oscal_model = root_element
+                    self.content_title = content_title
+                    self.content_version = content_version
+                    self.content_publication = content_publication
                     logger.debug(f"OSCAL model '{self.oscal_model}' and version '{self.oscal_version}' identified.")
                     status = True
                     # **** TODO: VALIDATE ****
-                    self.OSCAL_validate()
+                    self.validate()
                 else:
                     logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
                     status = False
@@ -198,7 +233,7 @@ class OSCAL(LoggableMixin):
         return status
 
     # -------------------------------------------------------------------------
-    def OSCAL_validate(self) -> bool:
+    def validate(self, format="") -> bool:
         """
         Validate OSCAL content.
         This assumes the content has already been determined to be well-formed XML, JSON, or YAML,
@@ -208,13 +243,80 @@ class OSCAL(LoggableMixin):
         """
         # TODO: Implement actual validation logic here
         logger.debug("Validating OSCAL content...")
+        if format == "":
+            format = self.original_format
+
+        if format not in OSCAL_FORMATS:
+            logger.error(f"The validation format specified ({format}) is not an OSCAL format.")
+            self.valid_oscal = False
+            return self.valid_oscal
+
+        match format:
+            case "xml":
+                logger.debug("Validating XML content against schema...")
+                xml_schema_content = self.support.asset(self.oscal_version, self.oscal_model, "xml-schema")
+                
+                if xml_schema_content:
+                    try:
+                        import xmlschema
+                        
+                        # Create schema object from string
+                        schema = xmlschema.XMLSchema(xml_schema_content)
+                        
+                        # Validate - returns None if valid, raises exception if invalid
+                        xml_string = self.xml_serializer()
+                        schema.validate(xml_string)
+                        self.schema_valid["xml"] = True
+                        logger.debug("XML schema validation passed.")
+                        
+                    except xmlschema.XMLSchemaValidationError as e:
+                        logger.error(f"XML schema validation failed: {e.reason}")
+                        self.schema_valid["xml"] = False
+                    except Exception as e:
+                        logger.error(f"XML schema validation error: {str(e)}")
+                        self.schema_valid["xml"] = False
+                else:
+                    logger.error("Unable to load XML schema for validation.")
+                    self.schema_valid["xml"] = False
+
+            case "json" | "yaml":
+                logger.debug(f"Validating {format} content against schema...")
+                json_schema_content = self.support.asset(self.oscal_version, self.oscal_model, "json-schema")
+
+                if json_schema_content:
+                    try:
+                        import jsonschema_rs
+                        
+                        # Parse schema string to dict if needed
+                        if isinstance(json_schema_content, str):
+                            schema_dict = json.loads(json_schema_content)
+                        else:
+                            schema_dict = json_schema_content
+                        
+                        # Validate directly (returns True/raises exception)
+                        jsonschema_rs.is_valid(self.dict, schema_dict)  # Quick check
+                        # Or for detailed errors:
+                        jsonschema_rs.validate(self.dict, schema_dict)
+                        
+                        self.schema_valid["json"] = True
+                        logger.debug("JSON schema validation passed.")
+                        
+                    except jsonschema_rs.ValidationError as e:
+                        logger.error(f"JSON schema validation failed: {e}")
+                        self.schema_valid["json"] = False
+                    except Exception as e:
+                        logger.error(f"JSON schema validation error: {str(e)}")
+                        self.schema_valid["json"] = False
+                else:
+                    logger.error("Unable to load JSON schema for validation.")
+                    self.schema_valid["json"] = False
 
 
         self.valid_oscal = True
         return self.valid_oscal
 
     # -------------------------------------------------------------------------
-    def OSCAL_convert(self, target_format: str, pretty_print: bool=False) -> None:
+    def convert(self, target_format: str, pretty_print: bool=False) -> None:
         """
         Convert the current OSCAL content to the target format. Options for pretty printing.
         Args:
@@ -435,112 +537,113 @@ class OSCAL(LoggableMixin):
             else:
                 self.__set_field(f"/*/metadata/{item}", content.get(item, ""))
 
-    # # -------------------------------------------------------------------------
-    # def __setup_saxon(self): # Future - place holder for code for now
-    #     from saxonche import PySaxonProcessor 
+    """
+        # # -------------------------------------------------------------------------
+        # def __setup_saxon(self): # Future - place holder for code for now
+        #     from saxonche import PySaxonProcessor 
 
-    #     self.__saxon = PySaxonProcessor(license=False)
-    #     try: 
-    #         self.xdm = self.__saxon.parse_xml(xml_text=self.xml)
-    #         # self.__saxon.declare_namespace("", "http://csrc.nist.gov/ns/oscal/1.0")
-    #         self.valid = True
-    #         self.oscal_format = "xml"
-    #     except Exception as error:
-    #         logger.error(f"Content does not appear to be valid XML. Unable to rpoceed. {str(error)}")
+        #     self.__saxon = PySaxonProcessor(license=False)
+        #     try: 
+        #         self.xdm = self.__saxon.parse_xml(xml_text=self.xml)
+        #         # self.__saxon.declare_namespace("", "http://csrc.nist.gov/ns/oscal/1.0")
+        #         self.valid = True
+        #         self.oscal_format = "xml"
+        #     except Exception as error:
+        #         logger.error(f"Content does not appear to be valid XML. Unable to rpoceed. {str(error)}")
 
-    #     if self.valid:
-    #         self.xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
-    #         self.__saxon_handle_ns()
-    #         self.xp.set_context(xdm_item=self.xdm) # Sets xpath processing context as the whole file
-    #         temp_ret = self.__saxon_xpath_global("/*/name()")
-    #         if temp_ret is not None:
-    #             self.root_node = temp_ret[0].get_atomic_value().string_value
-    #             logger.debug("ROOT: " + self.root_node)
-    #         self.oscal_version = self.__saxon_xpath_global_single("/*/*:metadata/*:oscal-version/text()")
-    #         logger.debug("OSCAL VERSION: " + self.oscal_version)
+        #     if self.valid:
+        #         self.xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+        #         self.__saxon_handle_ns()
+        #         self.xp.set_context(xdm_item=self.xdm) # Sets xpath processing context as the whole file
+        #         temp_ret = self.__saxon_xpath_global("/*/name()")
+        #         if temp_ret is not None:
+        #             self.root_node = temp_ret[0].get_atomic_value().string_value
+        #             logger.debug("ROOT: " + self.root_node)
+        #         self.oscal_version = self.__saxon_xpath_global_single("/*/*:metadata/*:oscal-version/text()")
+        #         logger.debug("OSCAL VERSION: " + self.oscal_version)
 
-    # # -------------------------------------------------------------------------
-    # def __saxon_xml_serializer(self):
-    #     return self.xdm.to_string('utf_8')
+        # # -------------------------------------------------------------------------
+        # def __saxon_xml_serializer(self):
+        #     return self.xdm.to_string('utf_8')
 
-    # # -------------------------------------------------------------------------
-    # def __saxon_handle_ns(self):
-    #     node_ = self.xdm
-    #     child = node_.children[0]
-    #     assert child is not None
-    #     namespaces = child.axis_nodes(8)
+        # # -------------------------------------------------------------------------
+        # def __saxon_handle_ns(self):
+        #     node_ = self.xdm
+        #     child = node_.children[0]
+        #     assert child is not None
+        #     namespaces = child.axis_nodes(8)
 
-    #     for ns in namespaces:
-    #         uri_str = ns.string_value
-    #         ns_prefix = ns.name
+        #     for ns in namespaces:
+        #         uri_str = ns.string_value
+        #         ns_prefix = ns.name
 
-    #         if ns_prefix is not None:
-    #             logger.debug("xmlns:" + ns_prefix + "='" + uri_str + "'")
-    #         else:
-    #             logger.debug("xmlns uri=" + uri_str + "'")
-    #             # set default ns here
-    #             self.xp.declare_namespace("", uri_str)
+        #         if ns_prefix is not None:
+        #             logger.debug("xmlns:" + ns_prefix + "='" + uri_str + "'")
+        #         else:
+        #             logger.debug("xmlns uri=" + uri_str + "'")
+        #             # set default ns here
+        #             self.xp.declare_namespace("", uri_str)
 
-    # # -------------------------------------------------------------------------
-    # def __saxon_xpath_global(self, expression):
-    #     from saxonche import PyXdmValue
-    #     ret_value = None
-    #     logger.debug("Global Evaluating: " + expression)
-    #     ret = self.xp.evaluate(expression)
-    #     if  isinstance(ret,PyXdmValue):
-    #         logger.debug("--Return Size: " + str(ret.size))
-    #         ret_value = ret
-    #     else:
-    #         logger.debug("--No result")
+        # # -------------------------------------------------------------------------
+        # def __saxon_xpath_global(self, expression):
+        #     from saxonche import PyXdmValue
+        #     ret_value = None
+        #     logger.debug("Global Evaluating: " + expression)
+        #     ret = self.xp.evaluate(expression)
+        #     if  isinstance(ret,PyXdmValue):
+        #         logger.debug("--Return Size: " + str(ret.size))
+        #         ret_value = ret
+        #     else:
+        #         logger.debug("--No result")
 
-    #     return ret_value
+        #     return ret_value
 
-    # # -------------------------------------------------------------------------
-    # def __saxon_xpath_global_single(self, expression):
-    #     from saxonche import PyXdmValue
-    #     ret_value = ""
-    #     logger.debug("Global Evaluating Single: " + expression)
-    #     ret = self.xp.evaluate_single(expression)
-    #     if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
-    #         ret_value = ret.string_value
-    #     else:
-    #         logger.debug("--No result")
-    #         logger.debug("TYPE: " + str(type(ret)))
+        # # -------------------------------------------------------------------------
+        # def __saxon_xpath_global_single(self, expression):
+        #     from saxonche import PyXdmValue
+        #     ret_value = ""
+        #     logger.debug("Global Evaluating Single: " + expression)
+        #     ret = self.xp.evaluate_single(expression)
+        #     if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
+        #         ret_value = ret.string_value
+        #     else:
+        #         logger.debug("--No result")
+        #         logger.debug("TYPE: " + str(type(ret)))
 
-    #     return ret_value
+        #     return ret_value
 
-    # # -------------------------------------------------------------------------
-    # def __saxon_xpath(self, context, expression):
-    #     from saxonche import PyXdmValue
-    #     ret_value = None
-    #     logger.debug("Evaluating: " + expression)
-    #     xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
-    #     xp.set_context(xdm_item=context)
-    #     ret = xp.evaluate(expression)
-    #     if  isinstance(ret,PyXdmValue):
-    #         logger.debug("--Return Size: " + str(ret.size))
-    #         ret_value = ret
-    #     else:
-    #         logger.debug("--No result")
+        # # -------------------------------------------------------------------------
+        # def __saxon_xpath(self, context, expression):
+        #     from saxonche import PyXdmValue
+        #     ret_value = None
+        #     logger.debug("Evaluating: " + expression)
+        #     xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+        #     xp.set_context(xdm_item=context)
+        #     ret = xp.evaluate(expression)
+        #     if  isinstance(ret,PyXdmValue):
+        #         logger.debug("--Return Size: " + str(ret.size))
+        #         ret_value = ret
+        #     else:
+        #         logger.debug("--No result")
 
-    #     return ret_value
+        #     return ret_value
 
-    # # -------------------------------------------------------------------------
-    # def __saxon_xpath_single(self, context, expression):
-    #     from saxonche import PyXdmValue
-    #     ret_value = ""
-    #     logger.debug("Evaluating Single: " + expression)
-    #     xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
-    #     xp.set_context(xdm_item=context)
-    #     ret = xp.evaluate_single(expression)
-    #     if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
-    #         ret_value = ret.string_value
-    #     else:
-    #         logger.debug("--No result")
-    #         logger.debug("TYPE: " + str(type(ret)))
+        # # -------------------------------------------------------------------------
+        # def __saxon_xpath_single(self, context, expression):
+        #     from saxonche import PyXdmValue
+        #     ret_value = ""
+        #     logger.debug("Evaluating Single: " + expression)
+        #     xp = self.__saxon.new_xpath_processor() # Instantiates XPath processing
+        #     xp.set_context(xdm_item=context)
+        #     ret = xp.evaluate_single(expression)
+        #     if  isinstance(ret, PyXdmValue): # isinstance(ret,PyXdmNode):
+        #         ret_value = ret.string_value
+        #     else:
+        #         logger.debug("--No result")
+        #         logger.debug("TYPE: " + str(type(ret)))
 
-    #     return ret_value
-
+        #     return ret_value
+    """
     # -------------------------------------------------------------------------
     def xpath_atomic(self, xExpr, context=None):
         """
@@ -603,6 +706,42 @@ class OSCAL(LoggableMixin):
         return ret_value
 
     # -------------------------------------------------------------------------
+    def get_serialized_content(self, format: str):
+        """
+        Serializes the current content to a string in the specified format.
+        Parameters:
+        - format (str): The target format for serialization ("xml", "json", or "yaml")
+        
+        Returns:
+        - str: The serialized content as a string.
+        """
+        format = format.lower()
+        if format not in OSCAL_FORMATS:
+            logger.error(f"The requested format for serialization ({format}) is not an OSCAL format.")
+            return ""
+
+        if not self.valid_oscal:
+            logger.error("Content is not valid OSCAL. Cannot serialize.")
+            return ""
+
+        # if format == self.original_format:
+
+        match format:
+            case "xml":
+                # if self.tree is None:
+
+                return self.xml_serializer()
+            case "json":
+                return self.json_serializer()
+            case "yaml" | "yml":
+                return self.yaml_serializer()
+            case _:
+                logger.error(f"Unsupported format for serialization: {format}")
+                return ""
+
+
+
+    # -------------------------------------------------------------------------
     def xml_serializer(self):
         """
         Serializes the current XML tree to a string.
@@ -660,52 +799,7 @@ class OSCAL(LoggableMixin):
         logger.debug("LEN: " + str(len(out_string)))
         
         return out_string
-    # -------------------------------------------------------------------------
-    # def lookup(self, xExpr: str, attributes: list=[], children: list=[]):
-    #     """
-    #     Checks for the existence of an element basedon an xpath expression.
-    #     Returns a dict containing any of the following if available: id, uuid, title
-    #     If aditional attributes or children are specified in the function call
-    #     and found to be present, they are included in the dict as well. 
-    #     Parameters:
-    #     - xExpr (str): xpath expression. This should always evaluate to 0 or 1 nodes
-    #     - attributes(list)[Optional]: a list of additional attributes to return
-    #     - children(list)[Optional]: a list of additional children to return
-
-    #     Return:
-    #     - dict or None
-    #     dict = {
-    #        {'attribute/field name', 'value'},
-    #        {'attribute/field name', 'value'}        
-    #     }
-    #     """
-    #     ret_value = None
-    #     target_node = self.xpath(xExpr)
-    #     if target_node:
-    #         ret_value = {}
-    #         if 'id' in target_node.attrib:
-    #             ret_value.append({"id", target_node.get("id")})
-    #         if 'uuid' in target_node.attrib:
-    #             ret_value.append({"uuid", target_node.get("uuid")})
-
-    #         # Use elementpath for reliable XPath processing
-    #         title_nodes = elementpath.select(target_node, './title', namespaces=self.nsmap)
-    #         title = title_nodes[0] if title_nodes else None
-    #         if title:
-    #             ret_value.append({"title", title.text})
-
-    #         for attribute in attributes:
-    #             ret_value.append({attribute, target_node.get(attribute)})
-
-    #         for child in children:
-    #             # Use elementpath for reliable XPath processing
-    #             child_nodes = elementpath.select(target_node, './' + child, namespaces=self.nsmap)
-    #             child_node = child_nodes[0] if child_nodes else None
-    #             if child_node:
-    #                 ret_value.append({child, child_node.text})
-
-
-    #     return ret_value
+   
     # -------------------------------------------------------------------------
     def assign_html_string_to_node(self, parent_node, html_string: str):
         """
@@ -737,6 +831,7 @@ class OSCAL(LoggableMixin):
         except Exception as error:
             logger.error(f"Error assigning HTML string to node: {type(error).__name__} - {str(error)}")
             logger.error("HTML String: " + html_string)
+
     # -------------------------------------------------------------------------
     def create_control(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", statements=[], guidance="", example="", objectives=[], objects=[], methods=[], remarks=""):
         """
@@ -1229,7 +1324,6 @@ def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> O
     else:
         return None
 # -------------------------------------------------------------------------
-
 
 # -------------------------------------------------------------------------
 def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
