@@ -38,8 +38,8 @@ class OSCALConverterError(Exception):
 def oscal_xml_to_json(
     xml_content: str,
     xsl_converter: str,
-    json_indent: bool = True
-) -> str:
+    json_indent: bool = False
+    ) -> str:
     """
     Convert OSCAL XML to JSON using NIST XSLT 3.0 converter.
     
@@ -104,8 +104,8 @@ def oscal_xml_to_json(
 def oscal_json_to_xml(
     json_content: str,
     xsl_converter: str,
-    validate_json: bool = True
-) -> str:
+    validate_json: bool = False
+    ) -> str:
     """
     Convert OSCAL JSON to XML using NIST XSLT 3.0 converter.
     

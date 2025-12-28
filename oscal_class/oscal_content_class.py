@@ -30,6 +30,7 @@ from common.lfs import getfile, chkdir, putfile, normalize_content, save_json
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
 from .oscal_markdown import oscal_markdown_to_html
 from .oscal_datatypes import oscal_date_time_with_timezone
+from .oscal_converters import oscal_xml_to_json, oscal_json_to_xml
 
 INDENT = 2
 
@@ -118,7 +119,8 @@ class OSCAL(LoggableMixin):
         self.__saxon = None
 
         self.synced = False # Boolean indicating whether the tree and dict are in sync
-        self.unsaved = False # Boolean indicating whether there are unsaved modifications
+        # TODO: Have every function that moddifies content update the unsaved flag
+        self.unsaved = True # Boolean indicating whether there are unsaved modifications
 
         self.well_formed = {}          # A dictionary indicating whether the content is well-formed for each format
         self.well_formed["xml"] = None
@@ -154,8 +156,16 @@ class OSCAL(LoggableMixin):
             ret_value += f"= Content Version: {self.content_version}\n"
         if self.remarks:
             ret_value += "=============================================================================\n"
-            ret_value += f" Remarks: {self.remarks}\n"
-        ret_value += "=============================================================================\n"
+            ret_value += f" Remarks:\n{self.remarks}\n"
+        if self.schema_valid.get(self.original_format, False):
+            ret_value += "=============================================================================\n"
+            ret_value += "= VALID OSCAL CONTENT\n"
+        else:
+            ret_value += "=============================================================================\n"
+            ret_value += "= INVALID OSCAL CONTENT\n"
+        if self.filename:
+            ret_value += "=============================================================================\n"
+            ret_value += f"= Source File: {self.filename}\n"
 
         return ret_value
     # -------------------------------------------------------------------------
@@ -404,41 +414,69 @@ class OSCAL(LoggableMixin):
         Args:
             filename (str): The path to the file where content will be saved.
             format (str): The format to save the content in {OSCAL_FORMATS}.
+            pretty_print (bool): Whether to pretty print the output.
 
         """
         status = False
+
+        # If a format is passed, ensure it is valid
         if format:
             format = format.lower()
             if format not in OSCAL_FORMATS:
-                logger.debug(f"The save format specified ({format}) is not an OSCAL format.")
+                logger.debug(f"Cannot save in ({format}) format. Not an OSCAL format.")
                 return
+
+        # If no format is passed, use the original format
         else:
             format = self.original_format
 
+        # If no format was passed and no original format, cannot proceed
+        if format == "":
+            logger.error("No format specified for saving OSCAL content.")
+            return False
 
+        # If no filename is passed, use the original location
         if filename == "":
             filename = self.original_location
 
+        # If no filename was passed and no original location, cannot proceed
+        if filename == "":
+            logger.error("No filename specified for saving OSCAL content.")
+            return False
+
+        # Ensure the directory exists
         file_path = os.path.dirname(os.path.abspath(filename))
         if not chkdir(file_path, make_if_not_present=True):
             logger.error(f"Directory does not exist and could not be created: {os.path.dirname(file_path)}")
-            return
-        
+            return False
+
         logger.debug(f"Saving content as {filename} in OSCAL {format.upper()} format.")
         match format:
             case "xml":
-                self.xml = self.xml_serializer() 
-                status = putfile(filename, self.xml)
+                if not self.tree:
+                    xml_output = oscal_json_to_xml(self.dict, 
+                                      xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml"))
+                    self.tree = ElementTree.ElementTree(ElementTree.fromstring(xml_out))
+                else: 
+                    xml_output = self.xml_serializer() 
+                status = putfile(filename, xml_output)
 
-            case "json":
-                # self.json = self.to_json()
-                logger.warning("JSON saving not yet implemented.")
-                status = save_json(filename, self.dict) # pretty_print=pretty_print)
+            case "json" | "yml" | "yaml":
+                if not self.dict:
+                    json_output = oscal_xml_to_json(self.content, 
+                                      xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json"))
+                    self.dict = json.loads(json_output)
 
-            case "yaml", "yml":
-                self.yaml = self.to_yaml()
-                logger.warning("YAML saving not yet implemented.")
-                status = putfile(filename, self.yaml)
+                if self.dict is None:
+                    logger.error("No JSON content available to save.")
+                    return False
+
+                if format == "json":
+                    status = save_json(filename, self.dict) # pretty_print=pretty_print)
+                else: # YAML
+                    yaml_out = yaml.dump(self.dict, sort_keys=False, indent=INDENT if pretty_print else None)   
+
+                    status = putfile(filename, yaml_out)
             case _:
                 logger.error(f"Unsupported format for saving: {format}")
                 return
