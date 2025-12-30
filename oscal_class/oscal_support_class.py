@@ -756,11 +756,13 @@ class OSCAL_support:
         asset_URL = asset.get("browser_download_url", "")
         model_name = asset_name.replace("oscal_", "").replace(pattern, "")
 
-        # Special case for SSP and POAM
+        # Special cases for SSP, POAM, and Component
         if model_name == "ssp": 
             model_name = "system-security-plan"
         if model_name == "poam": 
             model_name = "plan-of-action-and-milestones"
+        if model_name == "component": 
+            model_name = "component-definition"            
         
         uuid_value = str(uuid.uuid4())
         

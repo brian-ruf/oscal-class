@@ -462,9 +462,11 @@ class OSCAL(LoggableMixin):
                 status = putfile(filename, xml_output)
 
             case "json" | "yml" | "yaml":
+                logger.debug("Preparing to save JSON/YAML content...")
                 if not self.dict:
                     json_output = oscal_xml_to_json(self.content, 
                                       xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json"))
+                    logger.debug(f"Converted XML content to JSON: {json_output[:100]}...")  # Log a snippet of the JSON output
                     self.dict = json.loads(json_output)
 
                 if self.dict is None:
@@ -472,8 +474,10 @@ class OSCAL(LoggableMixin):
                     return False
 
                 if format == "json":
-                    status = save_json(filename, self.dict) # pretty_print=pretty_print)
+                    logger.debug("Saving content in JSON format...")
+                    status = save_json(self.dict, filename) # pretty_print=pretty_print)
                 else: # YAML
+                    logger.debug("Saving content in YAML format...")
                     yaml_out = yaml.dump(self.dict, sort_keys=False, indent=INDENT if pretty_print else None)   
 
                     status = putfile(filename, yaml_out)
