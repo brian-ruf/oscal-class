@@ -58,7 +58,7 @@ try:
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
-    _OscalLoader = None
+    _OscalLoader = None # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +946,7 @@ def _load_file(path: Path, fmt: str) -> dict:
             raise ImportError(
                 "PyYAML is not installed. Install it with: pip install pyyaml"
             )
-        return yaml.load(text, Loader=_OscalLoader)
+        return yaml.load(text, Loader=_OscalLoader) # type: ignore
 
 
 def _dump_file(data: dict, path: Path, fmt: str) -> None:
@@ -957,7 +957,7 @@ def _dump_file(data: dict, path: Path, fmt: str) -> None:
             raise ImportError(
                 "PyYAML is not installed. Install it with: pip install pyyaml"
             )
-        text = yaml.dump(
+        text = yaml.dump( # type: ignore
             data,
             default_flow_style=False,
             allow_unicode=True,
