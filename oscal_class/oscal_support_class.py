@@ -19,6 +19,7 @@ from .oscal_datatypes import oscal_date_time_with_timezone
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 SUPPORT_DATABASE_DEFAULT_FILE = "./support/oscal_support.db"
 SUPPORT_DATABASE_DEFAULT_TYPE = "sqlite3"
+COMPRESS_SUPPORT_FILES_IN_DATABASE = True
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # As defined by NIST:
 OSCAL_DEFAULT_XML_NAMESPACE = "http://csrc.nist.gov/ns/oscal/1.0"
@@ -85,10 +86,10 @@ OSCAL_SUPPORT_TABLES["filecache"] = database.OSCAL_COMMON_TABLES["filecache"]
 OSCAL_DATA_TYPES = {}
 
 # ========================================================================
-def setup_support(support_file= SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
+def setup_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
     logger.debug(f"Setting up support file: {support_file}")
     
-    support = OSCAL_support.create(support_file, db_init_mode=db_init_mode)
+    support = OSCAL_support.create(support_file, db_init_mode=db_init_mode )
     cycle = 0
     while not support.ready:
         logger.debug("Waiting for support object to be ready...")
@@ -109,7 +110,7 @@ def setup_support(support_file= SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="aut
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCAL_support:
-    def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto"):
+    def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto", db_compress_files=COMPRESS_SUPPORT_FILES_IN_DATABASE):
         """
         Initialize OSCAL Support.
         
@@ -125,6 +126,7 @@ class OSCAL_support:
         self.db_conn    = db_conn   # The support database connection string or path and filename 
         self.db_type    = db_type   # The support database type (sqlite3, mysql, postgresql, mssql, etc.)
         self.db_init_mode = db_init_mode  # Database initialization mode
+        self.db_compress_files = db_compress_files  # Whether to compress support files in the database
         self.db_state   = "unknown" # The state of the support database (unknown, not-present, empty, populated)
         self.versions   = {}        # Supported OSCAL versions available within the support database, and support references
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
@@ -676,8 +678,8 @@ class OSCAL_support:
                 self.__status_messages(f"Inspecting release {idx} of {total_releases}...")
                 # Progress indicator (no need for asyncio.sleep in sync mode)
                 
+                oscal_version = entry.get("tag_name", "").lower()
                 if not entry.get("draft", False):
-                    oscal_version = entry.get("tag_name", "").lower()
                     # self.__status_messages(f"Found non-draft OSCAL Version {oscal_version}...")
                     if (oscal_version not in DEFAULT_EXCLUDE_VERSIONS):
                         # self.__status_messages(f"Found non-excluded OSCAL Version {oscal_version}") 

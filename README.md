@@ -1,16 +1,20 @@
 # OSCAL Python Library
 
-This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) content validation, format conversion, and related capabilities without the need for Internet connectivity. 
+This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) XML, JSON and YAML content. It provides classes for OSCAL content. The classes are able to perform validation, format conversion and some content manipulation. 
 
 It handles all published OSCAL versions, and can "learn" new versions as they are published by NIST.
 
-Please submit feedback,  bug reports and enhancement requests as [GitHub issues](https://github.com/brian-ruf/oscal-class/issues). Bug fixes and backward-compatible code contributions are welcome. Please consider collaborating on any breaking enhancements.
+Please submit feedback, bug reports and enhancement requests as [GitHub issues](https://github.com/brian-ruf/oscal-class/issues). Bug fixes and backward-compatible code contributions are welcome. Please consider collaborating on any breaking enhancements.
 
 ### Designed for Air Gapped Environments
 
-The `OSCAL_support` class includes an _OSCAL Support Module_. A single SQLite3 database file that contains the published support files for all OSCAL formats, versions and models. This enables support functionality in an air gapped environment.
+The `OSCAL_support` class includes an _OSCAL Support Module_. This is a single SQLite3 database file that contains the NIST-published support files for all OSCAL formats, versions and models. The module enables support functionality in an air gapped environment.
 
-When a new version of OSCAL is published, the support module can be updated on an internet-connected computer and conveyed into an air gapped environment for use.
+When a new version of OSCAL is published, the support module can be updated on an Internet-connected computer and conveyed into an air gapped environment for use.
+
+#### Inspection
+
+Inspection of the OSCAL Support Module is possible using any SQLite database viewer. Note that the suport files are ZIP compressed within the database; however, no encryption is used in order to facilitate inspection. 
 
 For more information see the [Support Module](docs/SUPPORT_MODULE.md) documentation.
 
@@ -20,9 +24,9 @@ The Python OSCAL Class is intended to be used as a library for your OSCAL python
 
 Add the following to your `requirements.txt` file or `pyproject.toml` file:
 
-`git+https://github.com/brian-ruf/oscal-class.git@main#egg=oscal-class`
+- Latest published verson use: `oscal`
 
-NOTE: [Publication to Python Package Index (Pypi)](https://pypi.org) to occur with formal 1.0.0 release. 
+- Most up-to-date, unpublished version use: `git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal`
 
 Please see the [Setup documentation](./docs/SETUP.md) for setup instructions and related details.
 
@@ -31,13 +35,13 @@ Please see the [Setup documentation](./docs/SETUP.md) for setup instructions and
 Installation
 
 ```bash
-pip install oscal-class
+pip install oscal
 ```
 
 To use the `OSCAL` class in your code, import the `oscal_content_class` module from the `oscal` library:
 
 ```python
-from oscal import oscal_content_class
+from oscal import oscal_content_class as oscal_content
 
 ```
 

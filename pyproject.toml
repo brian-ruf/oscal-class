@@ -1,28 +1,23 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]  
-build-backend = "setuptools.build_meta"
+
 
 [project]
-name = "oscal_class"
-version = "1.0.0-dev"
-description = "Python classes to mange OSCAL content."
-requires-python = ">=3.7"
+name = "oscal"
+version = "1.0.0"
+description = "Python web server application to validate, convert and manage OSCAL content."
+requires-python = ">=3.12"
 authors = [{ name = "Brian Ruf", email = "Brian@RufRisk.com" }]
 readme = "README.md"
 license = { file = "LICENSE" }
 
 dependencies = [
-    "loguru>=0.7.3",  
-    "saxonche==12.9.0",
-    "jsonschema_rs>=0.26.1",
-    "xmlschema>=3.4.3",
-    "PyYAML >= 6.0",
-    "markdown>=3.0.0",
-    "ruf-common @ git+https://github.com/brian-ruf/ruf-common-python.git@develop"
+    "loguru            >=0.7.3",  
+    "markdown          >=3.0.0",
+    "fastapi           >= 0.116.1",
+    "uvicorn[standard] >= 0.35.0",
+    "requests          >= 2.32.5",
+    "aiohttp           >= 3.12.15",
+    "Jinja2            >= 3.1.7", 
+    "oscal @ git+https://github.com/brian-ruf/oscal-class.git@main",
+    "ruf-common @ git+https://github.com/brian-ruf/ruf-common-python.git@main"
 ]
 
-[tool.setuptools]
-packages = ["oscal_class"]
-
-[tool.setuptools.package-data]
-"oscal_class" = ["data/*.xml"]
