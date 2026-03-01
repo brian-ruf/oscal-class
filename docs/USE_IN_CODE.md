@@ -1,39 +1,45 @@
 # Use in Code
 
-## Important Setup
+The OSCAL class is intended to take the complexity out of OSCAL content manipulation, while exposing more all methods and functions for fine-grained control if desired.
 
-The Python OSCAL Classes rely on my [Python Common](https://github.com/brian-ruf/common-python) submodule. It must also be present in your project's code repository. 
+## Getting started:
 
-Relative to the location of your project's main Python module, the Python OSCAL Classes expect:
-- the Python Common submodule to be located at `./common/`
-- this OSCAL Class submodule to be located at `./oscal/`
+1. Install the OSCAL Class library per the [Setup instructions](./SETUP.md)
 
-Please see the [Setup documentation](./SETUP.md) for setup instructions and related details.
+2. Import the OSCAL Class into your Python code:
 
-## The OSCAL Classes
+```python
+from oscal import *
 
-There are three OSCAL Classes available. Each class uses and expands on the classes beneath it.:
+```
 
-- **OSCAL Project Class**: Managing a collection of _related_ OSCAL artifacts.
-- **OSCAL Content Class**: Managing a single OSCAL artifact.
-- **OSCAL Support Class** [FUTURE]: Interact directly with the OSCAL Support Module. 
+# Create New OSCAL Content:
 
-If you are just getting started with this library, consider starting with the OSCAL Content Class.
+New OSCAL content is created in the latest OSCAL version (currently 1.1.3). The `oscal-version` field is set automatically.
 
-### The OSCAL Support Class
 
-You only need one support object for your entire project. The OSCAL Content Class and OSCAL Project Class will create and manage this object as needed. You only need to instantiate the support object if you want to interact with the support module directly.
+```python
 
-### The OSCAL Content Class
+oscal_obj = oscal.create_new_oscal_content("catalog") # Optional `title`, `version` and `published` arguments available.
 
-You need one OSCAL Content object for each OSCAL artifact. The OSCAL Project Class will instantiate OSCAL content objects as neeed. You only need to instantiate the content object if you want to interact with a single OSCAL artifact.
+```
 
-### The OSCAL Project Class [FUTURE]
+The returned OSCAL object is fully valid with only minimum necessary place-holder data.
 
-You need one OSCAL Project object for each grouping of related OSCAL artifacts. 
+The `title`, `version` and `published` arguments are optional. If passed, they will be set immediately upon content creation. Otherwise, placeholder values are used. 
 
-For example, if you have a Catalog, Profile, SSP, AP, AR and POA&M for each of three different systems, you would have three OSCAL Project objects. One for each system.
 
-Each OSCAL project object would have six OSCAL content object. One for each of the OSCAL artifacts.
+# Loading Existing OSCAL Content:
 
-A single OSCAL support object would be instantiated automatically by the OSCAL content class and used automatically as needed.
+
+```python
+content = "string" # XML, JSON, or YAML 
+
+
+try:
+    oscal_object = OSCAL(content=content, filename=filename)  
+    # If we get here, initialization succeeded
+except ValueError as e:
+    # Handle the error
+    oscal_object = None
+```

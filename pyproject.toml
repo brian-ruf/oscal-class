@@ -1,17 +1,28 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]  # These are REAL requirements
+requires = ["setuptools>=61.0", "wheel"]  
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "oscal"
+name = "oscal_class"
 version = "1.0.0-dev"
-description = "OSCAL utility classes"
+description = "Python classes to mange OSCAL content."
 requires-python = ">=3.7"
+authors = [{ name = "Brian Ruf", email = "Brian@RufRisk.com" }]
+readme = "README.md"
+license = { file = "LICENSE" }
+
 dependencies = [
-    "loguru>=0.7.3",  # Put loguru HERE, not in requirements.txt
-    "saxonche==12.5.0",
+    "loguru>=0.7.3",  
+    "saxonche==12.9.0",
     "jsonschema_rs>=0.26.1",
     "xmlschema>=3.4.3",
-    "common-python @ git+https://github.com/brian-ruf/common-python.git@develop"
+    "PyYAML >= 6.0",
+    "markdown>=3.0.0",
+    "ruf-common @ git+https://github.com/brian-ruf/ruf-common-python.git@develop"
 ]
 
+[tool.setuptools]
+packages = ["oscal_class"]
+
+[tool.setuptools.package-data]
+"oscal_class" = ["data/*.xml"]
