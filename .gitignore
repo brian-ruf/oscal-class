@@ -1,6 +1,8 @@
 venv/
+.venv/
 HOLD/
 __pycache__/
+support/
 *.pyc
 *.pyo
 *.pyd
@@ -12,3 +14,4 @@ __pycache__/
 *.log
 *.env
 *.egg-info/
+.claude/

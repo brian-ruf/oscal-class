@@ -1,23 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 
 [project]
 name = "oscal"
 version = "1.0.0"
-description = "Python web server application to validate, convert and manage OSCAL content."
+description = "Python class to validate, convert and manage OSCAL content."
 requires-python = ">=3.12"
 authors = [{ name = "Brian Ruf", email = "Brian@RufRisk.com" }]
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent",
+]
+keywords = ["oscal", "nist", "security", "compliance", "ssp", "fedramp", "csf"]
 
 dependencies = [
-    "loguru            >=0.7.3",  
-    "markdown          >=3.0.0",
-    "fastapi           >= 0.116.1",
-    "uvicorn[standard] >= 0.35.0",
-    "requests          >= 2.32.5",
-    "aiohttp           >= 3.12.15",
-    "Jinja2            >= 3.1.7", 
-    "oscal @ git+https://github.com/brian-ruf/oscal-class.git@main",
-    "ruf-common @ git+https://github.com/brian-ruf/ruf-common-python.git@main"
+    "loguru        >= 0.7.3",
+    "saxonche      == 12.9.0",
+    "jsonschema_rs >= 0.26.1",
+    "xmlschema     >= 3.4.3",
+    "PyYAML        >= 6.0",
+    "markdown      >= 3.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/brian-ruf/oscal-class"
+Repository = "https://github.com/brian-ruf/oscal-class.git"
+Documentation = "https://github.com/brian-ruf/oscal-class#readme"
+Issues = "https://github.com/brian-ruf/oscal-class/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["oscal*"]
+exclude = ["support*", "tests*"]
+
+[tool.setuptools.package-data]
+oscal = ["py.typed", "data/*.xml", "data/*.zip"]

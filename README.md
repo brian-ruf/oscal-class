@@ -43,6 +43,19 @@ To use the `OSCAL` class in your code, import the `oscal_content_class` module f
 ```python
 from oscal import oscal_content_class as oscal_content
 
+# Create a new OCAL catalog object
+oscal_catalog_obj = oscal_content.create_new_oscal_content(
+                     model_name="catalog", 
+                     title="My Catalog", 
+                     version="DRAFT-1.0", 
+                     published="2026-03-02T00:00:00Z")
+
+if oscal_catalog_obj:
+    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
+    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
+    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
+
+
 ```
 
 ### Instantiate the OSCAL class
