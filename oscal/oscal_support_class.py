@@ -10,10 +10,10 @@ from loguru import logger
 from importlib import resources
 import uuid
 from time import sleep
-from common.lfs import chkdir, putfile, chkfile
-from common import helper 
-from common import database
-from common import network
+from ruf_common.lfs import chkdir, putfile, chkfile
+from ruf_common import helper
+from ruf_common import database
+from ruf_common import network
 from .oscal_datatypes import oscal_date_time_with_timezone
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

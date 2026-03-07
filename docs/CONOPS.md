@@ -1,8 +1,8 @@
 # OSCAL Class Concept of Operations (ConOps)
 
 The core modules are:
-- `oscal_content_class`: Manages an OSCAL document. One instance per OSCAL document.
-- `oscal_support_class`: Manages the OSCAL support files. One instance per application. 
+- `oscal_content_class`: A class to contain and manage an OSCAL artifact. One instance per artifact.
+- `oscal_support_class`: A class to manage tanages the NIST-published OSCAL support files. One instance per application. 
 
 ## `oscal_content_class` ConOps
 

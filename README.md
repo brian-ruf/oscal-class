@@ -50,10 +50,7 @@ oscal_catalog_obj = oscal_content.create_new_oscal_content(
                      version="DRAFT-1.0", 
                      published="2026-03-02T00:00:00Z")
 
-if oscal_catalog_obj:
-    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
+
 
 
 ```
@@ -62,10 +59,14 @@ if oscal_catalog_obj:
 
 Open OSCAL content directly from a file:
 ```python
+from oscal import oscal_content_class as oscal_content
 
-oscal_file_name = "./catalog.xml"
+oscal_catalog_obj = oscal_content_class.OSCAL(filename="./catalog.xml")
 
-oscal_catalog_obj = oscal_content_class.OSCAL(filename=oscal_file_name)
+if oscal_catalog_obj:
+    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
+    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
+    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
 
 ```
 

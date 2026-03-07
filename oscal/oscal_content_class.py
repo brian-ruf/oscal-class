@@ -22,11 +22,11 @@ import yaml
 import uuid
 from typing import Optional
 
-from common.logging import LoggableMixin
-from common.data import detect_data_format, safe_load, safe_load_xml
+from ruf_common.logging import LoggableMixin
+from ruf_common.data import detect_data_format, safe_load, safe_load_xml
 from xml.etree import ElementTree
 import elementpath
-from common.lfs import getfile, chkdir, putfile, normalize_content, save_json
+from ruf_common.lfs import getfile, chkdir, putfile, normalize_content, save_json
 from .oscal_support_class import OSCAL_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS, SUPPORT_DATABASE_DEFAULT_FILE, SUPPORT_DATABASE_DEFAULT_TYPE
 from .oscal_markdown import oscal_markdown_to_html
 from .oscal_datatypes import oscal_date_time_with_timezone
