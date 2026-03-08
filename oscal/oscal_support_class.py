@@ -404,20 +404,19 @@ class OSCAL_support:
         self.backend = backend
         
         try:
-            match fetch:
-                case "all":
-                    self.__status_messages("Starting full refresh of OSCAL support content...")
-                    status = self.__clear_oscal_versions()
-                case "latest":
-                    self.__status_messages("Checking for new OSCAL versions...")
-                    status = True
-                case _:
-                    if fetch.startswith("v"):
-                        self.__status_messages(f"Updating specific version: {fetch}")
-                        status = self.__clear_oscal_version(fetch)
-                    else:
-                        logger.error(f"Invalid update directive: {fetch}")
-                        status = False
+            if fetch == "all":
+                self.__status_messages("Starting full refresh of OSCAL support content...")
+                status = self.__clear_oscal_versions()
+            elif fetch == "latest":
+                self.__status_messages("Checking for new OSCAL versions...")
+                status = True
+            else:
+                if fetch.startswith("v"):
+                    self.__status_messages(f"Updating specific version: {fetch}")
+                    status = self.__clear_oscal_version(fetch)
+                else:
+                    logger.error(f"Invalid update directive: {fetch}")
+                    status = False
             
             if status:
                 # Get OSCAL versions with periodic status updates

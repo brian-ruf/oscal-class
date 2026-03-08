@@ -191,36 +191,35 @@ class OSCAL(LoggableMixin):
         if self.original_format in OSCAL_FORMATS:
             logger.debug(f"{self.original_format} is an OSCAL format.")
 
-            match self.original_format:
-                case "xml":
-                    self.tree = safe_load_xml(self.content)
-                    if self.tree is not None:
-                        status = True
-                        self.well_formed["xml"] = True
-                        root_element = self.xpath_atomic("/*/name()")
-                        oscal_version = f"v{self.xpath_atomic("/*/metadata/oscal-version/text()")}"
-                        content_title = self.xpath_atomic("/*/metadata/title/text()")
-                        content_version = self.xpath_atomic("/*/metadata/version/text()")
-                        content_publication = self.xpath_atomic("/*/metadata/published/text()")
-                    else:
-                        status = False
-                        logger.error("Content is not well-formed XML.")
+            if self.original_format == "xml":
+                self.tree = safe_load_xml(self.content)
+                if self.tree is not None:
+                    status = True
+                    self.well_formed["xml"] = True
+                    root_element = self.xpath_atomic("/*/name()")
+                    oscal_version = "v" + self.xpath_atomic("/*/metadata/oscal-version/text()")
+                    content_title = self.xpath_atomic("/*/metadata/title/text()")
+                    content_version = self.xpath_atomic("/*/metadata/version/text()")
+                    content_publication = self.xpath_atomic("/*/metadata/published/text()")
+                else:
+                    status = False
+                    logger.error("Content is not well-formed XML.")
 
-                case "json" | "yaml":
-                    self.dict = safe_load(self.content, self.original_format)
-                    if self.dict is not None:
-                        logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
-                        status = True
-                        root_element = next(iter(self.dict.keys())) if self.dict else ""
-                        root_obj = self.dict.get(root_element, {})
-                        metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
-                        oscal_version = f"v{metadata.get('oscal-version', '')}"
-                        content_title = metadata.get('title', '')
-                        content_version = metadata.get('version', '')
-                        content_publication = metadata.get('published', '')
-                    else:
-                        status = False
-                        logger.error(f"Content is not well-formed {self.original_format.upper()}.")
+            elif self.original_format in ("json", "yaml"):
+                self.dict = safe_load(self.content, self.original_format)
+                if self.dict is not None:
+                    logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
+                    status = True
+                    root_element = next(iter(self.dict.keys())) if self.dict else ""
+                    root_obj = self.dict.get(root_element, {})
+                    metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
+                    oscal_version = f"v{metadata.get('oscal-version', '')}"
+                    content_title = metadata.get('title', '')
+                    content_version = metadata.get('version', '')
+                    content_publication = metadata.get('published', '')
+                else:
+                    status = False
+                    logger.error(f"Content is not well-formed {self.original_format.upper()}.")
 
         else:
             logger.error(f"Content is not one of {OSCAL_FORMATS}.")
@@ -266,72 +265,70 @@ class OSCAL(LoggableMixin):
             self.valid_oscal = False
             return self.valid_oscal
 
-        match format:
-            case "xml":
-                logger.debug("Validating XML content against schema...")
-                xml_schema_content = self.support.asset(self.oscal_version, self.oscal_model, "xml-schema")
-                
-                if xml_schema_content:
-                    import xmlschema
-                    try:
-                        
-                        # Create schema object from string
-                        schema = xmlschema.XMLSchema(xml_schema_content)
-                        
-                        # Validate - returns None if valid, raises exception if invalid
-                        xml_string = self.xml_serializer()
-                        schema.validate(xml_string)
-                        self.schema_valid["xml"] = True
-                        logger.debug("XML schema validation passed.")
-                        
-                    except xmlschema.XMLSchemaValidationError as e:
-                        logger.error(f"XML schema validation failed: {e.reason}")
-                        self.schema_valid["xml"] = False
-                    except Exception as e:
-                        logger.error(f"XML schema validation error: {str(e)}")
-                        self.schema_valid["xml"] = False
-                else:
-                    logger.error("Unable to load XML schema for validation.")
+        if format == "xml":
+            logger.debug("Validating XML content against schema...")
+            xml_schema_content = self.support.asset(self.oscal_version, self.oscal_model, "xml-schema")
+
+            if xml_schema_content:
+                import xmlschema
+                try:
+
+                    # Create schema object from string
+                    schema = xmlschema.XMLSchema(xml_schema_content)
+
+                    # Validate - returns None if valid, raises exception if invalid
+                    xml_string = self.xml_serializer()
+                    schema.validate(xml_string)
+                    self.schema_valid["xml"] = True
+                    logger.debug("XML schema validation passed.")
+
+                except xmlschema.XMLSchemaValidationError as e:
+                    logger.error(f"XML schema validation failed: {e.reason}")
                     self.schema_valid["xml"] = False
+                except Exception as e:
+                    logger.error(f"XML schema validation error: {str(e)}")
+                    self.schema_valid["xml"] = False
+            else:
+                logger.error("Unable to load XML schema for validation.")
+                self.schema_valid["xml"] = False
 
-            case "json" | "yaml":
-                logger.debug(f"Validating {format} content against schema...")
-                json_schema_content = self.support.asset(self.oscal_version, self.oscal_model, "json-schema")
+        elif format in ("json", "yaml"):
+            logger.debug(f"Validating {format} content against schema...")
+            json_schema_content = self.support.asset(self.oscal_version, self.oscal_model, "json-schema")
 
-                if json_schema_content:
-                    import jsonschema_rs
-                    try:
-                        
-                        # Parse schema string to dict if needed
-                        if isinstance(json_schema_content, str):
-                            schema_dict = json.loads(json_schema_content)
-                        else:
-                            schema_dict = json_schema_content
-                        
-                        # Ensure schema_dict is valid before validation
-                        if isinstance(schema_dict, dict) and isinstance(self.dict, dict):
-                        
-                            # Validate (raises exception with details if invalid)
-                            jsonschema_rs.validate(self.dict, schema_dict)  # Does not return a value
-                            
-                            self.schema_valid["json"] = True
-                            self.schema_valid["yaml"] = True  # YAML uses JSON schema
-                            logger.debug("JSON schema validation passed.")
-                        else:
-                            logger.error("Loaded JSON schema is not a valid dictionary.")
-                            self.schema_valid["json"] = False
-                            self.schema_valid["yaml"] = False
+            if json_schema_content:
+                import jsonschema_rs
+                try:
 
-                    except jsonschema_rs.ValidationError as e:
-                        logger.error(f"JSON schema validation failed: {e}")
+                    # Parse schema string to dict if needed
+                    if isinstance(json_schema_content, str):
+                        schema_dict = json.loads(json_schema_content)
+                    else:
+                        schema_dict = json_schema_content
+
+                    # Ensure schema_dict is valid before validation
+                    if isinstance(schema_dict, dict) and isinstance(self.dict, dict):
+
+                        # Validate (raises exception with details if invalid)
+                        jsonschema_rs.validate(self.dict, schema_dict)  # Does not return a value
+
+                        self.schema_valid["json"] = True
+                        self.schema_valid["yaml"] = True  # YAML uses JSON schema
+                        logger.debug("JSON schema validation passed.")
+                    else:
+                        logger.error("Loaded JSON schema is not a valid dictionary.")
                         self.schema_valid["json"] = False
-                    except Exception as e:
-                        logger.error(f"JSON schema validation error: {str(e)}")
-                        self.schema_valid["json"] = False
-                else:
-                    logger.error("Unable to load JSON schema for validation.")
+                        self.schema_valid["yaml"] = False
+
+                except jsonschema_rs.ValidationError as e:
+                    logger.error(f"JSON schema validation failed: {e}")
                     self.schema_valid["json"] = False
-
+                except Exception as e:
+                    logger.error(f"JSON schema validation error: {str(e)}")
+                    self.schema_valid["json"] = False
+            else:
+                logger.error("Unable to load JSON schema for validation.")
+                self.schema_valid["json"] = False
 
         self.valid_oscal = True
         return self.valid_oscal
@@ -347,72 +344,72 @@ class OSCAL(LoggableMixin):
         from .oscal_converters import oscal_xml_to_json, oscal_json_to_xml
         logger.debug(f"Converting OSCAL content to {target_format} format (pretty_print={pretty_print})...")
 
-        match target_format.lower():
-            case "xml":
-                if self.original_format == "xml":
-                    logger.debug("Content is already in XML format; no conversion needed.")
+        _target = target_format.lower()
+        if _target == "xml":
+            if self.original_format == "xml":
+                logger.debug("Content is already in XML format; no conversion needed.")
+                return
+            elif self.original_format == "json":
+                # Convert JSON to XML
+                logger.debug("Converting JSON to XML...")
+                xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
+                if not xsl_converter:
+                    logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
                     return
-                elif self.original_format == "json":
-                    # Convert JSON to XML
-                    logger.debug("Converting JSON to XML...")
-                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
-                    if not xsl_converter:
-                        logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
-                        return
-                    self.content = oscal_json_to_xml(
-                        json_content=self.content,
-                        xsl_converter=xsl_converter,
-                        validate_json=True
-                    )
-                    self.original_format = "xml"
-                elif self.original_format in ["yaml", "yml"]:
-                    # Convert YAML to JSON, then JSON to XML
-                    logger.debug("Converting YAML to XML via JSON...")
-                    json_content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
-                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
-                    if not xsl_converter:
-                        logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
-                        return
-                    self.content = oscal_json_to_xml(
-                        json_content=json_content,
-                        xsl_converter=xsl_converter,
-                        validate_json=True
-                    )
-                    self.original_format = "xml"
-                else:
-                    logger.error(f"Unsupported original format for conversion to XML: {self.original_format}")
+                self.content = oscal_json_to_xml(
+                    json_content=self.content,
+                    xsl_converter=xsl_converter,
+                    validate_json=True
+                )
+                self.original_format = "xml"
+            elif self.original_format in ["yaml", "yml"]:
+                # Convert YAML to JSON, then JSON to XML
+                logger.debug("Converting YAML to XML via JSON...")
+                json_content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
+                xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
+                if not xsl_converter:
+                    logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
+                    return
+                self.content = oscal_json_to_xml(
+                    json_content=json_content,
+                    xsl_converter=xsl_converter,
+                    validate_json=True
+                )
+                self.original_format = "xml"
+            else:
+                logger.error(f"Unsupported original format for conversion to XML: {self.original_format}")
 
-            case "json":
-                if self.original_format == "json":
-                    logger.debug("Content is already in JSON format; no conversion needed.")
+        elif _target == "json":
+            if self.original_format == "json":
+                logger.debug("Content is already in JSON format; no conversion needed.")
+                return
+            elif self.original_format == "xml":
+                # Convert XML to JSON
+                logger.debug("Converting XML to JSON...")
+                xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
+                if not xsl_converter:
+                    logger.error("Unable to locate XSLT converter for XML to JSON conversion.")
                     return
-                elif self.original_format == "xml":
-                    # Convert XML to JSON
-                    logger.debug("Converting XML to JSON...")
-                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
-                    if not xsl_converter:
-                        logger.error("Unable to locate XSLT converter for XML to JSON conversion.")
-                        return
-                    self.content = oscal_xml_to_json(
-                        xml_content=self.content,
-                        xsl_converter=xsl_converter
-                    )
-                    self.original_format = "json"
-                elif self.original_format in ["yaml", "yml"]:
-                    # Convert YAML to JSON
-                    logger.debug("Converting YAML to JSON...")
-                    self.content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
-                    self.original_format = "json"
-                else:
-                    logger.error(f"Unsupported original format for conversion to JSON: {self.original_format}")
+                self.content = oscal_xml_to_json(
+                    xml_content=self.content,
+                    xsl_converter=xsl_converter
+                )
+                self.original_format = "json"
+            elif self.original_format in ["yaml", "yml"]:
+                # Convert YAML to JSON
+                logger.debug("Converting YAML to JSON...")
+                self.content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
+                self.original_format = "json"
+            else:
+                logger.error(f"Unsupported original format for conversion to JSON: {self.original_format}")
 
-            case "yaml" | "yml":
-                if self.original_format in ["yaml", "yml"]:
-                    logger.debug("Content is already in YAML format; no conversion needed.")
-                    return
-                elif self.original_format == "json":
-                    # Convert JSON to YAML
-                    logger.debug("Converting JSON to YAML...")
+        elif _target in ("yaml", "yml"):
+            if self.original_format in ["yaml", "yml"]:
+                logger.debug("Content is already in YAML format; no conversion needed.")
+                return
+            elif self.original_format == "json":
+                # Convert JSON to YAML
+                logger.debug("Converting JSON to YAML...")
 
 
     # -------------------------------------------------------------------------
@@ -462,47 +459,46 @@ class OSCAL(LoggableMixin):
             return False
 
         logger.debug(f"Saving content as {filename} in OSCAL {format.upper()} format.")
-        match format:
-            case "xml":
-                if self.dict and self.support and not self.tree:
-                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
-                    if isinstance(xsl_converter, str):
-                        xml_output = oscal_json_to_xml(self.dict, xsl_converter=xsl_converter)
-                        self.tree = ElementTree.ElementTree(ElementTree.fromstring(xml_output))
-                    else:
-                        logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot serialize XML.")
-                        return False
-                else: 
-                    xml_output = self.xml_serializer() 
-                status = putfile(filename, xml_output)
+        if format == "xml":
+            if self.dict and self.support and not self.tree:
+                xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
+                if isinstance(xsl_converter, str):
+                    xml_output = oscal_json_to_xml(self.dict, xsl_converter=xsl_converter)
+                    self.tree = ElementTree.ElementTree(ElementTree.fromstring(xml_output))
+                else:
+                    logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot serialize XML.")
+                    return False
+            else:
+                xml_output = self.xml_serializer()
+            status = putfile(filename, xml_output)
 
-            case "json" | "yml" | "yaml":
-                logger.debug("Preparing to save JSON/YAML content...")
-                if not self.dict:
-                    xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
-                    if isinstance(xsl_converter, str):
-                        json_output = oscal_xml_to_json(self.content, xsl_converter=xsl_converter)
-                        logger.debug(f"Converted XML content to JSON: {json_output[:100]}...")  # Log a snippet of the JSON output
-                        self.dict = json.loads(json_output)
-                    else:
-                        logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot serialize JSON.")
-                        return False
-
-                if self.dict is None:
-                    logger.error("No JSON content available to save.")
+        elif format in ("json", "yml", "yaml"):
+            logger.debug("Preparing to save JSON/YAML content...")
+            if not self.dict:
+                xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "xml-to-json")
+                if isinstance(xsl_converter, str):
+                    json_output = oscal_xml_to_json(self.content, xsl_converter=xsl_converter)
+                    logger.debug(f"Converted XML content to JSON: {json_output[:100]}...")  # Log a snippet of the JSON output
+                    self.dict = json.loads(json_output)
+                else:
+                    logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot serialize JSON.")
                     return False
 
-                if format == "json":
-                    logger.debug("Saving content in JSON format...")
-                    status = save_json(self.dict, filename) # pretty_print=pretty_print)
-                else: # YAML
-                    logger.debug("Saving content in YAML format...")
-                    yaml_out = yaml.dump(self.dict, sort_keys=False, indent=INDENT if pretty_print else None)   
+            if self.dict is None:
+                logger.error("No JSON content available to save.")
+                return False
 
-                    status = putfile(filename, yaml_out)
-            case _:
-                logger.error(f"Unsupported format for saving: {format}")
-                return
+            if format == "json":
+                logger.debug("Saving content in JSON format...")
+                status = save_json(self.dict, filename) # pretty_print=pretty_print)
+            else: # YAML
+                logger.debug("Saving content in YAML format...")
+                yaml_out = yaml.dump(self.dict, sort_keys=False, indent=INDENT if pretty_print else None)
+
+                status = putfile(filename, yaml_out)
+        else:
+            logger.error(f"Unsupported format for saving: {format}")
+            return
         
         if status:
             logger.info(f"OSCAL content saved to {filename} in XML format.")
@@ -787,18 +783,16 @@ class OSCAL(LoggableMixin):
 
         # if format == self.original_format:
 
-        match format:
-            case "xml":
-                # if self.tree is None:
-
-                return self.xml_serializer()
-            case "json":
-                return self.json_serializer()
-            case "yaml" | "yml":
-                return self.yaml_serializer()
-            case _:
-                logger.error(f"Unsupported format for serialization: {format}")
-                return ""
+        if format == "xml":
+            # if self.tree is None:
+            return self.xml_serializer()
+        elif format == "json":
+            return self.json_serializer()
+        elif format in ("yaml", "yml"):
+            return self.yaml_serializer()
+        else:
+            logger.error(f"Unsupported format for serialization: {format}")
+            return ""
 
 
 

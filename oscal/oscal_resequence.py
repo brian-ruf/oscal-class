@@ -31,6 +31,7 @@ Function for inclusion in oscal-class library:
 import json
 import sys
 from pathlib import Path
+from typing import List, Optional
 
 try:
     import yaml
@@ -800,7 +801,7 @@ ORDERING_BY_PARENT: dict[str, list[str]] = {
 }
 
 
-def _canonical_key_order(parent_key: str | None, model_root_key: str | None) -> list[str] | None:
+def _canonical_key_order(parent_key: Optional[str], model_root_key: Optional[str]) -> Optional[List[str]]:
     """
     Return the canonical key list for an object whose parent field name is
     *parent_key* within the given *model_root_key* (e.g. "system-security-plan").
@@ -819,7 +820,7 @@ def _canonical_key_order(parent_key: str | None, model_root_key: str | None) -> 
     return ORDERING_BY_PARENT.get(parent_key)
 
 
-def _reorder_dict(d: dict, ordered_keys: list[str]) -> dict:
+def _reorder_dict(d: dict, ordered_keys: List[str]) -> dict:
     """
     Return a new dict with keys from *ordered_keys* first (in that order),
     followed by any remaining keys not in *ordered_keys* (preserving their
@@ -835,7 +836,7 @@ def _reorder_dict(d: dict, ordered_keys: list[str]) -> dict:
     return result
 
 
-def _resequence_value(value, parent_key: str | None, model_root_key: str | None):
+def _resequence_value(value, parent_key: Optional[str], model_root_key: Optional[str]):
     """
     Recursively resequence *value*. Returns the resequenced value.
     """
@@ -862,7 +863,7 @@ def _resequence_value(value, parent_key: str | None, model_root_key: str | None)
         return value
 
 
-def _detect_model_root_key(data: dict) -> str | None:
+def _detect_model_root_key(data: dict) -> Optional[str]:
     """Identify which OSCAL model root key is present in the document."""
     known_roots = [
         "catalog",
