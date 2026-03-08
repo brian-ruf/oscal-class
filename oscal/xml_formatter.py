@@ -33,8 +33,7 @@ def format_xml_file(file_path):
             content = f.read().strip()
 
         # Validate XML structure with ElementTree
-        tree = ET.parse(file_path)
-        root = tree.getroot()
+        ET.parse(file_path)
 
         # Use minidom to format while preserving original structure
         dom = xml.dom.minidom.parseString(content)

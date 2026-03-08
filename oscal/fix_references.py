@@ -9,9 +9,8 @@ import yaml
 import xml.etree.ElementTree as ET
 import os
 import sys
-import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional
 
 # OSCAL namespace
 OSCAL_NS = "http://csrc.nist.gov/ns/oscal/1.0"

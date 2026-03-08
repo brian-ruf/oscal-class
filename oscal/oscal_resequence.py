@@ -35,8 +35,6 @@ from typing import List, Optional, Union
 
 try:
     import yaml
-    from yaml.constructor import SafeConstructor
-    from yaml.resolver import BaseResolver
 
     class _OscalLoader(yaml.SafeLoader):
         """SafeLoader variant that preserves datetime strings as plain strings.
