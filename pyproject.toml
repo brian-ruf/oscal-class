@@ -54,6 +54,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
+ignore = ["W291", "W293"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F401"]

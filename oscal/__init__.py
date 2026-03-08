@@ -1,5 +1,5 @@
 from . import oscal_support_class as oscal_support
-from . import oscal_content_class 
+from . import oscal_content_class
 from . import oscal_datatypes
 from . import oscal_markdown
 # from . import oscal_controls

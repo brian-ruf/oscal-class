@@ -2,17 +2,17 @@
     OSCAL Class
 
     A class for creation, manipulation, validation and format convertion of OSCAL content.
-    All published OSCAL versions, formats and models can be validated and converted. 
+    All published OSCAL versions, formats and models can be validated and converted.
     Creation and manipulation is OSCAL 1.2.0 compliant where implemented.
 
     OSCAL XML, JSON and YAML formats are supported.
-    This class ingests and validates OSCAL content in its native format using the appropriate 
+    This class ingests and validates OSCAL content in its native format using the appropriate
     NIST-published OSCAL schema.
 
     Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
     Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
 
-    In the fFuture this library will perform validation and conversion using the NIST-published 
+    In the fFuture this library will perform validation and conversion using the NIST-published
     OSCAL metaschema definitions, which include additional rules not handled by the XML and JSON schemas.
 """
 from loguru import logger
@@ -42,11 +42,11 @@ def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPP
     Get the shared OSCAL Support instance. Creates it if it doesn't exist.
     This ensures only one resource-intensive instance is created and shared
     across all OSCAL content instances.
-    
+
     Args:
         db_conn: Database connection string or path (only used for first initialization)
         db_type: Database type (default: "sqlite3", only used for first initialization)
-        
+
     Returns:
         OSCAL_support: The shared OSCAL Support instance
     """
@@ -171,8 +171,8 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     def initial_validation(self):
         """
-        Perform initial validation of content, which includes first ensuring the 
-        content is a recognized OSCAL format type (xml, json or yaml) and 
+        Perform initial validation of content, which includes first ensuring the
+        content is a recognized OSCAL format type (xml, json or yaml) and
         well formed, before passing it to the OSCAL validation method.
         Returns:
             bool: True if initial validation is successful, False otherwise
@@ -187,7 +187,7 @@ class OSCAL(LoggableMixin):
 
         self.original_format = detect_data_format(self.content)
         logger.debug(f"Detected content format: {self.original_format}")
-        
+
         if self.original_format in OSCAL_FORMATS:
             logger.debug(f"{self.original_format} is an OSCAL format.")
 
@@ -418,7 +418,7 @@ class OSCAL(LoggableMixin):
         Save the current OSCAL content to a file.
         With no parameters, saves to the original location in the original format.
         This will save to any valid filename, even if the file extension does not match the format.
-        
+
         Args:
             filename (str): The path to the file where content will be saved.
             format (str): The format to save the content in {OSCAL_FORMATS}.
@@ -499,7 +499,7 @@ class OSCAL(LoggableMixin):
         else:
             logger.error(f"Unsupported format for saving: {format}")
             return
-        
+
         if status:
             logger.info(f"OSCAL content saved to {filename} in XML format.")
             self.unsaved = False
@@ -518,7 +518,7 @@ class OSCAL(LoggableMixin):
         # Prevent infinite recursion
         if getattr(self, '_in_content_modified', False):
             return
-            
+
         self._in_content_modified = True
         try:
             self.unsaved = True
@@ -527,7 +527,7 @@ class OSCAL(LoggableMixin):
             self.__set_field("/*/@uuid", str(uuid.uuid4()))
         finally:
             self._in_content_modified = False
-    
+
     # -------------------------------------------------------------------------
     def __set_field(self, path: str, field_value: str):
         """
@@ -555,7 +555,7 @@ class OSCAL(LoggableMixin):
                 logger.debug(f"Attribute @{attr_name} set to {field_value}")
             except Exception as error:
                 logger.error(f"Failed to set attribute @{attr_name} to {field_value}: {str(error)}")
-        else: 
+        else:
             logger.debug(f"Setting field '{path}' to value '{field_value}'")
             current_nodes = self.xpath(path)
             if current_nodes:
@@ -597,10 +597,10 @@ class OSCAL(LoggableMixin):
     """
         # # -------------------------------------------------------------------------
         # def __setup_saxon(self): # Future - place holder for code for now
-        #     from saxonche import PySaxonProcessor 
+        #     from saxonche import PySaxonProcessor
 
         #     self.__saxon = PySaxonProcessor(license=False)
-        #     try: 
+        #     try:
         #         self.xdm = self.__saxon.parse_xml(xml_text=self.xml)
         #         # self.__saxon.declare_namespace("", "http://csrc.nist.gov/ns/oscal/1.0")
         #         self.valid = True
@@ -708,10 +708,10 @@ class OSCAL(LoggableMixin):
         Parameters:
         - xExpr (str): An xpath expression
         - context (obj)[optional]: Context object.
-        If the context object is present, the xpath expression is run against 
-        that context. If absent, the xpath expression is run against the 
+        If the context object is present, the xpath expression is run against
+        that context. If absent, the xpath expression is run against the
         entire document.
-        Returns: 
+        Returns:
         - str: The atomic value as a string.
         """
 
@@ -731,19 +731,19 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     def xpath(self, xExpr, context=None):
         """
-        Performs an xpath query either on the entire XML document 
+        Performs an xpath query either on the entire XML document
         or on a context within the document.
 
         Parameters:
         - xExpr (str): An xpath expression
         - context (obj)[optional]: Context object.
         If the context object is present, the xpath expression is run against
-        that context. If absent, the xpath expression is run against the 
+        that context. If absent, the xpath expression is run against the
         entire document.
 
-        Returns: 
+        Returns:
         - None if there is an error or if nothing is found.
-        - 
+        -
         """
         ret_value=None
         if context:
@@ -768,7 +768,7 @@ class OSCAL(LoggableMixin):
         Serializes the current content to a string in the specified format.
         Parameters:
         - format (str): The target format for serialization ("xml", "json", or "yaml")
-        
+
         Returns:
         - str: The serialized content as a string.
         """
@@ -801,21 +801,21 @@ class OSCAL(LoggableMixin):
         """
         Serializes the current XML tree to a string.
         Returns:
-        - str: The serialized XML content as a string.        
+        - str: The serialized XML content as a string.
         """
         logger.debug("Serializing the XML tree for text output.")
-        
+
         # Check if tree exists
         if self.tree is None:
             logger.error("No XML tree available for serialization")
             return ""
-        
+
         # Handle both ElementTree and Element objects
         if isinstance(self.tree, ElementTree.ElementTree):
             root = self.tree.getroot()
         else:
             root = self.tree  # Already an Element
-        
+
         # Additional safety check
         if root is None:
             logger.error("No root element available for serialization")
@@ -826,7 +826,7 @@ class OSCAL(LoggableMixin):
         out_string = normalize_content(out_string)
         out_string = out_string.replace("ns0:", "")
         out_string = out_string.replace(":ns0", "")
-        
+
         return out_string
 
     # -------------------------------------------------------------------------
@@ -834,27 +834,27 @@ class OSCAL(LoggableMixin):
         """
         Serializes the current dict to a string.
         Returns:
-        - str: The serialized JSON content as a string.        
+        - str: The serialized JSON content as a string.
         """
         logger.debug("Serializing dict for string output as JSON.")
         out_string = json.dumps(self.dict, indent=INDENT, sort_keys=False)
         logger.debug("LEN: " + str(len(out_string)))
-        
+
         return out_string
-        
+
     # -------------------------------------------------------------------------
     def yaml_serializer(self):
         """
         Serializes the current dict to a string.
         Returns:
-        - str: The serialized YAML content as a string.        
+        - str: The serialized YAML content as a string.
         """
         logger.debug("Serializing dict for string output as YAML.")
         out_string = yaml.dump(self.dict, indent=INDENT, sort_keys=False)
         logger.debug("LEN: " + str(len(out_string)))
-        
+
         return out_string
-   
+
     # -------------------------------------------------------------------------
     def assign_html_string_to_node(self, parent_node, html_string: str):
         """
@@ -893,7 +893,7 @@ class OSCAL(LoggableMixin):
         Creates a new control under the specified parent group.
         Parameters:
         - parent_id (str): The id of the parent group to which this new control will be added.
-        - id (str): The id of the new control.    
+        - id (str): The id of the new control.
         - title (str): The title of the new control.
         - params (array): A dictionary of parameters to add to the control.
         - props (array): A dictionary of properties to add to the control.
@@ -904,7 +904,7 @@ class OSCAL(LoggableMixin):
         - objectives (array): A list of assessment objectives for the new control.
         - objects (array): A dictionary of assessment objects to add to the control.
         - methods (array): A dictionary of assessment methods to add to the control.
-        - remarks (str): The remarks of the new control. 
+        - remarks (str): The remarks of the new control.
         """
         logger.info(f"Creating new control with id '{id}' under parent group '{parent_id}'")
         status = False
@@ -950,17 +950,17 @@ class OSCAL(LoggableMixin):
                     for param in params:
                         param_node = ElementTree.SubElement(control, "param")
                         param_node.set("id", param)
-                    
-                    
+
+
                     append_props(control, props)
-                    
+
                     append_links(control, links)
-                    
+
                     if overview != "":
                         overview_node = ElementTree.SubElement(control, "part")
                         overview_node.set("name", "overview")
                         self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
-                                            
+
                     # TODO: Handle child parts
                     # TODO: Handle part titles
                     # TODO: Handle part labels, sort-ids, alt-identifiers
@@ -995,7 +995,7 @@ class OSCAL(LoggableMixin):
                                 if item.get('id', "") != "":
                                     statement_child_node.set("id", f"{id}_smt_{smt_cntr:02d}")
                                 self.assign_html_string_to_node(statement_child_node, oscal_markdown_to_html(item['prose'], True))
-                    
+
                     if guidance != "":
                         guidance_node = ElementTree.SubElement(control, "part")
                         guidance_node.set("name", "guidance")
@@ -1005,7 +1005,7 @@ class OSCAL(LoggableMixin):
                         example_node = ElementTree.SubElement(control, "part")
                         example_node.set("name", "example")
                         self.assign_html_string_to_node(example_node, oscal_markdown_to_html(example, True))
-                    
+
                     if remarks != "":
                         remarks_node = ElementTree.SubElement(control, "remarks")
                         self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
@@ -1031,7 +1031,7 @@ class OSCAL(LoggableMixin):
         Parameters:
         - parent_id (str): The id of the parent group to which this new group will be added.
                            Use '[root]' (case sensitive) to add to the top level of the catalog.
-        - id (str): The id of the new group.    
+        - id (str): The id of the new group.
         - title (str): The title of the new group.
         - params (dict): A dictionary of parameters to add to the group.
         - props (dict): A dictionary of properties to add to the group.
@@ -1041,7 +1041,7 @@ class OSCAL(LoggableMixin):
         - alt_identifier (str): The alt-identifier of the new group.
         - overview (str): The overview of the new group.
         - instruction (str): The instruction of the new group.
-        - remarks (str): The remarks of the new group. 
+        - remarks (str): The remarks of the new group.
         """
         status = False
         group = None
@@ -1148,7 +1148,7 @@ class OSCAL(LoggableMixin):
                 logger.warning("APPEND: Unable to find " + xpath )
         except Exception as error:
             logger.error("Error appending child (" + node_name + "): " + type(error).__name__ + " - " + str(error))
-        
+
         if status:
             return child
         else:
@@ -1159,14 +1159,14 @@ class OSCAL(LoggableMixin):
         """
         Appends a resource element to the back-matter section.
         """
-        return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)        
+        return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)
 
     # -------------------------------------------------------------------------
     def add_or_update_profile_import(self, href: str, include_all: bool = False, include_ids =[], include_with_child = False, exclude_ids =[], exclude_with_child = False):
         """
-        If an import with the provided href already exists, updates it with the 
+        If an import with the provided href already exists, updates it with the
             provided include details.
-        If an import with the provided href does not exist, but an import with an 
+        If an import with the provided href does not exist, but an import with an
             empty href (href='#'), updates it with the provided href and include details.
         Otherwise, adds a new import statement with the provided href and include details.
 
@@ -1196,7 +1196,7 @@ class OSCAL(LoggableMixin):
             else:
                 logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
                 import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
-        
+
         # If unable to find nor create an import element, log error and exit function
         if import_obj is None:
             logger.error(f"Unable to create or update import for href '{href}'.")
@@ -1282,7 +1282,7 @@ def get_root_element_name(content: str) -> str:
         root_name = tree.tag
     except ElementTree.ParseError:
         logger.debug("Content does not appear to be well-formed XML.")
-    
+
     return root_name
 
 # -------------------------------------------------------------------------
@@ -1360,16 +1360,16 @@ def append_link(parent_node, link: dict):
 def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
     """
     Callls oscal_markdown_to_html, which Formats markdown text into HTML
-    consistent with the OSCAL XML specification for markup-multiline. 
+    consistent with the OSCAL XML specification for markup-multiline.
 
-    Converts the resulting string into an XML object suitable for appending 
+    Converts the resulting string into an XML object suitable for appending
     into a a parent XML object.
 
     Args:
     markdown_text (str): The markdown text to convert
     multiline (bool): If True, handles markup-multiline (supports block elements).
                         If False, handles markup-line (inline elements only).
-    
+
     Returns:
         Optional[ElementTree.Element]: ElementTree XML Element object, or None if conversion fails
     """
@@ -1384,78 +1384,78 @@ def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> O
 def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
     """
     Converts HTML back to OSCAL markup-line or markup-multiline formatted markdown.
-    
-    This function handles the reverse conversion from HTML to the specific markdown subset 
+
+    This function handles the reverse conversion from HTML to the specific markdown subset
     defined in the NIST Metaschema specification for OSCAL markup-line and markup-multiline data types.
-    
+
     Args:
         html_text (str): The HTML text to convert
         multiline (bool): If True, generates markup-multiline (supports block elements).
                          If False, generates markup-line (inline elements only).
-    
+
     Returns:
         str: Markdown representation of the HTML text
-    
+
     References:
         https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline
         https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
     """
     import re
-    
+
     if not html_text:
         return ""
-    
+
     markdown = html_text.strip()
-    
+
     # Handle OSCAL parameter insertion: <insert type="param" id-ref="id"/> -> {{ insert: param, id }}
-    markdown = re.sub(r'<insert\s+type="([^"]+)"\s+id-ref="([^"]+)"\s*/>', 
+    markdown = re.sub(r'<insert\s+type="([^"]+)"\s+id-ref="([^"]+)"\s*/>',
                       r'{{ insert: \1, \2 }}', markdown)
-    
+
     if multiline:
         # Handle block-level elements first (only for markup-multiline)
-        
+
         # Headers: <h1>text</h1> -> # text
         for level in range(1, 7):
-            markdown = re.sub(f'<h{level}>([^<]+)</h{level}>', 
+            markdown = re.sub(f'<h{level}>([^<]+)</h{level}>',
                              f'{"#" * level} \\1\n\n', markdown)
-        
+
         # Code blocks: <pre>code</pre> -> ```code```
         def fix_code_block(match):
             content = match.group(1)
             return f'\n\n```\n{content}\n```\n\n'
         markdown = re.sub(r'<pre>([^<]*)</pre>', fix_code_block, markdown, flags=re.DOTALL)
-        
+
         # Tables: Convert HTML table back to markdown table
         def convert_html_table(match):
             table_html = match.group(0)
-            
+
             # Extract header row
             header_match = re.search(r'<tr>((?:<th[^>]*>[^<]*</th>)+)</tr>', table_html)
             if not header_match:
                 return table_html  # Not a valid table structure
-            
+
             header_cells = re.findall(r'<th[^>]*>([^<]*)</th>', header_match.group(1))
-            
+
             # Extract alignment information
             alignments = []
             for th_match in re.finditer(r'<th[^>]*align="([^"]*)"[^>]*>', header_match.group(1)):
                 alignments.append(th_match.group(1))
-            
+
             # Extract data rows
             data_rows = []
             for row_match in re.finditer(r'<tr>((?:<td[^>]*>.*?</td>)+)</tr>', table_html, flags=re.DOTALL):
                 cells = re.findall(r'<td[^>]*>(.*?)</td>', row_match.group(1), flags=re.DOTALL)
                 data_rows.append(cells)
-            
+
             if not header_cells or not data_rows:
                 return table_html
-            
+
             # Build markdown table
             table_lines = []
-            
+
             # Header row
             table_lines.append('| ' + ' | '.join(header_cells) + ' |')
-            
+
             # Separator row with alignment
             separators = []
             for i, header in enumerate(header_cells):
@@ -1467,63 +1467,63 @@ def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
                 else:
                     separators.append('---')
             table_lines.append('| ' + ' | '.join(separators) + ' |')
-            
+
             # Data rows
             for row in data_rows:
                 # Pad row to match header length
                 while len(row) < len(header_cells):
                     row.append('')
                 table_lines.append('| ' + ' | '.join(row[:len(header_cells)]) + ' |')
-            
+
             return '\n\n' + '\n'.join(table_lines) + '\n\n'
-        
+
         # Match HTML tables
         markdown = re.sub(r'<table>.*?</table>', convert_html_table, markdown, flags=re.DOTALL)
-        
+
         # Blockquotes: <blockquote>text</blockquote> -> > text
         markdown = re.sub(r'<blockquote>([^<]+)</blockquote>', r'\n\n> \1\n\n', markdown)
-        
+
         # Lists - unordered: <ul><li>text</li></ul> -> - text
         markdown = re.sub(r'<ul><li>([^<]+)</li></ul>', r'\n\n- \1\n', markdown)
-        
+
         # Lists - ordered: <ol><li>text</li></ol> -> 1. text
         markdown = re.sub(r'<ol><li>([^<]+)</li></ol>', r'\n\n1. \1\n', markdown)
-        
+
         # Paragraphs: <p>text</p> -> text (with newlines)
         markdown = re.sub(r'<p>([^<]+)</p>', r'\1\n\n', markdown)
-    
+
     # Handle inline formatting (for both markup types)
-    
+
     # Images: <img alt="alt" src="src" title="title"/> -> ![alt](src "title")
-    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>', 
+    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>',
                       r'![\1](\2 "\3")', markdown)
-    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s*/>', 
+    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s*/>',
                       r'![\1](\2)', markdown)
-    
+
     # Links: <a href="url" title="title">text</a> -> [text](url "title")
-    markdown = re.sub(r'<a\s+href="([^"]+)"\s+title="([^"]*)">([^<]+)</a>', 
+    markdown = re.sub(r'<a\s+href="([^"]+)"\s+title="([^"]*)">([^<]+)</a>',
                       r'[\3](\1 "\2")', markdown)
-    markdown = re.sub(r'<a\s+href="([^"]+)">([^<]+)</a>', 
+    markdown = re.sub(r'<a\s+href="([^"]+)">([^<]+)</a>',
                       r'[\2](\1)', markdown)
-    
+
     # Strong emphasis: <strong>text</strong> -> **text**
     markdown = re.sub(r'<strong>([^<]+)</strong>', r'**\1**', markdown)
-    
+
     # Emphasis: <em>text</em> -> *text*
     markdown = re.sub(r'<em>([^<]+)</em>', r'*\1*', markdown)
-    
+
     # Inline code: <code>text</code> -> `text`
     markdown = re.sub(r'<code>([^<]+)</code>', r'`\1`', markdown)
-    
+
     # Superscript: <sup>text</sup> -> ^text^
     markdown = re.sub(r'<sup>([^<]+)</sup>', r'^\1^', markdown)
-    
+
     # Subscript: <sub>text</sub> -> ~text~
     markdown = re.sub(r'<sub>([^<]+)</sub>', r'~\1~', markdown)
-    
+
     # Clean up any remaining HTML tags or artifacts
     markdown = re.sub(r'<[^>]+>', '', markdown)
-    
+
     if multiline:
         # For multiline, preserve line structure but clean up excess whitespace
         lines = markdown.split('\n')
@@ -1534,14 +1534,14 @@ def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
                 cleaned_lines.append(line)
             elif cleaned_lines and cleaned_lines[-1]:  # Add empty lines only between content
                 cleaned_lines.append('')
-        
+
         # Join lines and clean up multiple consecutive empty lines
         markdown = '\n'.join(cleaned_lines)
         markdown = re.sub(r'\n\n\n+', '\n\n', markdown)
     else:
         # For inline only, collapse whitespace
         markdown = re.sub(r'\s+', ' ', markdown)
-    
+
     markdown = markdown.strip()
     return markdown
 
@@ -1550,10 +1550,10 @@ def _format_table_helper(table_lines: list) -> str:
     """Helper function to format markdown table to HTML"""
     if len(table_lines) < 2:
         return ""
-    
+
     # Parse header row
     header_cells = [cell.strip() for cell in table_lines[0].split('|')[1:-1]]
-    
+
     # Parse alignment row
     alignment_row = table_lines[1]
     alignments = []
@@ -1565,14 +1565,14 @@ def _format_table_helper(table_lines: list) -> str:
             alignments.append('right')
         else:
             alignments.append('left')
-    
+
     # Ensure we have alignments for all columns
     while len(alignments) < len(header_cells):
         alignments.append('left')
-    
+
     # Build HTML table
     html = ['<table>']
-    
+
     # Header row
     header_html = '  <tr>'
     for i, cell in enumerate(header_cells):
@@ -1580,7 +1580,7 @@ def _format_table_helper(table_lines: list) -> str:
         header_html += f'<th align="{align}">{cell}</th>'
     header_html += '</tr>'
     html.append(header_html)
-    
+
     # Data rows
     for line in table_lines[2:]:
         if not line.strip():
@@ -1592,7 +1592,7 @@ def _format_table_helper(table_lines: list) -> str:
             row_html += f'<td align="{align}">{cell}</td>'
         row_html += '</tr>'
         html.append(row_html)
-    
+
     html.append('</table>')
     return '\n'.join(html)
 
@@ -1626,7 +1626,7 @@ def create_new_oscal_content(model_name: str, title: str, version: str="", publi
                         metadata["version"] = version
                     if published != "":
                         metadata["published"] = oscal_date_time_with_timezone(published)
-                
+
                     if metadata:
                         oscal_object.set_metadata(metadata)
 
@@ -1641,7 +1641,7 @@ def create_new_oscal_content(model_name: str, title: str, version: str="", publi
 
     else:
         logger.error(f"Unsupported OSCAL model for new content: {model_name}")
-    
+
     return oscal_object
 
 # -------------------------------------------------------------------------
@@ -1701,7 +1701,7 @@ def append_component(ssp_obj, component_type, component_title, component_descrip
     if component_uuid is None:
         component_uuid = new_uuid()
 
-    try: 
+    try:
         component_obj = ElementTree.Element("component") # Create the component element
         component_obj.set("uuid", component_uuid) # Set the component-uuid attribute
         component_obj.set("type", component_type) # Set the uuid attribute
@@ -1751,7 +1751,7 @@ def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks="")
     Adds an "imiplemented-requirement" to an SSP's control implementation section.
     """
 
-    try: 
+    try:
         logger.debug("setting up imiplemented-requirement")
         impl_req_uuid = new_uuid()
         impl_req_obj = ElementTree.Element("implemented-requirement") # Create the component element

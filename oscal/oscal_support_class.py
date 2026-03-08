@@ -31,14 +31,14 @@ OSCAL_FORMATS = ["xml", "json", "yaml", "yml"]
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Release and Support File Patterns
 # DEFAULT_EXCLUDE_TAG_PATTERNS = ["-rc", "-milestone"] # Ignore release tags with these substrings.
-DEFAULT_EXCLUDE_VERSIONS = ["v1.0.0-rc1", "v1.0.0-rc2", "v1.0.0-milestone1", "v1.0.0-milestone2", "v1.0.0-milestone3"] 
+DEFAULT_EXCLUDE_VERSIONS = ["v1.0.0-rc1", "v1.0.0-rc2", "v1.0.0-milestone1", "v1.0.0-milestone2", "v1.0.0-milestone3"]
 SUPPORT_FILE_PATTERNS    = {
     "_metaschema_RESOLVED.xml":   "metaschema",    # OSCAL specification files
     "_schema.xsd":                "xml-schema",       # OSCAL XML schema validation files
     "_schema.json":               "json-schema",      # OSCAL JSON schema validation files
     "_xml-to-json-converter.xsl": "xml-to-json", # OSCAL XML to JSON converters
     "_json-to-xml-converter.xsl": "json-to-xml" # OSCAL JSON to XML converters
-    } 
+    }
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # GitHub root URLs
@@ -60,7 +60,7 @@ OSCAL_documentation = "https://pages.nist.gov/OSCAL-Reference/models" # /{tag_na
 OSCAL_SUPPORT_TABLES={}
 OSCAL_SUPPORT_TABLES["oscal_versions"] = {
     "table_name": "oscal_versions",
-    "table_fields": [ 
+    "table_fields": [
         {"name": "version"               , "type": "TEXT"   , "attributes": "PRIMARY KEY", "label" : "Release Tag", "description": "The GitHub release tag assocaited with the OSCAL version."},
         {"name": "title"                 , "type": "TEXT"   , "label" : "Release Title", "description": "The title of the released version."},
         {"name": "released"              , "type": "NUMERIC", "label" : "Released", "description": "The date and time the version was released."},
@@ -88,7 +88,7 @@ OSCAL_DATA_TYPES = {}
 # ========================================================================
 def setup_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
     logger.debug(f"Setting up support file: {support_file}")
-    
+
     support = OSCAL_support.create(support_file, db_init_mode=db_init_mode )
     cycle = 0
     while not support.ready:
@@ -113,7 +113,7 @@ class OSCAL_support:
     def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto", db_compress_files=COMPRESS_SUPPORT_FILES_IN_DATABASE):
         """
         Initialize OSCAL Support.
-        
+
         Args:
             db_conn: Database connection string or path
             db_type: Database type (sqlite3, mysql, etc.)
@@ -123,7 +123,7 @@ class OSCAL_support:
                 - "create": Always create empty database from scratch
         """
         self.ready      = False     # Is the support capability available?
-        self.db_conn    = db_conn   # The support database connection string or path and filename 
+        self.db_conn    = db_conn   # The support database connection string or path and filename
         self.db_type    = db_type   # The support database type (sqlite3, mysql, postgresql, mssql, etc.)
         self.db_init_mode = db_init_mode  # Database initialization mode
         self.db_compress_files = db_compress_files  # Whether to compress support files in the database
@@ -139,7 +139,7 @@ class OSCAL_support:
         should_extract = False
         should_create = False
         extract_reason = ""
-        
+
         if db_type == "sqlite3":
             if db_conn is None or db_conn.strip() == "":
                 # No database specified, use default
@@ -150,13 +150,13 @@ class OSCAL_support:
             else:
                 # Database path specified
                 self.db_conn = db_conn  # Ensure instance variable is set
-            
+
             # Determine what action to take based on mode
             file_exists = chkfile(db_conn)
             file_size = os.path.getsize(db_conn) if file_exists else 0
-            
+
             logger.debug(f"Database file status: exists={file_exists}, size={file_size} bytes")
-            
+
             if self.db_init_mode == "create":
                 # Always create from scratch
                 should_create = True
@@ -189,16 +189,16 @@ class OSCAL_support:
             # Handle extraction
             if should_extract:
                 extraction_successful = self._extract_database(db_conn, extract_reason)
-                
+
                 # If extraction failed and we're in extract mode, fall back to create
                 if not extraction_successful and self.db_init_mode == "extract":
                     logger.warning("Extraction failed, falling back to creating empty database")
                     should_create = True
-            
+
             # Handle creation from scratch
             if should_create:
                 self._create_empty_database(db_conn)
-            
+
             # If neither extraction nor creation was needed/requested
             if not should_extract and not should_create:
                 logger.debug("No database initialization needed")
@@ -226,12 +226,12 @@ class OSCAL_support:
         Returns True if extraction was successful, False otherwise.
         """
         logger.debug(f"Database extraction needed: {reason}")
-        
+
         # Ensure the directory exists
         db_dir = os.path.dirname(db_conn)
         if db_dir != "":
             chkdir(db_dir, make_if_not_present=True)
-        
+
         # unzip the default database from package resources
         import zipfile
         try:
@@ -243,17 +243,17 @@ class OSCAL_support:
                         # Get file info to check size
                         file_info = z.getinfo(member)
                         logger.debug(f"Extracting {member} (compressed: {file_info.compress_size} bytes, uncompressed: {file_info.file_size} bytes)")
-                        
+
                         # Read all content from the zip member
                         with z.open(member) as src:
                             content = src.read()
                             logger.debug(f"Read {len(content)} bytes from zip member")
-                            
+
                             # Write content to destination file
                             with open(db_conn, "wb") as dst:
                                 bytes_written = dst.write(content)
                                 logger.debug(f"Wrote {bytes_written} bytes to {db_conn}")
-                                
+
                         if len(content) > 0:
                             logger.info(f"Successfully extracted default support DB to {db_conn} ({len(content)} bytes)")
                             return True
@@ -277,12 +277,12 @@ class OSCAL_support:
         This removes any existing file and creates a fresh empty database.
         """
         logger.debug(f"Creating empty database from scratch: {db_conn}")
-        
+
         # Ensure the directory exists
         db_dir = os.path.dirname(db_conn)
         if db_dir != "":
             chkdir(db_dir, make_if_not_present=True)
-        
+
         # Remove existing file if it exists
         if chkfile(db_conn):
             try:
@@ -291,7 +291,7 @@ class OSCAL_support:
             except Exception as e:
                 logger.error(f"Failed to remove existing database file {db_conn}: {e}")
                 return False
-        
+
         # Create empty file - the Database class will initialize it with proper tables
         try:
             with open(db_conn, 'w'):
@@ -353,7 +353,7 @@ class OSCAL_support:
         logger.debug("Support: startup")
         status = False
 
-        if not self.db_state or self.db_state == "unknown": 
+        if not self.db_state or self.db_state == "unknown":
             # status = await self.__check_for_tables()
             status = self.db.check_for_tables(OSCAL_SUPPORT_TABLES)
 
@@ -381,7 +381,7 @@ class OSCAL_support:
             else:
                 logger.error("Unable to update OSCAL support capability. Exiting.")
                 self.ready = False
-       
+
         return status
 
     # -------------------------------------------------------------------------
@@ -402,7 +402,7 @@ class OSCAL_support:
         """
         status = False
         self.backend = backend
-        
+
         try:
             if fetch == "all":
                 self.__status_messages("Starting full refresh of OSCAL support content...")
@@ -417,21 +417,21 @@ class OSCAL_support:
                 else:
                     logger.error(f"Invalid update directive: {fetch}")
                     status = False
-            
+
             if status:
                 # Get OSCAL versions with periodic status updates
                 status = self.__get_oscal_versions(fetch)
-            
+
             # Final reload of versions
             self.__load_versions()
-            
+
             self.__status_messages("Update process completed.")
-            
+
         except Exception as e:
             logger.error(f"Error during update: {e}")
             self.__status_messages(f"Error during update: {str(e)}", "error")
             status = False
-            
+
         return status
 
     # -------------------------------------------------------------------------
@@ -623,14 +623,14 @@ class OSCAL_support:
         return version in self.versions
 
     # -------------------------------------------------------------------------
-    def __load_versions(self):     
+    def __load_versions(self):
         """
         Load supported OSCAL versions and support references into memory.
         """
         status = False
 
         logger.debug("Loading OSCAL versions into memory.")
-        
+
         query = "SELECT * FROM oscal_versions ORDER BY released DESC"
         results = self.db.query(query)
         if results is not None:
@@ -662,28 +662,28 @@ class OSCAL_support:
         fetch_all = (fetch == "all")
         fetch_latest = (fetch == "latest")
         fetch_one = (fetch.startswith("v"))
-        
+
         self.__status_messages("Fetching OSCAL release informaiton from GitHub...")
-        
+
         response = network.api_get(GitHub_API_root + "/repos/" + OSCAL_repo + "/releases")
         self.__status_messages("Fetching OSCAL release information from GitHub...done.")
 
         if response is not None and response.ok:
             repo_releases: list[dict] = response.json()
             total_releases = len(repo_releases)
-            
+
             self.__status_messages(f"Found {total_releases} releases in the OSCAL GitHub repository.")
             for idx, entry in enumerate(repo_releases, 1):
                 self.__status_messages(f"Inspecting release {idx} of {total_releases}...")
                 # Progress indicator (no need for asyncio.sleep in sync mode)
-                
+
                 oscal_version = entry.get("tag_name", "").lower()
                 if not entry.get("draft", False):
                     # self.__status_messages(f"Found non-draft OSCAL Version {oscal_version}...")
                     if (oscal_version not in DEFAULT_EXCLUDE_VERSIONS):
-                        # self.__status_messages(f"Found non-excluded OSCAL Version {oscal_version}") 
-                        
-                        ok_to_continue = (fetch_all or 
+                        # self.__status_messages(f"Found non-excluded OSCAL Version {oscal_version}")
+
+                        ok_to_continue = (fetch_all or
                                         (fetch_latest and oscal_version not in self.versions) or
                                         (fetch_one and oscal_version == fetch))
 
@@ -691,12 +691,12 @@ class OSCAL_support:
                             self.__status_messages(f"Processing {oscal_version} release...")
                             release_date = entry.get("published_at", "0000-00-00T00:00:00Z")
                             release_name = entry.get("name", "")
-                            github_location = f"{OSCAL_Release_URL}/{oscal_version}" 
-                            documentation_location = f"{OSCAL_documentation}/{oscal_version}" 
+                            github_location = f"{OSCAL_Release_URL}/{oscal_version}"
+                            documentation_location = f"{OSCAL_documentation}/{oscal_version}"
                             self.__clear_oscal_version(oscal_version)
-                            
+
                             # Database operations
-                            
+
                             logger.info(f"Learning {oscal_version}, released {release_date} ...")
                             if self.db.insert("oscal_versions", {
                                 "version": oscal_version,
@@ -725,7 +725,7 @@ class OSCAL_support:
                     self.__status_messages(f"Skipping draft OSCAL Version {oscal_version}...")
 
         else:
-            logger.error("Unable to fetch release information from GitHub.") 
+            logger.error("Unable to fetch release information from GitHub.")
             status = False
 
         if status:
@@ -734,19 +734,19 @@ class OSCAL_support:
             self.__status_messages(f"OSCAL versions: {', '.join(OSCAL_versions)}")
 
         return status
-  
+
     # -------------------------------------------------------------------------
     def __fetch_support_files(self, version, assets):
         """Process assets sequentially"""
         status = False
-        
+
         # Process assets sequentially
         for asset in assets:
             asset_name = asset.get("name", "")
             for pattern in SUPPORT_FILE_PATTERNS:
                 if pattern in asset_name:
                     self.__process_single_asset(version, asset, pattern)
-        
+
         status = True
         return status
 
@@ -758,17 +758,17 @@ class OSCAL_support:
         model_name = asset_name.replace("oscal_", "").replace(pattern, "")
 
         # Special cases for SSP, POAM, and Component
-        if model_name == "ssp": 
+        if model_name == "ssp":
             model_name = "system-security-plan"
-        if model_name == "poam": 
+        if model_name == "poam":
             model_name = "plan-of-action-and-milestones"
-        if model_name == "component": 
-            model_name = "component-definition"            
-        
+        if model_name == "component":
+            model_name = "component-definition"
+
         uuid_value = str(uuid.uuid4())
-        
+
         self.__status_messages(f"Downloading {asset_name}...")
-        
+
         # Perform database inserts
         self.db.insert("oscal_support", {
             "version": version,
@@ -776,7 +776,7 @@ class OSCAL_support:
             "type": SUPPORT_FILE_PATTERNS[pattern],
             "filecache_uuid": uuid_value
         })
-        
+
         # Download file content synchronously
         content = network.download_file(asset_URL, asset_name)
 
@@ -803,7 +803,7 @@ class OSCAL_support:
 
         sql_commands = [
             # "BEGIN TRANSACTION;",
-            f""" 
+            f"""
             WITH uuids_to_delete AS (
                 SELECT filecache_uuid
                 FROM oscal_support
@@ -818,13 +818,13 @@ class OSCAL_support:
 
         status = self.db.db_execute(sql_commands)
 
-        if status: 
+        if status:
             logger.info(f"Successfully deleted support information for version {version}")
         else:
             logger.error(f"Unable to deleted support information for version {version}")
 
         return status
-    
+
     # -------------------------------------------------------------------------
     def __clear_oscal_versions(self):
         """
@@ -870,7 +870,7 @@ class OSCAL_support:
                         # Query all records for this version from oscal_support table
                         query = f"SELECT * FROM oscal_support WHERE version = '{version}'"
                         support_records = self.db.query(query)
-                        
+
                         if support_records:
                             for record in support_records:
                                 model = record.get('model', '')
@@ -924,7 +924,7 @@ class OSCAL_support:
                 return self._cache[CACHE_FROM_DATA][file_name]
         else:
             self._cache[CACHE_FROM_DATA] = {}
-        
+
         try:
             if binary:
                 with resources.open_binary("oscal.data", file_name) as f:
@@ -936,11 +936,11 @@ class OSCAL_support:
             else:
                 with resources.open_text("oscal.data", file_name) as f:
                     content = f.read()
-            
+
             self._cache[CACHE_FROM_DATA][file_name] = content
             logger.debug(f"Loaded schema file: {file_name}")
             return content
-            
+
         except Exception as e:
             logger.error(f"Failed to load OSCAL support library file {file_name}: {e}")
             return None

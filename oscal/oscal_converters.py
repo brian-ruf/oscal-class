@@ -1,7 +1,7 @@
 """
 OSCAL Format Converter using saxonche and NIST XSLT transformations.
 
-This module provides in-memory functions to convert between OSCAL XML and JSON 
+This module provides in-memory functions to convert between OSCAL XML and JSON
 formats using the official NIST OSCAL XSLT 3.0 converters with the saxonche library.
 
 All operations work with string content in memory - no file I/O required.
@@ -13,11 +13,11 @@ Requirements:
 OSCAL Converters Download:
     The XSLT converters can be obtained from NIST OSCAL releases:
     https://github.com/usnistgov/OSCAL/releases
-    
+
     Look for converter files named:
     - oscal_{model}_xml-to-json-converter.xsl
     - oscal_{model}_json-to-xml-converter.xsl
-    
+
     Where {model} is one of: catalog, profile, ssp, component-definition,
     assessment-plan, assessment-results, poam
 
@@ -42,7 +42,7 @@ def oscal_xml_to_json(
     ) -> str:
     """
     Convert OSCAL XML to JSON using NIST XSLT 3.0 converter.
-    
+
     All inputs and outputs are strings in memory - no file I/O.
 
     Args:
@@ -61,14 +61,14 @@ def oscal_xml_to_json(
         ... <catalog xmlns="http://csrc.nist.gov/ns/oscal/1.0">
         ...     <metadata>...</metadata>
         ... </catalog>'''
-        >>> 
+        >>>
         >>> xslt_str = open('oscal_catalog_xml-to-json-converter.xsl').read()
-        >>> 
+        >>>
         >>> json_result = oscal_xml_to_json(xml_str, xslt_str)
     """
     if not xml_content or not isinstance(xml_content, str):
         raise OSCALConverterError("xml_content must be a non-empty string")
-    
+
     if not xsl_converter or not isinstance(xsl_converter, str):
         raise OSCALConverterError("xsl_converter must be a non-empty string")
 
@@ -108,7 +108,7 @@ def oscal_json_to_xml(
     ) -> str:
     """
     Convert OSCAL JSON to XML using NIST XSLT 3.0 converter.
-    
+
     All inputs and outputs are strings in memory - no file I/O.
 
     The NIST JSON-to-XML converters use XSLT 3.0's json-to-xml() function
@@ -133,14 +133,14 @@ def oscal_json_to_xml(
         ...     "metadata": {...}
         ...   }
         ... }'''
-        >>> 
+        >>>
         >>> xslt_str = open('oscal_catalog_json-to-xml-converter.xsl').read()
-        >>> 
+        >>>
         >>> xml_result = oscal_json_to_xml(json_str, xslt_str)
     """
     if not json_content or not isinstance(json_content, str):
         raise OSCALConverterError("json_content must be a non-empty string")
-    
+
     if not xsl_converter or not isinstance(xsl_converter, str):
         raise OSCALConverterError("xsl_converter must be a non-empty string")
 
@@ -182,55 +182,55 @@ def oscal_json_to_xml(
 # Example usage demonstrating in-memory operation
 if __name__ == "__main__":
     # import sys
-    
+
     print("OSCAL In-Memory Format Converter")
     print("=" * 60)
     print("\nAll operations work with strings in memory.\n")
-    
+
     print("Example 1: XML to JSON conversion")
     print("-" * 60)
     print("""
     # Load converter XSLT as string
     with open('oscal_catalog_xml-to-json-converter.xsl', 'r') as f:
         xslt_converter = f.read()
-    
+
     # Load OSCAL XML as string
     with open('catalog.xml', 'r') as f:
         xml_content = f.read()
-    
+
     # Convert in memory
     json_result = oscal_xml_to_json(
         xml_content=xml_content,
         xsl_converter=xslt_converter,
         json_indent=True
     )
-    
+
     # json_result is a string containing JSON
     print(json_result)
     """)
-    
+
     print("\nExample 2: JSON to XML conversion")
     print("-" * 60)
     print("""
     # Load converter XSLT as string
     with open('oscal_profile_json-to-xml-converter.xsl', 'r') as f:
         xslt_converter = f.read()
-    
+
     # Load OSCAL JSON as string
     with open('profile.json', 'r') as f:
         json_content = f.read()
-    
+
     # Convert in memory
     xml_result = oscal_json_to_xml(
         json_content=json_content,
         xsl_converter=xslt_converter,
         validate_json=True
     )
-    
+
     # xml_result is a string containing XML
     print(xml_result)
     """)
-    
+
     print("\nExample 3: Processing from variables")
     print("-" * 60)
     print("""
@@ -241,18 +241,18 @@ if __name__ == "__main__":
             <title>My Catalog</title>
         </metadata>
     </catalog>'''
-    
+
     # Converter loaded from file or database or API
     converter_xslt = load_converter_from_database('catalog', 'xml-to-json')
-    
+
     # Convert
     json_output = oscal_xml_to_json(xml_data, converter_xslt)
-    
+
     # Use the result immediately
     send_to_api(json_output)
     store_in_database(json_output)
     """)
-    
+
     print("\n" + "=" * 60)
     print("NOTE: Download OSCAL XSLT converters from:")
     print("https://github.com/usnistgov/OSCAL/releases")

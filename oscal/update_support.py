@@ -18,7 +18,7 @@ if supportObj.update("all"):
         logger.info(f"Updated support database compressed and saved to {SUPPORT_ZIP_PATH}.")
     else:
         logger.error("Failed to compress the updated support database.")
-    
 
-else:    
+
+else:
     logger.error("Failed to update support assets.")
