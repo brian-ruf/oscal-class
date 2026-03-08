@@ -31,7 +31,7 @@ Function for inclusion in oscal-class library:
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 try:
     import yaml
@@ -970,8 +970,8 @@ def _dump_file(data: dict, path: Path, fmt: str) -> None:
 
 
 def resequence_oscal_file(
-    input_path: str | Path,
-    output_path: str | Path | None = None,
+    input_path: Union[str, Path],
+    output_path: Union[str, Path, None] = None,
 ) -> Path:
     """
     Load an OSCAL JSON or YAML file, resequence all keys to match the NIST
