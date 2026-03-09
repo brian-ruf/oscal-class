@@ -36,7 +36,7 @@ git push origin vX.Y.Z
 
 ### 4. Create the GitHub Release
 
-1. Go to [Releases → New release](../releases/new)
+1. Go to [Releases → New release](https://github.com/brian-ruf/oscal-class/releases/new)
 2. Select tag **`vX.Y.Z`**
 3. Set the title to **`vX.Y.Z`**
 4. Add release notes summarizing the changes
