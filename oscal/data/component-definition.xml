@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component-definition xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="a85ebdb8-2197-4ac7-acd2-da376ba9ac9f">
+   <metadata>
+      <title>[Component Name]</title>
+      <published>2025-09-10T12:00:00-04:00</published>
+      <last-modified>2025-09-10T12:00:00-04:00</last-modified>
+      <version>DRAFT</version>
+      <oscal-version>1.2.0</oscal-version>
+   </metadata>
+
+</component-definition>

@@ -1,32 +1,45 @@
 # Use in Code
 
-## Important Setup
+The OSCAL class is intended to take the complexity out of OSCAL content manipulation, while exposing more all methods and functions for fine-grained control if desired.
 
-The Python OSCAL Classes rely on my [Python Common](https://github.com/brian-ruf/common-python) submodule. It must also be present in your project's code repository. 
+## Getting started:
 
-Relative to the location of your project's main Python module, the Python OSCAL Classes expect:
-- the Python Common submodule to be located at `./common/`
-- this OSCAL Class submodule to be located at `./oscal/`
+1. Install the OSCAL Class library per the [Setup instructions](./SETUP.md)
 
-Please see the [Setup documentation](./SETUP.md) for setup instructions and related details.
+2. Import the OSCAL Class into your Python code:
 
+```python
+from oscal import *
 
-## The OSCAL Classes
+```
 
-There are three OSCAL Classes available. Each class uses and expands on the classes beneath it.:
+# Create New OSCAL Content:
 
-- **OSCAL Project Class**: Managing a collection of related OSCAL artifacts.
-- **OSCAL Content Class**: Managing a single OSCAL artifact.
-- **OSCAL Support Class**: Interact directly with the OSCAL Support Module. 
-
-If you are just getting started with this library, consider starting with the OSCAL Content Class.
-
-### The OSCAL Support Class
+New OSCAL content is created in the latest OSCAL version (currently 1.1.3). The `oscal-version` field is set automatically.
 
 
+```python
 
-### The OSCAL Content Class
+oscal_obj = oscal.create_new_oscal_content("catalog") # Optional `title`, `version` and `published` arguments available.
 
-The OSCAL content class offers a simple solution for ingesting, validating and converting OSCAL content. 
+```
+
+The returned OSCAL object is fully valid with only minimum necessary place-holder data.
+
+The `title`, `version` and `published` arguments are optional. If passed, they will be set immediately upon content creation. Otherwise, placeholder values are used. 
 
 
+# Loading Existing OSCAL Content:
+
+
+```python
+content = "string" # XML, JSON, or YAML 
+
+
+try:
+    oscal_object = OSCAL(content=content, filename=filename)  
+    # If we get here, initialization succeeded
+except ValueError as e:
+    # Handle the error
+    oscal_object = None
+```
