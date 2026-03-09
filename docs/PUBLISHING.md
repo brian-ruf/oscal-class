@@ -6,7 +6,7 @@ by GitHub Actions when a GitHub Release is created. No manual upload steps are r
 ## Prerequisites (one-time setup)
 
 - A `pypi` environment configured in the GitHub repository settings
-- A Trusted Publisher configured on PyPI linking this repo's `publish.yml` workflow to the `ruf-common` project
+- A Trusted Publisher configured on PyPI linking this repo's `publish.yml` workflow to the project
 
 ## Release steps
 
@@ -36,7 +36,7 @@ git push origin vX.Y.Z
 
 ### 4. Create the GitHub Release
 
-1. Go to [Releases → New release](https://github.com/brian-ruf/ruf-common-python/releases/new)
+1. Go to [Releases → New release](https://github.com/{{OWNER}}/{{REPO}}/oscal-class/releases/new)
 2. Select tag **`vX.Y.Z`**
 3. Set the title to **`vX.Y.Z`**
 4. Add release notes summarizing the changes
