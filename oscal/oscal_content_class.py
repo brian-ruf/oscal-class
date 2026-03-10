@@ -70,7 +70,7 @@ class OSCAL(LoggableMixin):
         Methods:
 
     """
-    def __init__(self, content="", filename="", support_db_conn="", support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
+    def __init__(self, content: str = "", filename: str = "", support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE):
         """
         OSCAL Class
         Must provide at least one of the following parameters:
@@ -169,7 +169,7 @@ class OSCAL(LoggableMixin):
 
         return ret_value
     # -------------------------------------------------------------------------
-    def initial_validation(self):
+    def initial_validation(self) -> bool:
         """
         Perform initial validation of content, which includes first ensuring the
         content is a recognized OSCAL format type (xml, json or yaml) and
@@ -247,7 +247,7 @@ class OSCAL(LoggableMixin):
         return status
 
     # -------------------------------------------------------------------------
-    def validate(self, format="") -> bool:
+    def validate(self, format: str = "") -> bool:
         """
         Validate OSCAL content.
         This assumes the content has already been determined to be well-formed XML, JSON, or YAML,
@@ -413,7 +413,7 @@ class OSCAL(LoggableMixin):
 
 
     # -------------------------------------------------------------------------
-    def save(self, filename: str="", format: str="", pretty_print: bool=False):
+    def save(self, filename: str="", format: str="", pretty_print: bool=False) -> bool:
         f"""
         Save the current OSCAL content to a file.
         With no parameters, saves to the original location in the original format.
@@ -424,6 +424,8 @@ class OSCAL(LoggableMixin):
             format (str): The format to save the content in {OSCAL_FORMATS}.
             pretty_print (bool): Whether to pretty print the output.
 
+        Returns:
+            bool: True if save is successful, False otherwise
         """
         status = False
 
@@ -579,7 +581,7 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
-    def set_metadata(self, content={}):
+    def set_metadata(self, content: dict = {}):
         """
         Sets metadata fields in the OSCAL content.
         Args:
@@ -702,7 +704,7 @@ class OSCAL(LoggableMixin):
         #     return ret_value
     """
     # -------------------------------------------------------------------------
-    def xpath_atomic(self, xExpr, context=None):
+    def xpath_atomic(self, xExpr: str, context: object = None) -> str:
         """
         Performs an xpath query that is expected to return a single atomic value,
         Parameters:
@@ -729,7 +731,7 @@ class OSCAL(LoggableMixin):
         return str(ret_value)
 
     # -------------------------------------------------------------------------
-    def xpath(self, xExpr, context=None):
+    def xpath(self, xExpr: str, context: object = None) -> object:
         """
         Performs an xpath query either on the entire XML document
         or on a context within the document.
@@ -763,7 +765,7 @@ class OSCAL(LoggableMixin):
         return ret_value
 
     # -------------------------------------------------------------------------
-    def get_serialized_content(self, format: str):
+    def get_serialized_content(self, format: str) -> str:
         """
         Serializes the current content to a string in the specified format.
         Parameters:
@@ -797,7 +799,7 @@ class OSCAL(LoggableMixin):
 
 
     # -------------------------------------------------------------------------
-    def xml_serializer(self):
+    def xml_serializer(self) -> str:
         """
         Serializes the current XML tree to a string.
         Returns:
@@ -830,7 +832,7 @@ class OSCAL(LoggableMixin):
         return out_string
 
     # -------------------------------------------------------------------------
-    def json_serializer(self):
+    def json_serializer(self) -> str:
         """
         Serializes the current dict to a string.
         Returns:
@@ -843,7 +845,7 @@ class OSCAL(LoggableMixin):
         return out_string
 
     # -------------------------------------------------------------------------
-    def yaml_serializer(self):
+    def yaml_serializer(self) -> str:
         """
         Serializes the current dict to a string.
         Returns:
@@ -856,7 +858,7 @@ class OSCAL(LoggableMixin):
         return out_string
 
     # -------------------------------------------------------------------------
-    def assign_html_string_to_node(self, parent_node, html_string: str):
+    def assign_html_string_to_node(self, parent_node: ElementTree.Element, html_string: str):
         """
         Assigns an HTML string to an XML node, converting it to proper XML structure.
         This properly handles mixed content (text + elements).
@@ -888,7 +890,7 @@ class OSCAL(LoggableMixin):
             logger.error("HTML String: " + html_string)
 
     # -------------------------------------------------------------------------
-    def create_control(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", statements=[], guidance="", example="", objectives=[], objects=[], methods=[], remarks=""):
+    def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
         """
         Creates a new control under the specified parent group.
         Parameters:
@@ -1025,7 +1027,7 @@ class OSCAL(LoggableMixin):
         return control
 
     # -------------------------------------------------------------------------
-    def create_control_group(self, parent_id, id, title="", params=[], props=[], links=[], label="", sort_id="", alt_identifier="", overview="", instruction="", remarks=""):
+    def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
         """
         Creates a new catalog group.
         Parameters:
@@ -1119,7 +1121,7 @@ class OSCAL(LoggableMixin):
         return group
 
     # -------------------------------------------------------------------------
-    def append_child(self, xpath, node_name, node_content = None, attribute_list = []):
+    def append_child(self, xpath: str, node_name: str, node_content: str = None, attribute_list: list = []) -> ElementTree.Element:
         # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
         status = False
         child = None
@@ -1155,7 +1157,7 @@ class OSCAL(LoggableMixin):
             return None
 
     # -------------------------------------------------------------------------
-    def append_resource(self, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remarks=""):
+    def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
         """
         Appends a resource element to the back-matter section.
         """
@@ -1246,23 +1248,25 @@ class OSCAL(LoggableMixin):
 
         return True
     # -------------------------------------------------------------------------
-    def append_profile_with_id(self, href, control_ids=[]):
+    def append_profile_with_id(self, href: str, control_ids: list = []) -> bool:
         """
         Adds with-id element to a profile's import statement.
         """
+        status = False
         import_obj = self.xpath(f"/*/import[@href='{href}']")
         if import_obj:
             import_obj = import_obj[0]
             include_obj = import_obj.find("include-controls")
             if include_obj is None:
                 include_obj = ElementTree.SubElement(import_obj, "include-controls")
+                status = True
             for control_id in control_ids:
                 with_id_obj = ElementTree.SubElement(include_obj, "with-id")
                 with_id_obj.text = control_id
         else:
             logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
 
-        return True
+        return status
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def get_root_element_name(content: str) -> str:
@@ -1286,7 +1290,7 @@ def get_root_element_name(content: str) -> str:
     return root_name
 
 # -------------------------------------------------------------------------
-def append_props(parent_node, props: list):
+def append_props(parent_node: ElementTree.Element, props: list):
     """
     Appends multiple property elements to the provided parent XML node.
     Parameters:
@@ -1296,7 +1300,7 @@ def append_props(parent_node, props: list):
     for prop in props:
         append_prop(parent_node, prop)
 # -------------------------------------------------------------------------
-def append_prop(parent_node, prop: dict):
+def append_prop(parent_node: ElementTree.Element, prop: dict):
     """
     Appends a property element to the provided parent XML node.
     Parameters:
@@ -1325,7 +1329,7 @@ def append_prop(parent_node, prop: dict):
                 logger.error(f"Error parsing remarks HTML: {e}")
                 remarks_node.text = prop.get('remarks', '')
 # -----------------------------------------------------------------------------
-def append_links(parent_node, links: list):
+def append_links(parent_node: ElementTree.Element, links: list):
     """
     Appends multiple link elements to the provided parent XML node.
     Parameters:
@@ -1335,7 +1339,7 @@ def append_links(parent_node, links: list):
     for link in links:
         append_link(parent_node, link)
 # -----------------------------------------------------------------------------
-def append_link(parent_node, link: dict):
+def append_link(parent_node: ElementTree.Element, link: dict):
     """
     Appends a link element to the provided parent XML node.
     Parameters:
@@ -1645,12 +1649,12 @@ def create_new_oscal_content(model_name: str, title: str, version: str="", publi
     return oscal_object
 
 # -------------------------------------------------------------------------
-def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[], rlinks=[], base64=None, remarks=""):
+def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
     """
     Appends a resource element to the back-matter section.
     """
     resource = ElementTree.Element("resource")
-    if uuid is None:
+    if uuid == "":
         uuid = new_uuid()
     resource.set("uuid", uuid)
     if title is not None:
@@ -1694,7 +1698,7 @@ def append_resource(oscal_obj, uuid=None, title=None, description=None, props=[]
     return resource
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # -----------------------------------------------------------------------------
-def append_component(ssp_obj, component_type, component_title, component_description, op_status="operational", component_uuid=None, props=[], links=[], remarks=""):
+def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = None, props: list = [], links: list = [], remarks: str = "") -> ElementTree.Element:
     """
     Adds a "component" to an SSP's system implementation section.
     """
@@ -1746,7 +1750,7 @@ def append_component(ssp_obj, component_type, component_title, component_descrip
     return component_obj
 
 # -----------------------------------------------------------------------------
-def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks=""):
+def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], links: list = [], remarks: str = "") -> ElementTree.Element:
     """
     Adds an "imiplemented-requirement" to an SSP's control implementation section.
     """
@@ -1786,7 +1790,7 @@ def append_impl_requirement(ssp_obj, control_id, props=[], links=[], remarks="")
 
 
 # -----------------------------------------------------------------------------
-def append_by_component(impl_req_obj, component_uuid, description, by_component_uuid=None, implementation_status="implemented", remarks=""):
+def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, description: str, by_component_uuid: str = None, implementation_status: str = "implemented", remarks: str = "") -> ElementTree.Element:
     """
     Adds a "by-component" statement to an SSP's contrtol response statement.
 
@@ -1838,7 +1842,7 @@ def append_by_component(impl_req_obj, component_uuid, description, by_component_
 
 
 # -----------------------------------------------------------------------------
-def append_responsible_role(oscal_obj, role_id, party_uuids=[], remarks=None):
+def append_responsible_role(oscal_obj: OSCAL, role_id: str, party_uuids: list = [], remarks: str = None) -> ElementTree.Element:
     """
     Adds a "responsible-role" statement to an object.
     """
@@ -1868,7 +1872,7 @@ def append_responsible_role(oscal_obj, role_id, party_uuids=[], remarks=None):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # -------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
-def serializer(xml_object):
+def serializer(xml_object: ElementTree.Element) -> str:
     """
     Converts the XML tree object to string, suitable for saving and inspecting.
     """
@@ -1885,7 +1889,7 @@ def serializer(xml_object):
 
     return out_string
 # -----------------------------------------------------------------------------
-def new_uuid():
+def new_uuid() -> str:
     return str(uuid.uuid4())
 
 
