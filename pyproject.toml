@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oscal"
-version = "1.0.2"
+version = "1.0.3"
 description = "Python class to validate, convert and manage OSCAL content."
 requires-python = ">=3.9"
 authors = [{ name = "Brian Ruf", email = "Brian@RufRisk.com" }]
