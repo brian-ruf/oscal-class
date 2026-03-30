@@ -20,7 +20,7 @@ import os
 import json
 import yaml
 import uuid
-from typing import Optional
+from typing import Optional, Any
 
 from ruf_common.logging import LoggableMixin
 from ruf_common.data import detect_data_format, safe_load, safe_load_xml
@@ -113,7 +113,7 @@ class OSCAL(LoggableMixin):
         self.content_version = ""
         self.remarks = ""
 
-        self.dict = None # JSON/YAML constructs
+        self.dict: dict | None = None # JSON/YAML constructs
         self.tree = None # XML constructs
         self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
         self.__saxon = None
@@ -143,29 +143,18 @@ class OSCAL(LoggableMixin):
             raise ValueError("No content available.")
 
     # -------------------------------------------------------------------------
+    def __repr__(self):        
+        
+        return f"OSCAL[{self.oscal_model}:{self.oscal_version} {self.original_format.upper()}] {'VALID' if self.schema_valid else 'INVALID'} {self.content_title})"
+    # -------------------------------------------------------------------------
     def __str__(self):
-        ret_value = "OSCAL:\n"
-        ret_value += "=============================================================================\n"
-        ret_value += f"= Model: {self.oscal_model}\n"
-        ret_value += f"= Version: {self.oscal_version}\n"
-        ret_value += "=============================================================================\n"
-        ret_value += f"= Title: {self.content_title}\n"
-        if self.content_publication:
-            ret_value += f"= Publication Date: {self.content_publication}\n"
-        if self.content_version:
-            ret_value += f"= Content Version: {self.content_version}\n"
-        if self.remarks:
-            ret_value += "=============================================================================\n"
-            ret_value += f" Remarks:\n{self.remarks}\n"
-        if self.schema_valid.get(self.original_format, False):
-            ret_value += "=============================================================================\n"
-            ret_value += "= VALID OSCAL CONTENT\n"
-        else:
-            ret_value += "=============================================================================\n"
-            ret_value += "= INVALID OSCAL CONTENT\n"
-        if self.filename:
-            ret_value += "=============================================================================\n"
-            ret_value += f"= Source File: {self.filename}\n"
+        ret_value = ""
+        ret_value += "✅" if self.schema_valid else ""
+        ret_value += f" {self.content_title}" if self.content_title else " [Untitled]"
+        ret_value += f" [{self.oscal_model}]" if self.oscal_model else ""
+        ret_value += f" {self.content_version}" if self.content_version else ""
+        ret_value += f" {self.content_publication}" if self.content_publication else ""
+        ret_value += f"\nSource File: {self.filename}" if self.filename else ""
 
         return ret_value
     # -------------------------------------------------------------------------
@@ -206,8 +195,9 @@ class OSCAL(LoggableMixin):
                     logger.error("Content is not well-formed XML.")
 
             elif self.original_format in ("json", "yaml"):
-                self.dict = safe_load(self.content, self.original_format)
-                if self.dict is not None:
+                loaded = safe_load(self.content, self.original_format)
+                if isinstance(loaded, dict):
+                    self.dict = loaded
                     logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
                     status = True
                     root_element = next(iter(self.dict.keys())) if self.dict else ""
@@ -434,7 +424,7 @@ class OSCAL(LoggableMixin):
             format = format.lower()
             if format not in OSCAL_FORMATS:
                 logger.debug(f"Cannot save in ({format}) format. Not an OSCAL format.")
-                return
+                return False
 
         # If no format is passed, use the original format
         else:
@@ -465,7 +455,12 @@ class OSCAL(LoggableMixin):
             if self.dict and self.support and not self.tree:
                 xsl_converter=self.support.asset(self.oscal_version, self.oscal_model, "json-to-xml")
                 if isinstance(xsl_converter, str):
-                    xml_output = oscal_json_to_xml(self.dict, xsl_converter=xsl_converter)
+                    json_content = json.dumps(self.dict)
+                    xml_output = oscal_json_to_xml(
+                        json_content=json_content,
+                        xsl_converter=xsl_converter,
+                        validate_json=True
+                    )
                     self.tree = ElementTree.ElementTree(ElementTree.fromstring(xml_output))
                 else:
                     logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot serialize XML.")
@@ -500,7 +495,7 @@ class OSCAL(LoggableMixin):
                 status = putfile(filename, yaml_out)
         else:
             logger.error(f"Unsupported format for saving: {format}")
-            return
+            return False
 
         if status:
             logger.info(f"OSCAL content saved to {filename} in XML format.")
@@ -547,7 +542,7 @@ class OSCAL(LoggableMixin):
             # logger.debug(f"Setting attribute on '{base_path}' to value '{field_value}'")
             attr_name = basename.replace("@", "")
             parent_nodes = self.xpath(base_path)
-            if not parent_nodes or len(parent_nodes) != 1:
+            if parent_nodes is None or len(parent_nodes) != 1:
                 logger.warning(f"XPath '{path}' returned unexpected results or no results. Cannot set attribute.")
                 return
             parent_node = parent_nodes[0]  # Extract the first element from the list
@@ -704,7 +699,7 @@ class OSCAL(LoggableMixin):
         #     return ret_value
     """
     # -------------------------------------------------------------------------
-    def xpath_atomic(self, xExpr: str, context: object = None) -> str:
+    def xpath_atomic(self, xExpr: str, context: ElementTree.Element | ElementTree.ElementTree | None = None) -> str:
         """
         Performs an xpath query that is expected to return a single atomic value,
         Parameters:
@@ -717,21 +712,30 @@ class OSCAL(LoggableMixin):
         - str: The atomic value as a string.
         """
 
-        ret_value=""
+        ret_value = ""
 
-        if context:
+        if context is not None:
             logger.debug(f"Using provided context for XPath Atomic: {xExpr}")
         else:
             context = self.tree
             logger.debug(f"Using document root as context for XPath Atomic: {xExpr}")
 
-        ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)[0]
-        logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
+        if context is None:
+            logger.error("No XML context available for XPath Atomic query.")
+            return ""
+
+        results = elementpath.select(context, xExpr, namespaces=self.nsmap)
+        if not results:
+            logger.debug(f"No XPath Atomic results found for expression: {xExpr}")
+            return ""
+
+        ret_value = results[0]
+        logger.debug(f"xPath atomic result type: {str(type(ret_value))}")
 
         return str(ret_value)
 
     # -------------------------------------------------------------------------
-    def xpath(self, xExpr: str, context: object = None) -> object:
+    def xpath(self, xExpr: str, context: ElementTree.Element | ElementTree.ElementTree | None = None) -> Optional[list[Any]]:
         """
         Performs an xpath query either on the entire XML document
         or on a context within the document.
@@ -747,16 +751,26 @@ class OSCAL(LoggableMixin):
         - None if there is an error or if nothing is found.
         -
         """
-        ret_value=None
-        if context:
+        ret_value: Optional[list[Any]] = None
+        if context is not None:
             logger.debug(f"Using provided context for XPath: {xExpr}")
         else:
             context = self.tree
             logger.debug(f"Using document root as context for XPath: {xExpr}")
 
+        if context is None:
+            logger.error("No XML context available for XPath query.")
+            return None
+
         try:
 
-            ret_value = elementpath.select(context, xExpr, namespaces=self.nsmap)
+            result = elementpath.select(context, xExpr, namespaces=self.nsmap)
+            if result is None:
+                ret_value = None
+            elif isinstance(result, list):
+                ret_value = result
+            else:
+                ret_value = [result]
             # logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
         except Exception as error:
             logger.error(f"XPath expression '{xExpr}' failed: {str(error)}")
@@ -824,8 +838,10 @@ class OSCAL(LoggableMixin):
             return ""
 
         ElementTree.indent(root, space=" "* INDENT)
-        out_string = ElementTree.tostring(root, 'utf-8')
-        out_string = normalize_content(out_string)
+        out_bytes = ElementTree.tostring(root, 'utf-8')
+        out_string = normalize_content(out_bytes)
+        if out_string is None:
+            return ""
         out_string = out_string.replace("ns0:", "")
         out_string = out_string.replace(":ns0", "")
 
@@ -852,7 +868,7 @@ class OSCAL(LoggableMixin):
         - str: The serialized YAML content as a string.
         """
         logger.debug("Serializing dict for string output as YAML.")
-        out_string = yaml.dump(self.dict, indent=INDENT, sort_keys=False)
+        out_string: str = yaml.dump(self.dict, indent=INDENT, sort_keys=False)  # type: ignore[assignment]
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
@@ -1060,9 +1076,9 @@ class OSCAL(LoggableMixin):
 
                 # Use elementpath for reliable XPath processing
                 parent_nodes = self.xpath(parent_xpath)
-                if parent_nodes is not None:
+                if isinstance(parent_nodes, list) and len(parent_nodes) > 0:
                     logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
-                    parent_node = parent_nodes[0] # if parent_nodes else None
+                    parent_node = parent_nodes[0]
 
                     logger.debug("TAG: " + parent_node.tag)
                     group = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}group")
@@ -1121,7 +1137,7 @@ class OSCAL(LoggableMixin):
         return group
 
     # -------------------------------------------------------------------------
-    def append_child(self, xpath: str, node_name: str, node_content: str = None, attribute_list: list = []) -> ElementTree.Element:
+    def append_child(self, xpath: str, node_name: str, node_content: str = "", attribute_list: list = []) -> (ElementTree.Element | None):
         # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
         status = False
         child = None
@@ -1129,7 +1145,9 @@ class OSCAL(LoggableMixin):
             logger.debug("Fetching parent at " + xpath)
             # Use elementpath for reliable XPath processing
             parent_nodes = elementpath.select(self.tree, xpath, namespaces=self.nsmap)
-            parent_node = parent_nodes[0] if parent_nodes else None
+            parent_node = None
+            if isinstance(parent_nodes, list) and len(parent_nodes) > 0:
+                parent_node = parent_nodes[0]
             # parent_node = self.xpath(xpath)
             logger.debug(parent_node)
             if parent_node is not None:
@@ -1137,7 +1155,7 @@ class OSCAL(LoggableMixin):
                 child = ElementTree.Element(node_name)
 
                 logger.debug("SETTING CONTENT")
-                if isinstance(node_content, str):
+                if node_content != "":
                     child.text = node_content
 
                 logger.debug("SETTING ATTRIBUTES")
@@ -1186,15 +1204,18 @@ class OSCAL(LoggableMixin):
         # Find existing import by href. If it doesn't exist, look for empty href.
         # NOTE: This library's new/empty profile includes an import with href='#' by default.
         # If neither is found, create a new import element.
-        import_obj = self.xpath(f"/*/import[@href='{href}']")
-        if import_obj:
+        import_matches = self.xpath(f"/*/import[@href='{href}']")
+        import_obj: Optional[ElementTree.Element] = None
+        if isinstance(import_matches, list) and len(import_matches) > 0:
             logger.debug(f"Found existing import for href '{href}'. Updating it.")
-            import_obj = import_obj[0]
+            if isinstance(import_matches[0], ElementTree.Element):
+                import_obj = import_matches[0]
         else:
-            import_obj = self.xpath("/*/import[@href='#']")
-            if  import_obj:
+            import_matches = self.xpath("/*/import[@href='#']")
+            if isinstance(import_matches, list) and len(import_matches) > 0:
                 logger.debug(f"Found existing import with empty href. Updating it to '{href}'.")
-                import_obj = import_obj[0]
+                if isinstance(import_matches[0], ElementTree.Element):
+                    import_obj = import_matches[0]
             else:
                 logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
                 import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
@@ -1253,9 +1274,9 @@ class OSCAL(LoggableMixin):
         Adds with-id element to a profile's import statement.
         """
         status = False
-        import_obj = self.xpath(f"/*/import[@href='{href}']")
-        if import_obj:
-            import_obj = import_obj[0]
+        import_matches = self.xpath(f"/*/import[@href='{href}']")
+        if isinstance(import_matches, list) and len(import_matches) > 0 and isinstance(import_matches[0], ElementTree.Element):
+            import_obj = import_matches[0]
             include_obj = import_obj.find("include-controls")
             if include_obj is None:
                 include_obj = ElementTree.SubElement(import_obj, "include-controls")
@@ -1687,22 +1708,29 @@ def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", descripti
             remarks_obj.append(remarks_element)
     back_matter = oscal_obj.xpath("//back-matter")
 
-    if back_matter:
+    if back_matter and isinstance(back_matter, list) and len(back_matter) > 0:
         back_matter = back_matter[0]
     else:
         back_matter = ElementTree.Element("back-matter")
-        oscal_obj.tree.append(back_matter)
+        if oscal_obj.tree is not None:
+            if isinstance(oscal_obj.tree, ElementTree.ElementTree):
+                root_node = oscal_obj.tree.getroot()
+            else:
+                root_node = oscal_obj.tree
+
+            if root_node is not None:
+                root_node.append(back_matter)
 
     back_matter.append(resource)
 
     return resource
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # -----------------------------------------------------------------------------
-def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = None, props: list = [], links: list = [], remarks: str = "") -> ElementTree.Element:
+def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = "", props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
     """
     Adds a "component" to an SSP's system implementation section.
     """
-    if component_uuid is None:
+    if component_uuid == "":
         component_uuid = new_uuid()
 
     try:
@@ -1741,8 +1769,12 @@ def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, 
         # responsible_roles.append(party_uuid)
 
         system_imiplementation_obj = ssp_obj.xpath("//system-implementation")
-        system_imiplementation_obj[0].append(component_obj)
-        logger.debug(f"Adding component: {ElementTree.tostring(component_obj, 'utf-8')}")
+        if isinstance(system_imiplementation_obj, list) and len(system_imiplementation_obj) > 0:
+            system_imiplementation_obj[0].append(component_obj)
+            logger.debug(f"Adding component: {ElementTree.tostring(component_obj, 'utf-8')}")
+        else:
+            logger.error("Failed to find system-implementation element in SSP.")
+            component_obj = None
     except (Exception, BaseException) as error:
         logger.error(f"Error appending component (type={component_type}) {component_title}: " + type(error).__name__ + " - " + str(error))
         component_obj = None
@@ -1750,7 +1782,7 @@ def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, 
     return component_obj
 
 # -----------------------------------------------------------------------------
-def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], links: list = [], remarks: str = "") -> ElementTree.Element:
+def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
     """
     Adds an "imiplemented-requirement" to an SSP's control implementation section.
     """
@@ -1776,7 +1808,7 @@ def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], l
 
         logger.debug("Fetching control-implementation element.")
         system_imiplementation_obj = ssp_obj.xpath("//control-implementation")
-        if system_imiplementation_obj is not None:
+        if isinstance(system_imiplementation_obj, list) and len(system_imiplementation_obj) > 0:
             logger.debug("Adding implemented-requirement")
             system_imiplementation_obj[0].append(impl_req_obj)
         else:
@@ -1790,13 +1822,13 @@ def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], l
 
 
 # -----------------------------------------------------------------------------
-def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, description: str, by_component_uuid: str = None, implementation_status: str = "implemented", remarks: str = "") -> ElementTree.Element:
+def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, description: str, by_component_uuid: str = "", implementation_status: str = "implemented", remarks: str = "") -> (ElementTree.Element | None):
     """
     Adds a "by-component" statement to an SSP's contrtol response statement.
 
     """
     logger.debug("Appending by-component assembly")
-    if by_component_uuid is None:
+    if by_component_uuid == "":
         logger.debug("Generating new UUID for by-component")
         by_component_uuid = new_uuid()
 
@@ -1842,7 +1874,7 @@ def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, 
 
 
 # -----------------------------------------------------------------------------
-def append_responsible_role(oscal_obj: OSCAL, role_id: str, party_uuids: list = [], remarks: str = None) -> ElementTree.Element:
+def append_responsible_role(oscal_obj: ElementTree.Element, role_id: str, party_uuids: list = [], remarks: str = "") -> ElementTree.Element:
     """
     Adds a "responsible-role" statement to an object.
     """
@@ -1857,7 +1889,7 @@ def append_responsible_role(oscal_obj: OSCAL, role_id: str, party_uuids: list = 
         party_uuid_obj.text = party_uuid
         resp_role_obj.append(party_uuid_obj)
 
-    if remarks:
+    if remarks != "":
         logger.debug("Adding remarks")
         remarks_obj = ElementTree.Element("remarks") # Create the description element
 
@@ -1894,5 +1926,5 @@ def new_uuid() -> str:
 
 
 if __name__ == '__main__':
-    print("OSCAL Class Library. Not intended to be run as a stand-alone file.")
+    print("OSCAL Class Library. This is not intended to be run as a stand-alone module.")
 

@@ -220,6 +220,12 @@ class OSCAL_support:
         #     self.executor = self._sync_execute
 
     # -------------------------------------------------------------------------
+    def __repr__(self) -> str:
+        return f"<OSCAL_support {'✅' if self.ready else '❌'} {self.db_conn} ({self.db_type}) db_init_mode='{self.db_init_mode}' db_state='{self.db_state}' versions={list(self.versions.keys())}>"
+    # -------------------------------------------------------------------------
+    def __str__(self) -> str:
+        return f"OSCAL Support: {list(self.versions.keys())}\n{'✅' if self.ready else '❌'} {self.db_conn} ({self.db_type}'): {self.db_state}"
+    # -------------------------------------------------------------------------
     def _extract_database(self, db_conn, reason):
         """
         Extract the default database from package resources.
@@ -385,7 +391,7 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def update(self, fetch="latest", backend=None):
+    def update(self, fetch="new", backend=None):
         """
         Update OSCAL support content based on the fetch directive.
         - "all": Clears all re-fetches all OSCAL versions and support files.
@@ -407,7 +413,7 @@ class OSCAL_support:
             if fetch == "all":
                 self.__status_messages("Starting full refresh of OSCAL support content...")
                 status = self.__clear_oscal_versions()
-            elif fetch == "latest":
+            elif fetch == "latest" or fetch == "new":
                 self.__status_messages("Checking for new OSCAL versions...")
                 status = True
             else:
@@ -660,7 +666,7 @@ class OSCAL_support:
         status = True
         OSCAL_versions: list[str] = []
         fetch_all = (fetch == "all")
-        fetch_latest = (fetch == "latest")
+        fetch_latest = (fetch == "latest" or fetch == "new")
         fetch_one = (fetch.startswith("v"))
 
         self.__status_messages("Fetching OSCAL release informaiton from GitHub...")
