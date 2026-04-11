@@ -70,16 +70,18 @@ class OSCAL(LoggableMixin):
         Methods:
 
     """
-    def __init__(self, content: str = "", filename: str = "", support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE):
+    def __init__(self, content: str = "", filename: str = "", new: str = "", support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE):
         """
         OSCAL Class
         Must provide at least one of the following parameters:
         - content: A string containing the OSCAL content
         - filename: A path to a file containing the OSCAL content
+        - new: The type of OSCAL content to create (e.g., "catalog", "profile")
+
         - support_db_conn: Database connection string or path for OSCAL Support instance
         - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
 
-        content and new_model are mutually exclusive.
+        content and new are mutually exclusive.
 
         Raises:
             ValueError: If no content, filename nor new_model is provided

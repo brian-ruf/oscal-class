@@ -1,7 +1,8 @@
 """
-Functions specific to OSCAL control objects. (Catalog and Profile)
+Functions specific to OSCAL control objects. (Catalog, Profile, and Controls)
 """
 from loguru import logger
+from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree
 
@@ -9,10 +10,10 @@ from .oscal_content_class import OSCAL, append_props, append_links, OSCAL_DEFAUL
 from .oscal_markdown import oscal_markdown_to_html
 
 
-class Catalog(OSCAL):
-    """Class representing an OSCAL Catalog object.
-    Inherits common OSCAL functionality and adds catalog-specific methods
-    for creating and managing controls and control groups.
+class CatalogBase(OSCAL):
+    """Base class for OSCAL Catalog-syntax content.
+    Provides read-only catalog query methods shared by both Catalog and Controls.
+    Inherits common OSCAL functionality (validate, convert, save, serialize, xpath).
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -27,6 +28,15 @@ class Catalog(OSCAL):
         """Return the number of top-level controls in the catalog."""
         controls = self.xpath("//control")
         return len(controls) if controls else 0
+
+
+class Catalog(CatalogBase):
+    """Class representing an editable OSCAL Catalog object.
+    Inherits read-only catalog functionality from CatalogBase and adds
+    methods for creating and managing controls and control groups.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     # -------------------------------------------------------------------------
     def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
@@ -239,6 +249,61 @@ class Catalog(OSCAL):
         return group
 
 
+class Controls():
+    """A Read-Only class representing the resulting control set 
+    associated with importing a profiles and/or catalogs, 
+    including overlays. 
+
+    source: The href of the profile/catalog that was imported and resolved to produce this control set.
+
+
+    """
+    def __init__(self, source: str = "", ttl: int = 0, *args, **kwargs):
+        self.ttl = ttl # 
+        self.processed_datetime = datetime.now(timezone.utc)
+        self.import_tree = {}
+        self.controls_tree = {}
+        self.controls_list = {}
+
+        
+
+    def __repr__(self):
+        return f"OSCAL Controls: {self.content_title} (from: {self.source_profile})"
+
+    def __str__(self):
+        ret_string = f"OSCAL Controls: {self.content_title}"
+        return f"OSCAL Controls: {self.content_title} (from: {self.source_profile})"
+
+    @property
+    def is_stale(self) -> bool:
+        """Check if the resolved catalog has exceeded its time-to-live."""
+        if self.ttl <= 0:
+            return False
+        elapsed = (datetime.now(timezone.utc) - self.processed_datetime).total_seconds()
+        return elapsed > self.ttl
+
+    def refresh(self):
+        """Re-resolve the source profile to update the control set.
+        Placeholder for profile resolution logic.
+        """
+        # TODO: Implement profile resolution
+        logger.info(f"Refreshing controls from source profile: {self.source_profile}")
+        self.processed_datetime = datetime.now(timezone.utc)
+
+    def get_control_by_id(self, control_id: str) -> Optional[ElementTree.Element]:
+        """Retrieve a control element by its ID."""
+        controls = self.xpath(f"//control[@id='{control_id}']")
+        return controls[0] if isinstance(controls, list) and len(controls) > 0 else None
+
+    def _cache_import_tree(self):
+        """Internal method to cache the structure of imports for efficient access.
+        Placeholder for caching logic.
+        """
+    def _cache_controls_tree(self): 
+        """Internal method to cache the structure of controls for efficient access.
+        Placeholder for caching logic.
+
+
 class Profile(OSCAL):
     """Class representing an OSCAL Profile object.
     Inherits common OSCAL functionality and adds profile-specific methods
@@ -246,6 +311,7 @@ class Profile(OSCAL):
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.controls = Controls()
 
     def __repr__(self):
         return f"OSCAL Profile: {self.content_title}"
