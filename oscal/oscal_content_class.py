@@ -107,6 +107,7 @@ class OSCAL(LoggableMixin):
         self.original_format = ""
 
         self.oscal_model = ""
+        self.oscal_uuid = ""
         self.oscal_version = ""
         self.content_title = ""
         self.content_publication = ""
@@ -168,7 +169,8 @@ class OSCAL(LoggableMixin):
         """
         logger.debug("Performing initial validation of content...")
         status = False
-        root_element = ""
+        oscal_root = ""
+        oscal_uuid = ""
         oscal_version = ""
         content_title = ""
         content_version = ""
@@ -185,7 +187,8 @@ class OSCAL(LoggableMixin):
                 if self.tree is not None:
                     status = True
                     self.well_formed["xml"] = True
-                    root_element = self.xpath_atomic("/*/name()")
+                    oscal_root = self.xpath_atomic("/*/name()")
+                    oscal_uuid = self.xpath_atomic("/*/@uuid")
                     oscal_version = "v" + self.xpath_atomic("/*/metadata/oscal-version/text()")
                     content_title = self.xpath_atomic("/*/metadata/title/text()")
                     content_version = self.xpath_atomic("/*/metadata/version/text()")
@@ -200,8 +203,9 @@ class OSCAL(LoggableMixin):
                     self.dict = loaded
                     logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
                     status = True
-                    root_element = next(iter(self.dict.keys())) if self.dict else ""
-                    root_obj = self.dict.get(root_element, {})
+                    oscal_root = next(iter(self.dict.keys())) if self.dict else ""
+                    oscal_uuid = self.dict.get(oscal_root, {}).get('metadata', {}).get('uuid', '') if isinstance(self.dict, dict) else ""
+                    root_obj = self.dict.get(oscal_root, {})
                     metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
                     oscal_version = f"v{metadata.get('oscal-version', '')}"
                     content_title = metadata.get('title', '')
@@ -218,8 +222,9 @@ class OSCAL(LoggableMixin):
         if status:
             if oscal_version in self.support.versions:
                 self.oscal_version = oscal_version
-                if root_element in self.support.enumerate_models(self.oscal_version):
-                    self.oscal_model = root_element
+                if oscal_root in self.support.enumerate_models(self.oscal_version):
+                    self.oscal_model = oscal_root
+                    self.oscal_uuid = oscal_uuid
                     self.content_title = content_title
                     self.content_version = content_version
                     self.content_publication = content_publication
@@ -228,7 +233,7 @@ class OSCAL(LoggableMixin):
                     # **** TODO: VALIDATE ****
                     self.validate()
                 else:
-                    logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + root_element)
+                    logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + oscal_root)
                     status = False
             else:
                 logger.error("OSCAL VERSION IS NOT RECOGNIZED: " + oscal_version)
@@ -906,237 +911,6 @@ class OSCAL(LoggableMixin):
             logger.error("HTML String: " + html_string)
 
     # -------------------------------------------------------------------------
-    def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
-        """
-        Creates a new control under the specified parent group.
-        Parameters:
-        - parent_id (str): The id of the parent group to which this new control will be added.
-        - id (str): The id of the new control.
-        - title (str): The title of the new control.
-        - params (array): A dictionary of parameters to add to the control.
-        - props (array): A dictionary of properties to add to the control.
-        - links (array): A dictionary of links to add to the control.
-        - overview (str): An overview of the control.
-        - statements (dict): The control's requirement statement.
-        - guidance (str): Guidance for understanding the new control.
-        - objectives (array): A list of assessment objectives for the new control.
-        - objects (array): A dictionary of assessment objects to add to the control.
-        - methods (array): A dictionary of assessment methods to add to the control.
-        - remarks (str): The remarks of the new control.
-        """
-        logger.info(f"Creating new control with id '{id}' under parent group '{parent_id}'")
-        status = False
-        control = None
-        if self.oscal_model == "catalog":
-            try:
-                parent_xpath = f"//group[@id='{parent_id}']"
-                logger.debug(f"Creating control under parent id: {parent_id}")
-
-                # Use elementpath for reliable XPath processing
-                parent_nodes = self.xpath(parent_xpath)
-                parent_node = parent_nodes[0] if parent_nodes else None
-                if parent_node is not None:
-                    logger.debug("TAG: " + parent_node.tag)
-                    control = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}control")
-                    control.set("id", id)
-
-                    title_node = ElementTree.SubElement(control, "title")
-                    if title == "":
-                        if label != "":
-                            title = label
-                        else:
-                            title = id
-                    title_node.text = title
-
-                    if label != "":
-                        label_node = ElementTree.SubElement(control, "prop")
-                        label_node.set("name", "label")
-                        label_node.set("value", label)
-
-                    if sort_id != "":
-                        sort_id_node = ElementTree.SubElement(control, "prop")
-                        sort_id_node.set("name", "sort-id")
-                        sort_id_node.set("value", sort_id)
-
-                    if alt_identifier != "":
-                        alt_id_node = ElementTree.SubElement(control, "prop")
-                        alt_id_node.set("name", "alt-identifier")
-                        alt_id_node.set("value", alt_identifier)
-
-
-
-                    for param in params:
-                        param_node = ElementTree.SubElement(control, "param")
-                        param_node.set("id", param)
-
-
-                    append_props(control, props)
-
-                    append_links(control, links)
-
-                    if overview != "":
-                        overview_node = ElementTree.SubElement(control, "part")
-                        overview_node.set("name", "overview")
-                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
-
-                    # TODO: Handle child parts
-                    # TODO: Handle part titles
-                    # TODO: Handle part labels, sort-ids, alt-identifiers
-                    # TODO: Handle other part properties
-                    # TODO: Handle part references and related
-                    # TODO: Handle part links
-                    if len(statements) > 0:
-                        statement_node = ElementTree.SubElement(control, "part")
-                        statement_node.set("name", "statement")
-                        statement_node.set("id", f"{id}_smt")
-                        logger.debug(f"STATEMENTS TYPE: {type(statements)} with {len(statements)} items.")
-                        if len(statements)  == 1:
-                            if isinstance(statements[0], str):
-                                # Single statement without id
-                                logger.debug("Single statement without id detected.")
-                                self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0], True))
-                            elif isinstance(statements[0], dict):
-                                # Single statement with id
-                                logger.debug("Single statement with id detected.")
-                                statement_item = statements[0]
-                                item_node = ElementTree.SubElement(statement_node, "part")
-                                item_node.set("name", "item")
-                                if statement_item.get('id', "") != "":
-                                    item_node.set("id", f"{id}_smt_01")
-                                self.assign_html_string_to_node(item_node, oscal_markdown_to_html(statement_item['prose'], True))
-                        else:
-                            smt_cntr = 0
-                            for item in statements:
-                                smt_cntr += 1
-                                statement_child_node = ElementTree.SubElement(statement_node, "part")
-                                statement_child_node.set("name", "item")
-                                if item.get('id', "") != "":
-                                    statement_child_node.set("id", f"{id}_smt_{smt_cntr:02d}")
-                                self.assign_html_string_to_node(statement_child_node, oscal_markdown_to_html(item['prose'], True))
-
-                    if guidance != "":
-                        guidance_node = ElementTree.SubElement(control, "part")
-                        guidance_node.set("name", "guidance")
-                        self.assign_html_string_to_node(guidance_node, oscal_markdown_to_html(guidance, True))
-
-                    if example != "":
-                        example_node = ElementTree.SubElement(control, "part")
-                        example_node.set("name", "example")
-                        self.assign_html_string_to_node(example_node, oscal_markdown_to_html(example, True))
-
-                    if remarks != "":
-                        remarks_node = ElementTree.SubElement(control, "remarks")
-                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
-                    parent_node.append(control)
-                    self.content_modified()
-                    status = True
-                else:
-                    logger.warning(f"CREATE CONTROL: Unable to find parent group with id {parent_id}" )
-            except Exception as error:
-                logger.error(f"Error creating control ({id}): {type(error).__name__} - {str(error)}")
-        else:
-            logger.error("CREATE CONTROL: Current model is not a catalog. Unable to create control.")
-
-        if not status:
-            control = None
-
-        return control
-
-    # -------------------------------------------------------------------------
-    def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
-        """
-        Creates a new catalog group.
-        Parameters:
-        - parent_id (str): The id of the parent group to which this new group will be added.
-                           Use '[root]' (case sensitive) to add to the top level of the catalog.
-        - id (str): The id of the new group.
-        - title (str): The title of the new group.
-        - params (dict): A dictionary of parameters to add to the group.
-        - props (dict): A dictionary of properties to add to the group.
-        - links (dict): A dictionary of links to add to the group.
-        - label (str): The label of the new group.
-        - sort_id (str): The sort-id of the new group.
-        - alt_identifier (str): The alt-identifier of the new group.
-        - overview (str): The overview of the new group.
-        - instruction (str): The instruction of the new group.
-        - remarks (str): The remarks of the new group.
-        """
-        status = False
-        group = None
-        if parent_id == "":
-            parent_id = "[root]"
-        if self.oscal_model == "catalog":
-            try:
-                if parent_id == "[root]":
-                    logger.debug("Creating group at root level")
-                    parent_xpath = "/*"
-                else:
-                    parent_xpath = f"//group[@id='{parent_id}']"
-                    logger.debug(f"Creating group under parent id: {parent_id}")
-
-                # Use elementpath for reliable XPath processing
-                parent_nodes = self.xpath(parent_xpath)
-                if isinstance(parent_nodes, list) and len(parent_nodes) > 0:
-                    logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
-                    parent_node = parent_nodes[0]
-
-                    logger.debug("TAG: " + parent_node.tag)
-                    group = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}group")
-                    group.set("id", id)
-
-                    if title != "":
-                        title_node = ElementTree.SubElement(group, "title")
-                        title_node.text = title
-
-                    if label != "":
-                        label_node = ElementTree.SubElement(group, "prop")
-                        label_node.set("name", "label")
-                        label_node.set("value", label)
-
-                    if sort_id != "":
-                        sort_id_node = ElementTree.SubElement(group, "prop")
-                        sort_id_node.set("name", "sort-id")
-                        sort_id_node.set("value", sort_id)
-
-                    if alt_identifier != "":
-                        alt_id_node = ElementTree.SubElement(group, "prop")
-                        alt_id_node.set("name", "alt-identifier")
-                        alt_id_node.set("value", alt_identifier)
-
-                    append_props(group, props)
-
-                    append_links(group, links)
-
-                    if overview != "":
-                        overview_node = ElementTree.SubElement(group, "part")
-                        overview_node.set("name", "overview")
-                        self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
-
-                    if instruction != "":
-                        instruction_node = ElementTree.SubElement(group, "part")
-                        instruction_node.set("name", "instruction")
-                        self.assign_html_string_to_node(instruction_node, oscal_markdown_to_html(instruction, True))
-
-                    if remarks != "":
-                        remarks_node = ElementTree.SubElement(group, "remarks")
-                        self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
-
-                    parent_node.append(group)
-                    self.content_modified()
-                    status = True
-                else:
-                    logger.warning(f"CREATE GROUP: Unable to find parent group with id {parent_id}" )
-            except Exception as error:
-                logger.error(f"Error creating group ({id}): {type(error).__name__} - {str(error)}")
-        else:
-            logger.error("CREATE GROUP: Current model is not a catalog. Unable to create group.")
-
-        if not status:
-            group = None
-
-        return group
-
-    # -------------------------------------------------------------------------
     def append_child(self, xpath: str, node_name: str, node_content: str = "", attribute_list: list = []) -> (ElementTree.Element | None):
         # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
         status = False
@@ -1181,134 +955,26 @@ class OSCAL(LoggableMixin):
         """
         return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)
 
-    # -------------------------------------------------------------------------
-    def add_or_update_profile_import(self, href: str, include_all: bool = False, include_ids =[], include_with_child = False, exclude_ids =[], exclude_with_child = False):
-        """
-        If an import with the provided href already exists, updates it with the
-            provided include details.
-        If an import with the provided href does not exist, but an import with an
-            empty href (href='#'), updates it with the provided href and include details.
-        Otherwise, adds a new import statement with the provided href and include details.
-
-        Parameters:
-        - href (str): The href of the profile to import.
-        - include_all (bool): Whether to include all controls from the imported profile.
-        - import_id (str): An optional id for the import element.
-        """
-        logger.debug(f"Adding or updating profile import for href '{href}' with include_all={include_all} and import_ids={include_ids}")
-        # if this isn't a profile, log warning and exit function
-        if self.oscal_model != "profile":
-            logger.warning(f"Current model is not a profile. Ignoring add_or_update_profile_import. [{href}]")
-            return False
-
-        # Find existing import by href. If it doesn't exist, look for empty href.
-        # NOTE: This library's new/empty profile includes an import with href='#' by default.
-        # If neither is found, create a new import element.
-        import_matches = self.xpath(f"/*/import[@href='{href}']")
-        import_obj: Optional[ElementTree.Element] = None
-        if isinstance(import_matches, list) and len(import_matches) > 0:
-            logger.debug(f"Found existing import for href '{href}'. Updating it.")
-            if isinstance(import_matches[0], ElementTree.Element):
-                import_obj = import_matches[0]
-        else:
-            import_matches = self.xpath("/*/import[@href='#']")
-            if isinstance(import_matches, list) and len(import_matches) > 0:
-                logger.debug(f"Found existing import with empty href. Updating it to '{href}'.")
-                if isinstance(import_matches[0], ElementTree.Element):
-                    import_obj = import_matches[0]
-            else:
-                logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
-                import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
-
-        # If unable to find nor create an import element, log error and exit function
-        if import_obj is None:
-            logger.error(f"Unable to create or update import for href '{href}'.")
-            return False
-
-        # Set the href attribute if needed
-        if import_obj.get("href", "") != href:
-            logger.debug(f"Setting import href to '{href}'.")
-            import_obj.set("href", href)
-
-        # Remove existing include/include-all elements
-        include_obj = import_obj.find("include-controls")
-        if include_obj is not None:
-            logger.debug("Removing existing include-controls element")
-            import_obj.remove(include_obj)
-
-        # If include-all is specified and present, leave it.
-        # If include-all is not specified but present, remove it.
-        # If include-all is specified but not present, add it.
-        include_all_obj = import_obj.find("include-all")
-        if include_all and include_all_obj:
-            logger.debug("Include-all already present.")
-        elif not include_all and include_all_obj:
-            logger.debug("Removing existing include-all element")
-            import_obj.remove(include_all_obj)
-        elif include_all and not include_all_obj:
-            logger.debug("Adding include-all element.")
-            include_obj = ElementTree.SubElement(import_obj, "include-all")
-
-        # Add new include/include-all elements
-        if not include_all and len(include_ids) > 0:
-            include_obj = ElementTree.SubElement(import_obj, "include-controls")
-            if include_with_child:
-                include_obj.set("with-child-controls", "yes")
-            for control_id in include_ids:
-                with_id_obj = ElementTree.SubElement(include_obj, "with-id")
-                with_id_obj.text = control_id
-
-        # Add new include/include-all elements
-        if include_all and len(exclude_ids) > 0:
-            exclude_obj = ElementTree.SubElement(import_obj, "exclude-controls")
-            if exclude_with_child:
-                exclude_obj.set("with-child-controls", "yes")
-            for control_id in include_ids:
-                with_id_obj = ElementTree.SubElement(exclude_obj, "with-id")
-                with_id_obj.text = control_id
-
-        return True
-    # -------------------------------------------------------------------------
-    def append_profile_with_id(self, href: str, control_ids: list = []) -> bool:
-        """
-        Adds with-id element to a profile's import statement.
-        """
-        status = False
-        import_matches = self.xpath(f"/*/import[@href='{href}']")
-        if isinstance(import_matches, list) and len(import_matches) > 0 and isinstance(import_matches[0], ElementTree.Element):
-            import_obj = import_matches[0]
-            include_obj = import_obj.find("include-controls")
-            if include_obj is None:
-                include_obj = ElementTree.SubElement(import_obj, "include-controls")
-                status = True
-            for control_id in control_ids:
-                with_id_obj = ElementTree.SubElement(include_obj, "with-id")
-                with_id_obj.text = control_id
-        else:
-            logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
-
-        return status
-
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def get_root_element_name(content: str) -> str:
-    """
-    Returns the name of the root element in the provided XML content string.
-    If the content is not well-formed XML, returns an empty string.
+# def get_root_element_name(content: str) -> str:
+#     """
+#     Returns the name of the root element in the provided XML, JSON or YAML content string.
+#     If the content is not well-formed XML, returns an empty string.
 
-    Parameters:
-    - content (str): The XML content as a string.
+#     Parameters:
+#     - content (str): The XML content as a string.
 
-    Returns:
-    - str: The name of the root element, or an empty string if not well-formed XML.
-    """
-    root_name = ""
-    try:
-        tree = ElementTree.fromstring(content.encode('utf_8'))
-        root_name = tree.tag
-    except ElementTree.ParseError:
-        logger.debug("Content does not appear to be well-formed XML.")
+#     Returns:
+#     - str: The name of the root element, or an empty string if not well-formed XML.
+#     """
+#     root_name = ""
+#     try:
+#         tree = ElementTree.fromstring(content.encode('utf_8'))
+#         root_name = tree.tag
+#     except ElementTree.ParseError:
+#         logger.debug("Content does not appear to be well-formed XML.")
 
-    return root_name
+#     return root_name
 
 # -------------------------------------------------------------------------
 def append_props(parent_node: ElementTree.Element, props: list):
@@ -1622,54 +1288,6 @@ def _format_table_helper(table_lines: list) -> str:
     return '\n'.join(html)
 
 # -------------------------------------------------------------------------
-def create_new_oscal_content(model_name: str, title: str, version: str="", published: str="", support_db_conn="", support_db_type=SUPPORT_DATABASE_DEFAULT_TYPE) -> Optional[OSCAL]:
-    """
-    Returns minimally valid OSCAL content based on the specified model name.
-    Currently this is based on loading a template file from package data.
-    In the future, this should be generated based on the latest metaschema definition.
-    Args:
-        model_name (str): The OSCAL model name (e.g., "system-security-plan").
-    """
-    # TODO: Generate new content based on newest metaschema definition for the model
-    oscal_object = None
-    support = get_shared_oscal_support(db_conn=support_db_conn, db_type=support_db_type)
-
-    if support.is_model_valid(model_name): # is the specified model name an actual OSCAL model?
-        content = support.load_file(f"{model_name}.xml", binary=False)
-        # If content is found and is of type string, load it as XML
-        if content and isinstance(content, str):
-
-            try:
-                oscal_object = OSCAL(content=content)
-                logger.debug(f"Created new OSCAL content for model {model_name}")
-
-                if oscal_object is not None:
-                    metadata = {}
-                    if title != "":
-                        metadata["title"] = title
-                    if version != "":
-                        metadata["version"] = version
-                    if published != "":
-                        metadata["published"] = oscal_date_time_with_timezone(published)
-
-                    if metadata:
-                        oscal_object.set_metadata(metadata)
-
-                    oscal_object.content_modified() # mark content as modified to update last-modified and uuid
-            except ValueError as ve:
-                logger.error(f"ValueError creating new OSCAL content for model {model_name}: {str(ve)}")
-                oscal_object = None
-
-            except Exception as error:
-                logger.error(f"Error creating new OSCAL content for model {model_name}: {type(error).__name__} - {str(error)}")
-                oscal_object = None
-
-    else:
-        logger.error(f"Unsupported OSCAL model for new content: {model_name}")
-
-    return oscal_object
-
-# -------------------------------------------------------------------------
 def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
     """
     Appends a resource element to the back-matter section.
@@ -1926,5 +1544,5 @@ def new_uuid() -> str:
 
 
 if __name__ == '__main__':
-    print("OSCAL Class Library. This is not intended to be run as a stand-alone module.")
+    print("OSCAL Content Class Module. This is not intended to be run as a stand-alone module.")
 

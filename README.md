@@ -44,7 +44,7 @@ To use the `OSCAL` class in your code, import the `oscal_content_class` module f
 from oscal import oscal_content_class as oscal_content
 
 # Create a new OCAL catalog object
-oscal_catalog_obj = oscal_content.create_new_oscal_content(
+oscal_catalog_obj = oscal_content.new(
                      model_name="catalog", 
                      title="My Catalog", 
                      version="DRAFT-1.0", 
