@@ -3,8 +3,13 @@ Functions specific to OSCAL control objects. (Catalog, Profile, and Controls)
 """
 from loguru import logger
 from datetime import datetime, timezone
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Optional
+from urllib.parse import urlparse
 from xml.etree import ElementTree
+
+from ruf_common.lfs import getfile
+from ruf_common import network
 
 from .oscal_content_class import OSCAL, append_props, append_links, OSCAL_DEFAULT_XML_NAMESPACE
 from .oscal_markdown import oscal_markdown_to_html
@@ -250,22 +255,72 @@ class Catalog(CatalogBase):
 
 
 class Controls():
-    """A Read-Only class representing the resulting control set 
+    """
+    A class representing the resulting control set 
     associated with importing a profiles and/or catalogs, 
     including overlays. 
 
-    source: The href of the profile/catalog that was imported and resolved to produce this control set.
+    source: The href value of the profile/catalog that was imported and resolved to produce this control set.
 
+    self.controls_tree = 
+        {
+            "original_href": "https://example.com/profile.xml",   # original source
+            "href": "https://example.com/root.xml", # valid href (may be same as original or may be different if original was a profile that imported from another profile/catalog)
+            "cache_uuid": UUID_VALUE,                # unique identifier for this control set (e.g. for caching)
+            "status": ImportStatus.FAILED,
+            "error": "HTTP 404",                          # why it failed (empty if loaded)
+            "import": [...]                              # hrefs of its own imports
+        }
 
     """
+
+    # URI schemes we know how to fetch today
+    _SUPPORTED_URI_SCHEMES = {"http", "https", "file"}
+
+    # URI schemes we recognise but cannot fetch yet
+    _KNOWN_URI_SCHEMES = {"ftp", "ftps", "sftp", "s3", "gs", "az"}
+
+    # Valid OSCAL file extensions
+    _VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
+
     def __init__(self, source: str = "", ttl: int = 0, *args, **kwargs):
+        self.source = source
+        self.status = "unresolved"  # "unresolved", "resolving", "resolved", "blocked", "error"
+        self.source_type: str = ""       # "uri", "file", or "unknown"
+        self.source_scheme: str = ""     # e.g. "https", "s3", "" for local files
+        self.source_supported: bool = False
         self.ttl = ttl # 
         self.processed_datetime = datetime.now(timezone.utc)
         self.import_tree = {}
         self.controls_tree = {}
         self.controls_list = {}
 
-        
+        # classify and load the source
+        self.content: str = ""
+        if self.source != "":
+            self._classify_source()
+            if self.source_supported:
+                self.content = self._load_source()
+            else:
+                logger.warning(f"Unsupported source — cannot load: {self.source} "
+                               f"(type={self.source_type}, scheme={self.source_scheme})")
+    @property
+    def unresolved_imports(self) -> dict:
+        """Return the subset of import_tree entries with FAILED status."""
+        return {href: details for href, details in self.import_tree.items() if details.get('status') == 'failed'}
+
+    def retry_import(self, failed_href: str, replacement_href: str) -> bool:
+        """Retry a failed import by replacing its href and re-attempting resolution.
+        Returns True if the retry was initiated, False if the failed_href was not found.
+        """
+        if failed_href in self.import_tree:
+            logger.info(f"Retrying import for '{failed_href}' with replacement '{replacement_href}'")
+            self.import_tree[failed_href]['href'] = replacement_href
+            self.import_tree[failed_href]['status'] = 'retrying'
+            return True
+        else:
+            logger.warning(f"Failed import href '{failed_href}' not found in import tree. Cannot retry.")
+            return False
 
     def __repr__(self):
         return f"OSCAL Controls: {self.content_title} (from: {self.source_profile})"
@@ -299,13 +354,107 @@ class Controls():
         """Internal method to cache the structure of imports for efficient access.
         Placeholder for caching logic.
         """
+
     def _cache_controls_tree(self): 
         """Internal method to cache the structure of controls for efficient access.
         Placeholder for caching logic.
+        """
+
+    def _load_source(self) -> str:
+        """Fetch or read content from self.source based on classification.
+
+        Returns the raw file content as a string, or empty string on failure.
+        """
+        src = self.source.strip()
+        content = ""
+
+        try:
+            if self.source_type == "uri" and self.source_scheme == "file":
+                # file:// URI → convert to local path
+                local_path = urlparse(src).path
+                logger.info(f"Loading controls from file:// URI: {local_path}")
+                content = getfile(local_path)
+            elif self.source_type == "uri" and self.source_scheme in {"http", "https"}:
+                logger.info(f"Loading controls from URL: {src}")
+                content = network.geturl(src)
+            elif self.source_type == "file":
+                logger.info(f"Loading controls from file: {src}")
+                content = getfile(src)
+            else:
+                logger.warning(f"No loader implemented for source: {src} "
+                               f"(type={self.source_type}, scheme={self.source_scheme})")
+                return ""
+        except Exception as e:
+            logger.error(f"Failed to load source '{src}': {e}")
+            return ""
+
+        if not content:
+            logger.error(f"Source returned no content: {src}")
+            return ""
+
+        return content
+
+    def _classify_source(self):
+        """Classify self.source as a URI, local/network file path, or unknown.
+
+        Sets self.source_type, self.source_scheme, and self.source_supported.
+        Logs a warning for any source type we recognise but cannot handle yet,
+        and for anything we cannot classify at all.
+        """
+        src = self.source.strip()
+
+        # --- Windows UNC path (\\server\share\...) ---
+        if src.startswith("\\\\"):
+            self.source_type = "file"
+            self.source_scheme = ""
+            self.source_supported = self._has_valid_extension(src)
+            if not self.source_supported:
+                logger.warning(f"UNC path does not end with a supported extension "
+                               f"({', '.join(self._VALID_EXTENSIONS)}): {src}")
+            return
+
+        # --- Try parsing as a URI ---
+        parsed = urlparse(src)
+
+        if parsed.scheme and len(parsed.scheme) > 1:
+            # Has a multi-char scheme → treat as URI
+            # (single-char "scheme" is likely a Windows drive letter, e.g. C:)
+            self.source_type = "uri"
+            self.source_scheme = parsed.scheme.lower()
+
+            if self.source_scheme in self._SUPPORTED_URI_SCHEMES:
+                self.source_supported = self._has_valid_extension(parsed.path)
+                if not self.source_supported:
+                    logger.warning(f"URI does not end with a supported extension "
+                                   f"({', '.join(self._VALID_EXTENSIONS)}): {src}")
+            elif self.source_scheme in self._KNOWN_URI_SCHEMES:
+                self.source_supported = False
+                logger.warning(f"URI scheme '{self.source_scheme}' is recognised "
+                               f"but not yet supported: {src}")
+            else:
+                self.source_supported = False
+                logger.warning(f"Unknown URI scheme '{self.source_scheme}': {src}")
+            return
+
+        # --- Local / network file path (POSIX, Windows drive-letter, relative) ---
+        self.source_type = "file"
+        self.source_scheme = ""
+        self.source_supported = self._has_valid_extension(src)
+        if not self.source_supported:
+            logger.warning(f"File path does not end with a supported extension "
+                           f"({', '.join(self._VALID_EXTENSIONS)}): {src}")
+
+    @staticmethod
+    def _has_valid_extension(path: str) -> bool:
+        """Return True if *path* ends with .xml, .json, .yaml, or .yml (case-insensitive)."""
+        # Use PurePosixPath to extract suffix; works on URL paths too
+        suffix = PurePosixPath(path).suffix.lower()
+        return suffix in Controls._VALID_EXTENSIONS
 
 
 class Profile(OSCAL):
-    """Class representing an OSCAL Profile object.
+    """
+    Class representing an OSCAL Profile object.
     Inherits common OSCAL functionality and adds profile-specific methods
     for managing imports and control selections.
     """
