@@ -21,6 +21,8 @@ import json
 import yaml
 import uuid
 from typing import Optional, Any
+from functools import wraps
+
 
 from ruf_common.logging import LoggableMixin
 from ruf_common.data import detect_data_format, safe_load, safe_load_xml
@@ -32,11 +34,53 @@ from .oscal_markdown import oscal_markdown_to_html
 from .oscal_datatypes import oscal_date_time_with_timezone
 from .oscal_converters import oscal_xml_to_json, oscal_json_to_xml
 
-INDENT = 2
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Constants
+INDENT = 2 # Number of spaces to use for indentation in pretty-printed output
+# URI schemes we know how to fetch today
+_SUPPORTED_URI_SCHEMES = {"http", "https", "file"}
+# URI schemes we recognise but cannot fetch yet
+_KNOWN_URI_SCHEMES = {"ftp", "ftps", "sftp", "s3", "gs", "az"}
+# Valid OSCAL file extensions
+_VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# STATE DECORATOR
+# - "editable": All operations allowed
+# - "read-only": No operations that modify content allowed, but can read and resolve controls
+# - "locked": No operations allowed except reading basic metadata (e.g., title, version, publication date) and exporting in different formats
+STATES = ["editable", "read-only", "locked"]
+def requires_state(*allowed_states):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            if self._state not in allowed_states:
+                error_msg = (f"'{fn.__name__}' on {self.model} not allowed in state: {self._state}")
+                # raise PermissionError(error_msg)
+                logger.error(error_msg)
+            return fn(self, *args, **kwargs)
+        return wrapper
+    return decorator
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def update_if_successful(fn):
+    """Updates tracking attributes after a successful content modification."""
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        result = fn(self, *args, **kwargs)   # method runs first
+        # Only reached if method didn't raise
+        self.synced = False 
+        self.unsaved = True 
+
+        self._state = "modified"
+        self._last_modified = datetime.now(timezone.utc)
+        self._modified_by = fn.__name__      # or whatever you track
+        return result
+    return wrapper
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Shared OSCAL Support instance (initialized lazily)
 _shared_oscal_support = None
-
 def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
     """
     Get the shared OSCAL Support instance. Creates it if it doesn't exist.
@@ -72,26 +116,25 @@ class OSCAL(LoggableMixin):
     """
     def __init__(self, content: str = "", filename: str = "", new: str = "", support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE):
         """
-        OSCAL Class
-        Must provide at least one of the following parameters:
-        - content: A string containing the OSCAL content
-        - filename: A path to a file containing the OSCAL content
-        - new: The type of OSCAL content to create (e.g., "catalog", "profile")
+            OSCAL Class
+            Must provide at least one of the following parameters:
+            - content: A string containing the OSCAL content
+            - filename: A path to a file containing the OSCAL content
+            - new: The type of OSCAL content to create (e.g., "catalog", "profile")
 
-        - support_db_conn: Database connection string or path for OSCAL Support instance
-        - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
+            - support_db_conn: Database connection string or path for OSCAL Support instance
+            - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
 
-        content and new are mutually exclusive.
+            content and new are mutually exclusive.
 
-        Raises:
-            ValueError: If no content, filename nor new_model is provided
+            Raises:
+                ValueError: If no content, filename nor new_model is provided
         """
         logger.debug("Initializing OSCAL class instance...")
         # Need at least one of content, filename, or new_model
         if not content and not filename:
             # logger.error("No content, filename nor new_model. Unable to proceed.")
             raise ValueError("No content, filename nor new_model provided. Unable to proceed.")
-
 
         # If just a filename and no content, load the file
         if filename and not content:
@@ -107,7 +150,7 @@ class OSCAL(LoggableMixin):
         self.content = content
         self.original_location = filename
         self.original_format = ""
-
+        self.state = "editable" # "editable", "read-only", "locked"
         self.oscal_model = ""
         self.oscal_uuid = ""
         self.oscal_version = ""
@@ -121,8 +164,8 @@ class OSCAL(LoggableMixin):
         self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
         self.__saxon = None
 
-        self.synced = False # Boolean indicating whether the tree and dict are in sync
         # TODO: Have every function that moddifies content update the unsaved flag
+        self.synced = False # Boolean indicating whether the tree and dict are in sync
         self.unsaved = True # Boolean indicating whether there are unsaved modifications
 
         self.well_formed = {}          # A dictionary indicating whether the content is well-formed for each format

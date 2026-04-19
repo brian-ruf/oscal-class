@@ -33,7 +33,7 @@ dependencies = [
     "xmlschema     >= 3.4.3",
     "PyYAML        >= 6.0",
     "markdown      >= 3.0.0",
-    "ruf-common    >= 2.0.0",
+    "ruf-common    >= 2.0.3",
 ]
 
 [project.urls]

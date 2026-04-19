@@ -10,19 +10,43 @@ from xml.etree import ElementTree
 
 from ruf_common.lfs import getfile
 from ruf_common import network
-
 from .oscal_content_class import OSCAL, append_props, append_links, OSCAL_DEFAULT_XML_NAMESPACE
 from .oscal_markdown import oscal_markdown_to_html
 
 
-class CatalogBase(OSCAL):
-    """Base class for OSCAL Catalog-syntax content.
-    Provides read-only catalog query methods shared by both Catalog and Controls.
-    Inherits common OSCAL functionality (validate, convert, save, serialize, xpath).
+"""
+**** <<<<====---- ****
+- Instantiate a catalog object in the profile to represent the resolved 
+    catalog, and use it to manage the resolved controls
+- Keep in dict (JSON/YAML)
+- Define the same read-only methods in profiles as for catalogs, but pass 
+    them through to the resolved catalog object
+- Every profile maintains an import tree that tracks the status of each import, 
+    and a controls tree that tracks the resolved controls and their sources.
+
+"""
+
+
+class Catalog(OSCAL):
+    """Class representing an editable OSCAL Catalog object.
+    Inherits read-only catalog functionality from CatalogBase and adds
+    methods for creating and managing controls and control groups.
+
+    self._state: 
+        - "editable", "read-only", or "locked" 
+        - controls whether modifications are allowed
+    self.control_tree: 
+        - A cached structure representing the hierarchy of controls and groups.
+        - Contains control IDs, titles, labels, and parent-child relationships.
+        - No control details are stored here.
+        - Enables fast lookups without needing to query the catalog repeatedly.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._state = "editable" # "editable", "read-only", "locked"
+        self.control_tree = {}  # This will hold the structure of controls and groups for efficient access
 
+    # -------------------------------------------------------------------------
     def __repr__(self):
         return f"OSCAL Catalog: {self.content_title}"
 
@@ -33,34 +57,25 @@ class CatalogBase(OSCAL):
         """Return the number of top-level controls in the catalog."""
         controls = self.xpath("//control")
         return len(controls) if controls else 0
-
-
-class Catalog(CatalogBase):
-    """Class representing an editable OSCAL Catalog object.
-    Inherits read-only catalog functionality from CatalogBase and adds
-    methods for creating and managing controls and control groups.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
     # -------------------------------------------------------------------------
+    @requires_state("editable")
     def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
         """
-        Creates a new control under the specified parent group.
-        Parameters:
-        - parent_id (str): The id of the parent group to which this new control will be added.
-        - id (str): The id of the new control.
-        - title (str): The title of the new control.
-        - params (array): A dictionary of parameters to add to the control.
-        - props (array): A dictionary of properties to add to the control.
-        - links (array): A dictionary of links to add to the control.
-        - overview (str): An overview of the control.
-        - statements (dict): The control's requirement statement.
-        - guidance (str): Guidance for understanding the new control.
-        - objectives (array): A list of assessment objectives for the new control.
-        - objects (array): A dictionary of assessment objects to add to the control.
-        - methods (array): A dictionary of assessment methods to add to the control.
-        - remarks (str): The remarks of the new control.
+            Creates a new control under the specified parent group.
+            Parameters:
+            - parent_id (str): The id of the parent group to which this new control will be added.
+            - id (str): The id of the new control.
+            - title (str): The title of the new control.
+            - params (array): A dictionary of parameters to add to the control.
+            - props (array): A dictionary of properties to add to the control.
+            - links (array): A dictionary of links to add to the control.
+            - overview (str): An overview of the control.
+            - statements (dict): The control's requirement statement.
+            - guidance (str): Guidance for understanding the new control.
+            - objectives (array): A list of assessment objectives for the new control.
+            - objects (array): A dictionary of assessment objects to add to the control.
+            - methods (array): A dictionary of assessment methods to add to the control.
+            - remarks (str): The remarks of the new control.
         """
         logger.info(f"Creating new control with id '{id}' under parent group '{parent_id}'")
         status = False
@@ -165,6 +180,7 @@ class Catalog(CatalogBase):
         return control
 
     # -------------------------------------------------------------------------
+    @requires_state("editable")
     def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
         """
         Creates a new catalog group.
@@ -253,6 +269,25 @@ class Catalog(CatalogBase):
 
         return group
 
+    # -------------------------------------------------------------------------
+    def get_control_by_id(self, control_id: str) -> Optional[ElementTree.Element]:
+        """Retrieve a control element by its ID."""
+        controls = self.xpath(f"//control[@id='{control_id}']")
+        return controls[0] if isinstance(controls, list) and len(controls) > 0 else None
+
+    # -------------------------------------------------------------------------
+    def get_group_by_id(self, group_id: str) -> Optional[ElementTree.Element]:
+        """Retrieve a group element by its ID."""
+        groups = self.xpath(f"//group[@id='{group_id}']")
+        return groups[0] if isinstance(groups, list) and len(groups) > 0 else None
+
+    # -------------------------------------------------------------------------
+    def get_control_list(self) -> list:
+        """Return a list of all controls in the catalog."""
+        controls = self.xpath("//control")
+        return controls if isinstance(controls, list) else []
+
+
 
 class Controls():
     """
@@ -262,48 +297,33 @@ class Controls():
 
     source: The href value of the profile/catalog that was imported and resolved to produce this control set.
 
-    self.controls_tree = 
+    self.import_tree = 
         {
-            "original_href": "https://example.com/profile.xml",   # original source
-            "href": "https://example.com/root.xml", # valid href (may be same as original or may be different if original was a profile that imported from another profile/catalog)
-            "cache_uuid": UUID_VALUE,                # unique identifier for this control set (e.g. for caching)
+            "href_original": "https://example.com/profile.xml", # original source
+            "href"  : "https://example.com/root.xml",           # valid href (may be same as original or may be different if original was a profile that imported from another profile/catalog)
+            "type"  : "profile",                                # "profile" or "catalog"
             "status": ImportStatus.FAILED,
-            "error": "HTTP 404",                          # why it failed (empty if loaded)
-            "import": [...]                              # hrefs of its own imports
+            "error" : "HTTP 404",                               # why it failed (empty if loaded)
+            "children": [...],                                  # hrefs of its own imports
+            "object": Catalog or Profile object if loaded, else None
         }
 
+    self.controls_tree = # under consideration/development
+        {
+            "id": "ac-1",                                     # control id
+            "label": "AC-1",                                  # control label (from prop[@name='label'])
+            "title": "Access Control Policy and Procedures",  # control title
+            "source": "https://example.com/root.xml",         # href of the profile/catalog that this control was resolved from
+            "control_object": ElementTree.Element,            # the control object itself
+            "children": [...],                                # ids of its child controls
+        }
     """
+    logger.debug("Initializing Controls class")
 
-    # URI schemes we know how to fetch today
-    _SUPPORTED_URI_SCHEMES = {"http", "https", "file"}
 
-    # URI schemes we recognise but cannot fetch yet
-    _KNOWN_URI_SCHEMES = {"ftp", "ftps", "sftp", "s3", "gs", "az"}
 
-    # Valid OSCAL file extensions
-    _VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
 
-    def __init__(self, source: str = "", ttl: int = 0, *args, **kwargs):
-        self.source = source
-        self.status = "unresolved"  # "unresolved", "resolving", "resolved", "blocked", "error"
-        self.source_type: str = ""       # "uri", "file", or "unknown"
-        self.source_scheme: str = ""     # e.g. "https", "s3", "" for local files
-        self.source_supported: bool = False
-        self.ttl = ttl # 
-        self.processed_datetime = datetime.now(timezone.utc)
-        self.import_tree = {}
-        self.controls_tree = {}
-        self.controls_list = {}
 
-        # classify and load the source
-        self.content: str = ""
-        if self.source != "":
-            self._classify_source()
-            if self.source_supported:
-                self.content = self._load_source()
-            else:
-                logger.warning(f"Unsupported source — cannot load: {self.source} "
-                               f"(type={self.source_type}, scheme={self.source_scheme})")
     @property
     def unresolved_imports(self) -> dict:
         """Return the subset of import_tree entries with FAILED status."""
@@ -350,12 +370,58 @@ class Controls():
         controls = self.xpath(f"//control[@id='{control_id}']")
         return controls[0] if isinstance(controls, list) and len(controls) > 0 else None
 
-    def _cache_import_tree(self):
-        """Internal method to cache the structure of imports for efficient access.
-        Placeholder for caching logic.
+    def _build_import_tree(self, new_href: str = "") -> Boolean:
         """
+        Internal method to build the structure of imports for efficient access.
+        """
+        status = False
+        tree_obj = {
+            "href_original": self.source,
+            "href": self.source,
+            "type": "",
+            "status": "",
+            "error": "",
+            "children": [],
+            "object": None
+        }
+        # classify and load the source
+        if self.source != "":
+            logger.debug(f"Building Import Tree for {self.source}")
+            self._classify_source()
+            if self.source_supported:
+                logger.debug(f"Source classified as type '{self.source_type}' with scheme '{self.source_scheme}'. Attempting to load content.")
+                content = self._load_source()
+                if content:
+                    oscal_file = OSCAL(content=content)
+                    if oscal_file.is_valid():
+                        tree_obj["object"] = oscal_file
+                        tree_obj["type"] = oscal_file.content_type
+                        tree_obj["status"] = "loaded"
+                        logger.debug(f"Successfully loaded content for '{self.source}'. Detected type: {tree_obj['type']}")
+                        status = True
+                    else:
+                        tree_obj["status"] = "invalid"
+                        tree_obj["error"] = "Content loaded but failed OSCAL validation"
+                        logger.error(f"Loaded content from '{self.source}' is not valid OSCAL: {oscal_file.validation_errors}")
+                else:
+                    tree_obj["status"] = "failed"
+                    tree_obj["error"] = "Failed to load content from source"
+                    logger.error(f"Failed to load content from '{self.source}'. No content returned.")
+            else:
+                tree_obj["status"] = "unsupported"
+                tree_obj["error"] = "Source type or scheme is not supported for loading"
+                logger.warning(f"Unsupported source — cannot load: {self.source} "
+                               f"(type={self.source_type}, scheme={self.source_scheme})")
 
-    def _cache_controls_tree(self): 
+
+        if status and tree_obj["type"] == "profile":
+            pass # TODO: recursively process imports and build the full import tree
+
+        return status
+
+
+
+    def _build_controls_tree(self): 
         """Internal method to cache the structure of controls for efficient access.
         Placeholder for caching logic.
         """
@@ -460,7 +526,22 @@ class Profile(OSCAL):
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.controls = Controls()
+        self.resolution_state = "unresolved"  # "unresolved", "resolving", "resolved", "blocked", "error"
+        self.catalog = None  # This will hold the resolved catalog object after processing imports
+
+        self.resolution_status = 
+        self.source_type: str = ""       # "uri", "file", or "unknown"
+        self.source_scheme: str = ""     # e.g. "https", "s3", "" for local files
+        self.source_supported: bool = False
+        self.ttl = ttl # 
+        self.processed_datetime = datetime.now(timezone.utc)
+        self.import_tree = {}
+        self.controls_tree = {}
+        self.controls_list = {}
+
+        self._build_import_tree()
+
+
 
     def __repr__(self):
         return f"OSCAL Profile: {self.content_title}"
@@ -468,6 +549,9 @@ class Profile(OSCAL):
     def __str__(self):
         return f"OSCAL Profile: {self.content_title}"
 
+    # -------------------------------------------------------------------------
+    def 
+    # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
     def add_or_update_import(self, href: str, include_all: bool = False, include_ids=[], include_with_child=False, exclude_ids=[], exclude_with_child=False):
         """
@@ -564,3 +648,6 @@ class Profile(OSCAL):
             logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
 
         return status
+
+if __name__ == '__main__':
+    print("OSCAL Controls Class Module. This is not intended to be run as a stand-alone module.")
