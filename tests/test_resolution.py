@@ -5,9 +5,8 @@ import sys
 from loguru import logger
 
 from oscal.oscal_controls import (
-    Controls,
     Catalog,
-    Profile,
+    Profile
 )
 
 TEST_FILES_DIR = "tests/test-data"
@@ -27,7 +26,7 @@ class TestControlResolution:
 
     def test_import_mapping(self):
         # Load the test profile, which imports a catalog with controls.
-        profile = Controls("tests/test-data/test.xml")
+        profile = OSCAL("tests/test-data/test.xml")
         print("Profile imports:")
         print(profile.import_tree)
         # Check that the imported catalog is correctly mapped in the profile's imports.

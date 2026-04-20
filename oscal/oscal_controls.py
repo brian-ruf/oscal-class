@@ -3,9 +3,7 @@ Functions specific to OSCAL control objects. (Catalog, Profile, and Controls)
 """
 from loguru import logger
 from datetime import datetime, timezone
-from pathlib import PurePosixPath, PureWindowsPath
 from typing import Optional
-from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 from ruf_common.lfs import getfile
@@ -43,22 +41,16 @@ class Catalog(OSCAL):
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._state = "editable" # "editable", "read-only", "locked"
-        self.control_tree = {}  # This will hold the structure of controls and groups for efficient access
+        self.catalog = OSCAL(new="catalog")
 
     # -------------------------------------------------------------------------
-    def __repr__(self):
-        return f"OSCAL Catalog: {self.content_title}"
-
-    def __str__(self):
-        return f"OSCAL Catalog: {self.content_title}"
-
     def __len__(self):
         """Return the number of top-level controls in the catalog."""
         controls = self.xpath("//control")
         return len(controls) if controls else 0
     # -------------------------------------------------------------------------
-    @requires_state("editable")
+    @requires(editable=True)
+    @if_update_successful
     def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
         """
             Creates a new control under the specified parent group.
@@ -180,7 +172,8 @@ class Catalog(OSCAL):
         return control
 
     # -------------------------------------------------------------------------
-    @requires_state("editable")
+    @requires(editable=True)
+    @if_update_successful
     def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
         """
         Creates a new catalog group.
@@ -288,235 +281,10 @@ class Catalog(OSCAL):
         return controls if isinstance(controls, list) else []
 
 
-
-class Controls():
-    """
-    A class representing the resulting control set 
-    associated with importing a profiles and/or catalogs, 
-    including overlays. 
-
-    source: The href value of the profile/catalog that was imported and resolved to produce this control set.
-
-    self.import_tree = 
-        {
-            "href_original": "https://example.com/profile.xml", # original source
-            "href"  : "https://example.com/root.xml",           # valid href (may be same as original or may be different if original was a profile that imported from another profile/catalog)
-            "type"  : "profile",                                # "profile" or "catalog"
-            "status": ImportStatus.FAILED,
-            "error" : "HTTP 404",                               # why it failed (empty if loaded)
-            "children": [...],                                  # hrefs of its own imports
-            "object": Catalog or Profile object if loaded, else None
-        }
-
-    self.controls_tree = # under consideration/development
-        {
-            "id": "ac-1",                                     # control id
-            "label": "AC-1",                                  # control label (from prop[@name='label'])
-            "title": "Access Control Policy and Procedures",  # control title
-            "source": "https://example.com/root.xml",         # href of the profile/catalog that this control was resolved from
-            "control_object": ElementTree.Element,            # the control object itself
-            "children": [...],                                # ids of its child controls
-        }
-    """
-    logger.debug("Initializing Controls class")
-
-
-
-
-
-    @property
-    def unresolved_imports(self) -> dict:
-        """Return the subset of import_tree entries with FAILED status."""
-        return {href: details for href, details in self.import_tree.items() if details.get('status') == 'failed'}
-
-    def retry_import(self, failed_href: str, replacement_href: str) -> bool:
-        """Retry a failed import by replacing its href and re-attempting resolution.
-        Returns True if the retry was initiated, False if the failed_href was not found.
-        """
-        if failed_href in self.import_tree:
-            logger.info(f"Retrying import for '{failed_href}' with replacement '{replacement_href}'")
-            self.import_tree[failed_href]['href'] = replacement_href
-            self.import_tree[failed_href]['status'] = 'retrying'
-            return True
-        else:
-            logger.warning(f"Failed import href '{failed_href}' not found in import tree. Cannot retry.")
-            return False
-
-    def __repr__(self):
-        return f"OSCAL Controls: {self.content_title} (from: {self.source_profile})"
-
-    def __str__(self):
-        ret_string = f"OSCAL Controls: {self.content_title}"
-        return f"OSCAL Controls: {self.content_title} (from: {self.source_profile})"
-
-    @property
-    def is_stale(self) -> bool:
-        """Check if the resolved catalog has exceeded its time-to-live."""
-        if self.ttl <= 0:
-            return False
-        elapsed = (datetime.now(timezone.utc) - self.processed_datetime).total_seconds()
-        return elapsed > self.ttl
-
-    def refresh(self):
-        """Re-resolve the source profile to update the control set.
-        Placeholder for profile resolution logic.
-        """
-        # TODO: Implement profile resolution
-        logger.info(f"Refreshing controls from source profile: {self.source_profile}")
-        self.processed_datetime = datetime.now(timezone.utc)
-
-    def get_control_by_id(self, control_id: str) -> Optional[ElementTree.Element]:
-        """Retrieve a control element by its ID."""
-        controls = self.xpath(f"//control[@id='{control_id}']")
-        return controls[0] if isinstance(controls, list) and len(controls) > 0 else None
-
-    def _build_import_tree(self, new_href: str = "") -> Boolean:
-        """
-        Internal method to build the structure of imports for efficient access.
-        """
-        status = False
-        tree_obj = {
-            "href_original": self.source,
-            "href": self.source,
-            "type": "",
-            "status": "",
-            "error": "",
-            "children": [],
-            "object": None
-        }
-        # classify and load the source
-        if self.source != "":
-            logger.debug(f"Building Import Tree for {self.source}")
-            self._classify_source()
-            if self.source_supported:
-                logger.debug(f"Source classified as type '{self.source_type}' with scheme '{self.source_scheme}'. Attempting to load content.")
-                content = self._load_source()
-                if content:
-                    oscal_file = OSCAL(content=content)
-                    if oscal_file.is_valid():
-                        tree_obj["object"] = oscal_file
-                        tree_obj["type"] = oscal_file.content_type
-                        tree_obj["status"] = "loaded"
-                        logger.debug(f"Successfully loaded content for '{self.source}'. Detected type: {tree_obj['type']}")
-                        status = True
-                    else:
-                        tree_obj["status"] = "invalid"
-                        tree_obj["error"] = "Content loaded but failed OSCAL validation"
-                        logger.error(f"Loaded content from '{self.source}' is not valid OSCAL: {oscal_file.validation_errors}")
-                else:
-                    tree_obj["status"] = "failed"
-                    tree_obj["error"] = "Failed to load content from source"
-                    logger.error(f"Failed to load content from '{self.source}'. No content returned.")
-            else:
-                tree_obj["status"] = "unsupported"
-                tree_obj["error"] = "Source type or scheme is not supported for loading"
-                logger.warning(f"Unsupported source — cannot load: {self.source} "
-                               f"(type={self.source_type}, scheme={self.source_scheme})")
-
-
-        if status and tree_obj["type"] == "profile":
-            pass # TODO: recursively process imports and build the full import tree
-
-        return status
-
-
-
     def _build_controls_tree(self): 
         """Internal method to cache the structure of controls for efficient access.
         Placeholder for caching logic.
         """
-
-    def _load_source(self) -> str:
-        """Fetch or read content from self.source based on classification.
-
-        Returns the raw file content as a string, or empty string on failure.
-        """
-        src = self.source.strip()
-        content = ""
-
-        try:
-            if self.source_type == "uri" and self.source_scheme == "file":
-                # file:// URI → convert to local path
-                local_path = urlparse(src).path
-                logger.info(f"Loading controls from file:// URI: {local_path}")
-                content = getfile(local_path)
-            elif self.source_type == "uri" and self.source_scheme in {"http", "https"}:
-                logger.info(f"Loading controls from URL: {src}")
-                content = network.geturl(src)
-            elif self.source_type == "file":
-                logger.info(f"Loading controls from file: {src}")
-                content = getfile(src)
-            else:
-                logger.warning(f"No loader implemented for source: {src} "
-                               f"(type={self.source_type}, scheme={self.source_scheme})")
-                return ""
-        except Exception as e:
-            logger.error(f"Failed to load source '{src}': {e}")
-            return ""
-
-        if not content:
-            logger.error(f"Source returned no content: {src}")
-            return ""
-
-        return content
-
-    def _classify_source(self):
-        """Classify self.source as a URI, local/network file path, or unknown.
-
-        Sets self.source_type, self.source_scheme, and self.source_supported.
-        Logs a warning for any source type we recognise but cannot handle yet,
-        and for anything we cannot classify at all.
-        """
-        src = self.source.strip()
-
-        # --- Windows UNC path (\\server\share\...) ---
-        if src.startswith("\\\\"):
-            self.source_type = "file"
-            self.source_scheme = ""
-            self.source_supported = self._has_valid_extension(src)
-            if not self.source_supported:
-                logger.warning(f"UNC path does not end with a supported extension "
-                               f"({', '.join(self._VALID_EXTENSIONS)}): {src}")
-            return
-
-        # --- Try parsing as a URI ---
-        parsed = urlparse(src)
-
-        if parsed.scheme and len(parsed.scheme) > 1:
-            # Has a multi-char scheme → treat as URI
-            # (single-char "scheme" is likely a Windows drive letter, e.g. C:)
-            self.source_type = "uri"
-            self.source_scheme = parsed.scheme.lower()
-
-            if self.source_scheme in self._SUPPORTED_URI_SCHEMES:
-                self.source_supported = self._has_valid_extension(parsed.path)
-                if not self.source_supported:
-                    logger.warning(f"URI does not end with a supported extension "
-                                   f"({', '.join(self._VALID_EXTENSIONS)}): {src}")
-            elif self.source_scheme in self._KNOWN_URI_SCHEMES:
-                self.source_supported = False
-                logger.warning(f"URI scheme '{self.source_scheme}' is recognised "
-                               f"but not yet supported: {src}")
-            else:
-                self.source_supported = False
-                logger.warning(f"Unknown URI scheme '{self.source_scheme}': {src}")
-            return
-
-        # --- Local / network file path (POSIX, Windows drive-letter, relative) ---
-        self.source_type = "file"
-        self.source_scheme = ""
-        self.source_supported = self._has_valid_extension(src)
-        if not self.source_supported:
-            logger.warning(f"File path does not end with a supported extension "
-                           f"({', '.join(self._VALID_EXTENSIONS)}): {src}")
-
-    @staticmethod
-    def _has_valid_extension(path: str) -> bool:
-        """Return True if *path* ends with .xml, .json, .yaml, or .yml (case-insensitive)."""
-        # Use PurePosixPath to extract suffix; works on URL paths too
-        suffix = PurePosixPath(path).suffix.lower()
-        return suffix in Controls._VALID_EXTENSIONS
-
 
 class Profile(OSCAL):
     """
@@ -541,113 +309,113 @@ class Profile(OSCAL):
 
         self._build_import_tree()
 
-
-
-    def __repr__(self):
-        return f"OSCAL Profile: {self.content_title}"
-
-    def __str__(self):
-        return f"OSCAL Profile: {self.content_title}"
+    # -------------------------------------------------------------------------
+    def _build_controls_tree(self): 
+        """Internal method to cache the structure of controls for efficient access.
+        Placeholder for caching logic.
+        """
 
     # -------------------------------------------------------------------------
-    def 
-    # -------------------------------------------------------------------------
-    # -------------------------------------------------------------------------
-    def add_or_update_import(self, href: str, include_all: bool = False, include_ids=[], include_with_child=False, exclude_ids=[], exclude_with_child=False):
-        """
-        If an import with the provided href already exists, updates it with the
-            provided include details.
-        If an import with the provided href does not exist, but an import with an
-            empty href (href='#'), updates it with the provided href and include details.
-        Otherwise, adds a new import statement with the provided href and include details.
+    # @requires(editable=True)
+    # @if_update_successful
+    # def add_or_update_import(self, href: str, include_all: bool = False, include_ids=[], include_with_child=False, exclude_ids=[], exclude_with_child=False):
+    #     """
+    #     If an import with the provided href already exists, updates it with the
+    #         provided include details.
+    #     If an import with the provided href does not exist, but an import with an
+    #         empty href (href='#'), updates it with the provided href and include details.
+    #     Otherwise, adds a new import statement with the provided href and include details.
 
-        Parameters:
-        - href (str): The href of the profile to import.
-        - include_all (bool): Whether to include all controls from the imported profile.
-        - include_ids (list): List of control IDs to include.
-        - include_with_child (bool): Whether to include child controls.
-        - exclude_ids (list): List of control IDs to exclude.
-        - exclude_with_child (bool): Whether to exclude child controls.
-        """
-        logger.debug(f"Adding or updating profile import for href '{href}' with include_all={include_all} and import_ids={include_ids}")
+    #     Parameters:
+    #     - href (str): The href of the profile to import.
+    #     - include_all (bool): Whether to include all controls from the imported profile.
+    #     - include_ids (list): List of control IDs to include.
+    #     - include_with_child (bool): Whether to include child controls.
+    #     - exclude_ids (list): List of control IDs to exclude.
+    #     - exclude_with_child (bool): Whether to exclude child controls.
+    #     """
+    #     logger.debug(f"Adding or updating profile import for href '{href}' with include_all={include_all} and import_ids={include_ids}")
 
-        import_matches = self.xpath(f"/*/import[@href='{href}']")
-        import_obj: Optional[ElementTree.Element] = None
-        if isinstance(import_matches, list) and len(import_matches) > 0:
-            logger.debug(f"Found existing import for href '{href}'. Updating it.")
-            if isinstance(import_matches[0], ElementTree.Element):
-                import_obj = import_matches[0]
-        else:
-            import_matches = self.xpath("/*/import[@href='#']")
-            if isinstance(import_matches, list) and len(import_matches) > 0:
-                logger.debug(f"Found existing import with empty href. Updating it to '{href}'.")
-                if isinstance(import_matches[0], ElementTree.Element):
-                    import_obj = import_matches[0]
-            else:
-                logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
-                import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
+    #     import_matches = self.xpath(f"/*/import[@href='{href}']")
+    #     import_obj: Optional[ElementTree.Element] = None
+    #     if isinstance(import_matches, list) and len(import_matches) > 0:
+    #         logger.debug(f"Found existing import for href '{href}'. Updating it.")
+    #         if isinstance(import_matches[0], ElementTree.Element):
+    #             import_obj = import_matches[0]
+    #     else:
+    #         import_matches = self.xpath("/*/import[@href='#']")
+    #         if isinstance(import_matches, list) and len(import_matches) > 0:
+    #             logger.debug(f"Found existing import with empty href. Updating it to '{href}'.")
+    #             if isinstance(import_matches[0], ElementTree.Element):
+    #                 import_obj = import_matches[0]
+    #         else:
+    #             logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
+    #             import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
 
-        if import_obj is None:
-            logger.error(f"Unable to create or update import for href '{href}'.")
-            return False
+    #     if import_obj is None:
+    #         logger.error(f"Unable to create or update import for href '{href}'.")
+    #         return False
 
-        if import_obj.get("href", "") != href:
-            logger.debug(f"Setting import href to '{href}'.")
-            import_obj.set("href", href)
+    #     if import_obj.get("href", "") != href:
+    #         logger.debug(f"Setting import href to '{href}'.")
+    #         import_obj.set("href", href)
 
-        include_obj = import_obj.find("include-controls")
-        if include_obj is not None:
-            logger.debug("Removing existing include-controls element")
-            import_obj.remove(include_obj)
+    #     include_obj = import_obj.find("include-controls")
+    #     if include_obj is not None:
+    #         logger.debug("Removing existing include-controls element")
+    #         import_obj.remove(include_obj)
 
-        include_all_obj = import_obj.find("include-all")
-        if include_all and include_all_obj:
-            logger.debug("Include-all already present.")
-        elif not include_all and include_all_obj:
-            logger.debug("Removing existing include-all element")
-            import_obj.remove(include_all_obj)
-        elif include_all and not include_all_obj:
-            logger.debug("Adding include-all element.")
-            include_obj = ElementTree.SubElement(import_obj, "include-all")
+    #     include_all_obj = import_obj.find("include-all")
+    #     if include_all and include_all_obj:
+    #         logger.debug("Include-all already present.")
+    #     elif not include_all and include_all_obj:
+    #         logger.debug("Removing existing include-all element")
+    #         import_obj.remove(include_all_obj)
+    #     elif include_all and not include_all_obj:
+    #         logger.debug("Adding include-all element.")
+    #         include_obj = ElementTree.SubElement(import_obj, "include-all")
 
-        if not include_all and len(include_ids) > 0:
-            include_obj = ElementTree.SubElement(import_obj, "include-controls")
-            if include_with_child:
-                include_obj.set("with-child-controls", "yes")
-            for control_id in include_ids:
-                with_id_obj = ElementTree.SubElement(include_obj, "with-id")
-                with_id_obj.text = control_id
+    #     if not include_all and len(include_ids) > 0:
+    #         include_obj = ElementTree.SubElement(import_obj, "include-controls")
+    #         if include_with_child:
+    #             include_obj.set("with-child-controls", "yes")
+    #         for control_id in include_ids:
+    #             with_id_obj = ElementTree.SubElement(include_obj, "with-id")
+    #             with_id_obj.text = control_id
 
-        if include_all and len(exclude_ids) > 0:
-            exclude_obj = ElementTree.SubElement(import_obj, "exclude-controls")
-            if exclude_with_child:
-                exclude_obj.set("with-child-controls", "yes")
-            for control_id in include_ids:
-                with_id_obj = ElementTree.SubElement(exclude_obj, "with-id")
-                with_id_obj.text = control_id
+    #     if include_all and len(exclude_ids) > 0:
+    #         exclude_obj = ElementTree.SubElement(import_obj, "exclude-controls")
+    #         if exclude_with_child:
+    #             exclude_obj.set("with-child-controls", "yes")
+    #         for control_id in include_ids:
+    #             with_id_obj = ElementTree.SubElement(exclude_obj, "with-id")
+    #             with_id_obj.text = control_id
 
-        return True
+    #     return True
 
-    # -------------------------------------------------------------------------
-    def append_with_id(self, href: str, control_ids: list = []) -> bool:
-        """
-        Adds with-id element to a profile's import statement.
-        """
-        status = False
-        import_matches = self.xpath(f"/*/import[@href='{href}']")
-        if isinstance(import_matches, list) and len(import_matches) > 0 and isinstance(import_matches[0], ElementTree.Element):
-            import_obj = import_matches[0]
-            include_obj = import_obj.find("include-controls")
-            if include_obj is None:
-                include_obj = ElementTree.SubElement(import_obj, "include-controls")
-                status = True
-            for control_id in control_ids:
-                with_id_obj = ElementTree.SubElement(include_obj, "with-id")
-                with_id_obj.text = control_id
-        else:
-            logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
+    # # -------------------------------------------------------------------------
+    # @requires(editable=True)
+    # @if_update_successful
+    # def append_with_id(self, href: str, control_ids: list = []) -> bool:
+    #     """
+    #     Adds with-id element to a profile's import statement.
+    #     """
+    #     status = False
+    #     import_matches = self.xpath(f"/*/import[@href='{href}']")
+    #     if isinstance(import_matches, list) and len(import_matches) > 0 and isinstance(import_matches[0], ElementTree.Element):
+    #         import_obj = import_matches[0]
+    #         include_obj = import_obj.find("include-controls")
+    #         if include_obj is None:
+    #             include_obj = ElementTree.SubElement(import_obj, "include-controls")
+    #             status = True
+    #         for control_id in control_ids:
+    #             with_id_obj = ElementTree.SubElement(include_obj, "with-id")
+    #             with_id_obj.text = control_id
+    #     else:
+    #         logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
 
-        return status
+    #     return status
+
 
 if __name__ == '__main__':
     print("OSCAL Controls Class Module. This is not intended to be run as a stand-alone module.")
