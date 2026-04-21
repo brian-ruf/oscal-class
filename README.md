@@ -41,10 +41,10 @@ pip install oscal
 To use the `OSCAL` class in your code, import the `oscal_content_class` module from the `oscal` library:
 
 ```python
-from oscal import oscal_content_class as oscal_content
+from oscal import OSCAL
 
 # Create a new OCAL catalog object
-oscal_catalog_obj = oscal_content.new(
+oscal_catalog_obj = OSCAL.new(
                      model_name="catalog", 
                      title="My Catalog", 
                      version="DRAFT-1.0", 
@@ -68,7 +68,7 @@ oscal_catalog_obj.create_control("ac", "ac-2", "Access Control Enforcement",
 
 if oscal_catalog_obj:
     oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
+    oscal_catalog_obj.save("test_catalog.xml",  format="xml",  pretty_print=True)
     oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
 
 ```

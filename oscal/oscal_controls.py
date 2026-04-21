@@ -8,12 +8,12 @@ from xml.etree import ElementTree
 
 from ruf_common.lfs import getfile
 from ruf_common import network
-from .oscal_content_class import OSCAL, append_props, append_links, OSCAL_DEFAULT_XML_NAMESPACE
+from .oscal_content_class import * 
 from .oscal_markdown import oscal_markdown_to_html
 
 
 """
-**** <<<<====---- ****
+PROFILES **** <<<<====---- ****
 - Instantiate a catalog object in the profile to represent the resolved 
     catalog, and use it to manage the resolved controls
 - Keep in dict (JSON/YAML)
@@ -25,6 +25,7 @@ from .oscal_markdown import oscal_markdown_to_html
 """
 
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Catalog(OSCAL):
     """Class representing an editable OSCAL Catalog object.
     Inherits read-only catalog functionality from CatalogBase and adds
@@ -39,9 +40,9 @@ class Catalog(OSCAL):
         - No control details are stored here.
         - Enables fast lookups without needing to query the catalog repeatedly.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.catalog = OSCAL(new="catalog")
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
+        
 
     # -------------------------------------------------------------------------
     def __len__(self):
@@ -49,7 +50,7 @@ class Catalog(OSCAL):
         controls = self.xpath("//control")
         return len(controls) if controls else 0
     # -------------------------------------------------------------------------
-    @requires(editable=True)
+    @requires(read_only=False)
     @if_update_successful
     def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
         """
@@ -172,7 +173,7 @@ class Catalog(OSCAL):
         return control
 
     # -------------------------------------------------------------------------
-    @requires(editable=True)
+    @requires(read_only=False)
     @if_update_successful
     def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
         """
@@ -286,29 +287,26 @@ class Catalog(OSCAL):
         Placeholder for caching logic.
         """
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Profile(OSCAL):
     """
     Class representing an OSCAL Profile object.
     Inherits common OSCAL functionality and adds profile-specific methods
     for managing imports and control selections.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
+        self.catalog = Catalog.new("catalog")
+
         self.resolution_state = "unresolved"  # "unresolved", "resolving", "resolved", "blocked", "error"
-        self.catalog = None  # This will hold the resolved catalog object after processing imports
 
-        self.resolution_status = 
-        self.source_type: str = ""       # "uri", "file", or "unknown"
-        self.source_scheme: str = ""     # e.g. "https", "s3", "" for local files
-        self.source_supported: bool = False
-        self.ttl = ttl # 
-        self.processed_datetime = datetime.now(timezone.utc)
-        self.import_tree = {}
-        self.controls_tree = {}
-        self.controls_list = {}
+        self.resolution_status = ResolutionStatus.UNRESOLVED
+        self.resolved_datetime = datetime.now(timezone.utc)
+        self.resolution_ttl = 0 # 
+        self.controls_tree = []
 
-        self._build_import_tree()
-
+        self._build_controls_tree()
+    # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
     def _build_controls_tree(self): 
         """Internal method to cache the structure of controls for efficient access.
@@ -316,7 +314,14 @@ class Profile(OSCAL):
         """
 
     # -------------------------------------------------------------------------
-    # @requires(editable=True)
+    def control(self, control_id: str, with_history: bool = False) -> dict:
+        """Retrieve a control by its ID from the resolved catalog."""
+        if self.resolution_status != ResolutionStatus.RESOLVED:
+            logger.warning(f"Attempting to access control '{control_id}' before profile is resolved.")
+            return None
+        return self.catalog.get_control_by_id(control_id)
+    # -------------------------------------------------------------------------
+    # @requires(read_only=False)
     # @if_update_successful
     # def add_or_update_import(self, href: str, include_all: bool = False, include_ids=[], include_with_child=False, exclude_ids=[], exclude_with_child=False):
     #     """
@@ -394,7 +399,7 @@ class Profile(OSCAL):
     #     return True
 
     # # -------------------------------------------------------------------------
-    # @requires(editable=True)
+    # @requires(read_only=False)
     # @if_update_successful
     # def append_with_id(self, href: str, control_ids: list = []) -> bool:
     #     """
@@ -416,6 +421,25 @@ class Profile(OSCAL):
 
     #     return status
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class Mapping(OSCAL):
+    """
+    Class representing an OSCAL Mapping object.
+    Inherits common OSCAL functionality and adds mapping-specific methods
+    for managing mappings between controls and other objects.
+    """
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+class ResolutionStatus(str, Enum):
+    UNRESOLVED   = "unresolved"   # The content has not been processed for resolution
+    RESOLVING    = "resolving"    # The content is currently being processed for resolution
+    RESOLVED     = "resolved"     # The content has been successfully resolved
+    BLOCKED      = "blocked"      # The content cannot be resolved due to missing dependencies
+    EXPIRED      = "expired"      # The content is valid, but cached copy has expired
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':
     print("OSCAL Controls Class Module. This is not intended to be run as a stand-alone module.")

@@ -3,17 +3,18 @@
 
     A class for creation, manipulation, validation and format convertion of OSCAL content.
     All published OSCAL versions, formats and models can be validated and converted.
-    Creation and manipulation is OSCAL 1.2.0 compliant where implemented.
+    Newly published versions can be "learned" by updating the OSCAL Support database.
+    See https://github.com/brian-ruf/oscal-class for more details.
 
-    OSCAL XML, JSON and YAML formats are supported.
-    This class ingests and validates OSCAL content in its native format using the appropriate
-    NIST-published OSCAL schema.
+"""
 
-    Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
-    Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
-
-    In the fFuture this library will perform validation and conversion using the NIST-published
-    OSCAL metaschema definitions, which include additional rules not handled by the XML and JSON schemas.
+"""
+TODO
+- Ensure format is synced before saving (ie. updates with XML, but saving to JSON)
+- Verify passed content is working in all three formats
+- Add fetch to get via HREF
+- Build import tree
+- Build profile resolution logic
 """
 from loguru import logger
 import os
@@ -46,6 +47,9 @@ _SUPPORTED_URI_SCHEMES = {"http", "https", "file"}
 _KNOWN_URI_SCHEMES = {"ftp", "ftps", "sftp", "s3", "gs", "az"}
 # Valid OSCAL file extensions
 _VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
+# OSCAL Default Namespace for XML processing
+_NSMAP = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
+
 
 """
 - Handle hrefs that are URI fragments referencing back-matter/resources within the same file
@@ -61,7 +65,8 @@ _VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
 !!! See Claude chat on project file stores.
 
 """
-
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Factory Methods and Initializers
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def requires(**conditions):
     """Gate a method on boolean instance attributes or properties.
@@ -82,21 +87,21 @@ def requires(**conditions):
         return wrapper
     return decorator
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# -----------------------------------------------------------------------------
 def if_update_successful(fn):
     """Updates tracking attributes after a successful content modification."""
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
         result = fn(self, *args, **kwargs)
-            self.synced = False 
-            self.unsaved = True 
-            self.last_modified = oscal_date_time_with_timezone()
-
+        self.synced = False 
+        self.unsaved = True 
+        self.last_modified = oscal_date_time_with_timezone()
         return result
     return wrapper
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Shared OSCAL Support instance (initialized lazily)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 _shared_oscal_support = None
 def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE):
     """
@@ -125,121 +130,171 @@ def get_shared_oscal_support(db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPP
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCAL(LoggableMixin):
     """
-        Properties:
-            content: The raw content as a string in its original format
-            filename: The original filename or source URI (if applicable)
+        Attributes (Content Location):
+            href_original: The original href as provided (e.g., in an import statement)
+            href_valid   : The validated href that was successfully loaded (may be different than original if original failed and was retried with a new href)
+            href_local   : The local file path where the content is stored (same as href_valid for local files, or the path to the cached copy for remote files)
+
+        Attributes (Class States):
+            valid    : True if the content passed OSCAL validation, False otherwise
+            local    : True if the source is a local file, False if it's remote (http/https)
+            cached   : True if remote content has a local cache copy, False otherwise
+            read_only: True if local content is read-only, False if it's read-write
+            synced   : True if the in-memory tree/dict is in sync with the raw content, False if there are unsaved changes
+            unsaved  : True if there are unsaved modifications, False otherwise
+        Attributes (Caching and Expiration):
+            loaded: Timestamp of when the content was loaded (datetime object)
+            ttl: Time to live for cached content in seconds (0 or less means never expire)
+        Attributes (Content and Summary):
+            content        : The raw content as a string in its original format
             original_format: The original format of the content (xml, json, yaml)
-            state: The current state of the content (editable, read-only, locked)
-            model: The identified OSCAL model (e.g., "catalog", "profile")
-            version: The OSCAL version from the metadata (if available)
-            title: The title from the metadata (if available)
-            published: The publication date from the metadata (if available)
-            version: The version from the metadata (if available)
-            self.import_list = [
-                {
-                    "href_original": "https://example.com/profile.xml", # href specifd in the content
-                    "href_valid"   : "https://example.com/root.xml",    # valid href (may be same as original or may be different if original could not be loaded)
-                    "href_local"   : "file://example.com/root.xml",     # local copy (cached copy if remote) 
-                    "valid": True,                                    # whether the content was successfully loaded and validated
-                    "remote": True,                                    # whether the source is remote (http/https) or local file
-                    "cached": True,                                    # whether a remote source has a local cache copy
-                    "writable": False,                                  # whether the local source is writable (vs read-only)
-                    "expires": "2024-01-01T00:00:00Z",                        # expiration timestamp for cached content (if applicable)
-                    "model" : "profile",                                # "profile" or "catalog"
-                    "status": ImportStatus.FAILED,
-                    "error" : "",                               # why it failed (empty if loaded)
-                    "object": OSCAL object if loaded, else None,
-                    "import_list": [ ... ]
-                } 
-            ] # An array of dictionaries representing imported OSCAL content
+            model          : The identified OSCAL model (e.g., "catalog", "profile")
+            oscal_version  : The OSCAL version from the metadata (if available)
+            last_modified  : The last modified date from the metadata (if available)
+            title          : The title from the metadata (if available)
+            published      : The publication date from the metadata (if available)
+            version        : The version from the metadata (if available)
+            remarks        : Any remarks from the metadata (if available)
+
+        Attributes (Processing Objects):
+            self.import_list = [] # An array of dictionaries representing imported OSCAL content
+
+        Properties:
+            editable: True if the content can be modified, False otherwise
 
         Methods:
+            from_content(content: dict, href: Optional[str] = None) -> OSCAL:
+                Initialize an OSCAL instance from already-loaded content.
 
+            from_href(href: str) -> OSCAL:
+                Load OSCAL content from a URI and initialize an instance.
 
+            new(model_name: str, title: str, version: str, published: str, support_db_conn: str, support_db_type: str) -> Optional[OSCAL]:
+                Create a new OSCAL document based on a template for the specified model.
+
+            save(filename: str, format: str, pretty_print: bool) -> bool:
+                Save the current OSCAL content to a file in the specified format.
+
+            validate(format: str) -> bool:
+                Validate the OSCAL content against the appropriate schema for the specified format.
+
+            convert(target_format: str, pretty_print: bool) -> None:
+                Convert the current OSCAL content to the target format (xml, json, yaml).
     """
-    def __init__(self, content: str = "", href: str = "", new: str = "", ttl: int = 0, support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE):
-        """
-            OSCAL Class
-            Must provide at least one of the following parameters:
-            - content: A string containing the OSCAL content
-            - href: A URI or path to a file containing the OSCAL content
-            - new: The type of OSCAL content to create (e.g., "catalog", "profile")
+    def __init_common__(self, content: str = "", href: str = "", new: str = "", ttl: int = 0, support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE):
 
-            - support_db_conn: Database connection string or path for OSCAL Support instance
-            - support_db_type: Database type (default: "sqlite3") for OSCAL Support instance
+        logger.debug("Initializing common OSCAL class properties...")
 
-            content and new are mutually exclusive.
-
-            Raises:
-                ValueError: If no content, filename nor new_model is provided
-        """
-        logger.debug("Initializing OSCAL class instance...")
-        # Need at least one of content, href, or new_model
-        if not content and not href:
-            # logger.error("No content, href nor new_model. Unable to proceed.")
-            raise ValueError("No content, href nor new_model provided. Unable to proceed.")
-
-        # If just a href and no content, load the file
-        if href and not content:
-            logger.debug(f"Loading OSCAL content from href: {href}")
-            self.href = href
-            content = getfile(href)
-            if not content:
-                logger.error(f"Unable to get file: {href}")
-                raise ValueError(f"Unable to get file: {href}")
-
-        logger.debug("Setting up OSCAL content properties...")
-
-        self.href_original: str = href # Original href as provided
+        # Content Location
+        self.href_original: str = ""   # Original href as provided
         self.href_valid   : str = ""   # valid href (may be different than original)
         self.href_local   : str = ""   # local copy (cached copy if remote)
-        self.valid   : bool = False    # content passed OSCAL validation
-        self.remote  : bool = False    # source is http/https (vs local file)
-        self.cached  : bool = False    # remote content has a local cache copy
-        self.writable: bool = True     # local content is read-write (not read-only)
 
-        self.content        : str = content
+        # Class States
+        self.valid    : bool = False # content passed OSCAL validation
+        self.local    : bool = True  # source is local file (vs http/https)
+        self.cached   : bool = False # remote content has a local cache copy
+        self.read_only: bool = True  # local content is read-only (not read-write)
+        self.synced   : bool = False # Boolean indicating whether the tree and dict are in sync
+        self.unsaved  : bool = True  # Boolean indicating whether there are unsaved modifications
+
+        # Caching and Expiration
+        self.loaded: datetime = datetime.now() # Timestamp of when the content was loaded
+        self.ttl: int = 0 # Seconds (0 or less = forever): Time to live for cached content
+
+        # Content and Summary
+        self.content        : str = "" # The raw content as a string in its original format
         self.original_format: str = ""
         self.model          : str = ""
-        self.uuid           : str = ""
         self.oscal_version  : str = ""
+        self.last_modified  : str = "" 
         self.title          : str = ""
         self.published      : str = ""
         self.version        : str = ""
         self.remarks        : str = ""
 
-        self.import_list: list = [] # An array of dictionaries 
-        self.dict: dict | None = None # JSON/YAML constructs
-        self.tree = None # XML constructs
-        self.nsmap = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
-        self.__saxon = None
+        # Processing Objects
+        self.import_list: list = []    # An array of dictionaries 
+        self._dict: dict | None = None # JSON/YAML constructs
+        self._tree = None              # XML constructs
 
-
-        self.synced = False # Boolean indicating whether the tree and dict are in sync
-        self.unsaved = True # Boolean indicating whether there are unsaved modifications
-        self.last_modified = "" # Timestamp of last modification
-        self.loaded = datetime.now() # Timestamp of when the content was loaded
-        self.ttl = ttl # Time to live for cached content, in seconds (0 or negative means no expiration)
-
-        self.well_formed = {}          # A dictionary indicating whether the content is well-formed for each format
-        self.well_formed["xml"] = None
-        self.well_formed["json"] = None
-        self.well_formed["yaml"] = None
-        self.schema_valid = {}       # A dictionary indicating whether the content is valid against the schema for each format
-        self.schema_valid["xml"] = None
+        # Validation Status
+        self.schema_valid = {}    # A dictionary indicating whether the content is valid against the schema for each format
+        self.schema_valid["xml"]  = None
         self.schema_valid["json"] = None
         self.schema_valid["yaml"] = None # YAML schema validation uses the JSON schema
         self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
 
-        self.imports = []        # A list of imported OSCAL files, by CC-assigned UUID
-        self.support = get_shared_oscal_support(support_db_conn, support_db_type)  # Always gets the same instance
+        # OSCAL Support Object - ensures there is only one shared instance of the support module
+        self._support = get_shared_oscal_support(support_db_conn, support_db_type) 
 
-        # Process content if we have it
-        if self.content:
-            logger.debug("Processing provided content...")
-            self.initial_validation()
-        else:
-            raise ValueError("No content available.")
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_content(cls, content: dict, *, href: str | None = None):
+        """Initialize from already-loaded OSCAL content.
+        
+        Args:
+            content:    OSCAL content as a dictionary.
+            href: Optional URI identifying the original content source.
+        """
+        instance = cls.__new__(cls)
+        instance.__init_common__()
+        instance._origin       = "passed"
+        instance.content       = content
+        instance.href_original = href if href else ""
+        if instance.initial_validation():
+            instance.read_only = False
+
+
+        return instance
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_href(cls, href: str):
+        """Load OSCAL content from a URI.
+        
+        May be called on OSCAL directly (when model type is unknown) or on a
+        specific model class. When called on OSCAL, dispatches to the appropriate
+        subclass after inspecting the content.
+        
+        Args:
+            href: URI identifying the OSCAL content to load.
+        """
+        instance = cls.__new__(cls)
+        instance.__init_common__()
+        instance._origin       = "fetched"
+        instance.href_original = href
+        # Fetch the content and classify the source
+        instance.initial_validation()
+        return instance
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def new(cls, title: str, version: str = "", published: str = ""):
+        """Create a new OSCAL document from a template.
+        
+        Must be called on a specific model class (Catalog.new(), Profile.new(), etc.),
+        not on OSCAL directly.
+        
+        Args:
+            title:   Document title (stored in metadata).
+            version: Document version (stored in metadata).
+            published: Document publication date (stored in metadata).
+            **kwargs: Additional metadata fields (e.g. published, last_modified).
+        """
+        if cls is OSCAL:
+            raise TypeError(
+                "OSCAL.new() requires a specific model class. "
+                "Use Catalog.new(), Profile.new(), etc."
+            )
+        instance = cls.__new__(cls)
+        instance.__init_common__()
+        instance._origin     = "new"
+        instance.model       = cls.__name__.lower()  # e.g. "catalog", "profile"
+        instance.content     = create_new_oscal_content(instance.model, title, version, published)
+        if instance.initial_validation():
+            instance.read_only = False
+        return instance
 
     # -------------------------------------------------------------------------
     def __repr__(self):        
@@ -348,7 +403,7 @@ class OSCAL(LoggableMixin):
         suffix = PurePosixPath(path).suffix.lower()
         return suffix in Controls._VALID_EXTENSIONS
     # -------------------------------------------------------------------------
-    def _build_import_tree(self, new_href: str = "") -> Boolean:
+    def _build_import_tree(self, new_href: str = "") -> bool:
         """
         Internal method to build the structure of imports for efficient access.
         """
@@ -420,7 +475,7 @@ class OSCAL(LoggableMixin):
     @property
     def cache_expired(self) -> bool:
         """Only meaningful when remote and cached."""
-        if not self.remote or not self.cached or self.ttl <= 0:
+        if self.local or not self.cached or self.ttl <= 0:
             return False
         return (datetime.now() - self.loaded).total_seconds() > self.ttl
 
@@ -428,7 +483,7 @@ class OSCAL(LoggableMixin):
     @property
     def editable(self) -> bool:
         """Can this content be modified?"""
-        return self.valid and not self.remote and self.writable
+        return self.valid and self.local and not self.read_only
 
     # -------------------------------------------------------------------------
     @property
@@ -443,7 +498,7 @@ class OSCAL(LoggableMixin):
                 return "expired"
             return "read-only"
         # local
-        return "editable" if self.writable else "read-only"
+        return "read-write" if self.local and not self.read_only else "read-only"
     # -------------------------------------------------------------------------
     @property
     def is_stale(self) -> bool:
@@ -483,10 +538,9 @@ class OSCAL(LoggableMixin):
             logger.debug(f"{self.original_format} is an OSCAL format.")
 
             if self.original_format == "xml":
-                self.tree = safe_load_xml(self.content)
-                if self.tree is not None:
+                self._tree = safe_load_xml(self.content)
+                if self._tree is not None:
                     status = True
-                    self.well_formed["xml"] = True
                     oscal_root = self.xpath_atomic("/*/name()")
                     oscal_version = "v" + self.xpath_atomic("/*/metadata/oscal-version/text()")
                     content_title = self.xpath_atomic("/*/metadata/title/text()")
@@ -499,11 +553,11 @@ class OSCAL(LoggableMixin):
             elif self.original_format in ("json", "yaml"):
                 loaded = safe_load(self.content, self.original_format)
                 if isinstance(loaded, dict):
-                    self.dict = loaded
+                    self._dict = loaded
                     logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
                     status = True
-                    oscal_root = next(iter(self.dict.keys())) if self.dict else ""
-                    root_obj = self.dict.get(oscal_root, {})
+                    oscal_root = next(iter(self._dict.keys())) if self._dict else ""
+                    root_obj = self._dict.get(oscal_root, {})
                     metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
                     oscal_version = f"v{metadata.get('oscal-version', '')}"
                     content_title = metadata.get('title', '')
@@ -518,9 +572,9 @@ class OSCAL(LoggableMixin):
             status = False
 
         if status:
-            if oscal_version in self.support.versions:
+            if oscal_version in self._support.versions:
                 self.oscal_version = oscal_version
-                if oscal_root in self.support.enumerate_models(self.oscal_version):
+                if oscal_root in self._support.enumerate_models(self.oscal_version):
                     self.model = oscal_root
                     self.title = content_title
                     self.version = content_version
@@ -559,7 +613,7 @@ class OSCAL(LoggableMixin):
 
         if format == "xml":
             logger.debug("Validating XML content against schema...")
-            xml_schema_content = self.support.asset(self.oscal_version, self.model, "xml-schema")
+            xml_schema_content = self._support.asset(self.oscal_version, self.model, "xml-schema")
 
             if xml_schema_content:
                 import xmlschema
@@ -586,7 +640,7 @@ class OSCAL(LoggableMixin):
 
         elif format in ("json", "yaml"):
             logger.debug(f"Validating {format} content against schema...")
-            json_schema_content = self.support.asset(self.oscal_version, self.model, "json-schema")
+            json_schema_content = self._support.asset(self.oscal_version, self.model, "json-schema")
 
             if json_schema_content:
                 import jsonschema_rs
@@ -599,10 +653,10 @@ class OSCAL(LoggableMixin):
                         schema_dict = json_schema_content
 
                     # Ensure schema_dict is valid before validation
-                    if isinstance(schema_dict, dict) and isinstance(self.dict, dict):
+                    if isinstance(schema_dict, dict) and isinstance(self._dict, dict):
 
                         # Validate (raises exception with details if invalid)
-                        jsonschema_rs.validate(self.dict, schema_dict)  # Does not return a value
+                        jsonschema_rs.validate(self._dict, schema_dict)  # Does not return a value
 
                         self.schema_valid["json"] = True
                         self.schema_valid["yaml"] = True  # YAML uses JSON schema
@@ -644,7 +698,7 @@ class OSCAL(LoggableMixin):
             elif self.original_format == "json":
                 # Convert JSON to XML
                 logger.debug("Converting JSON to XML...")
-                xsl_converter=self.support.asset(self.oscal_version, self.model, "json-to-xml")
+                xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
                 if not xsl_converter:
                     logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
                     return
@@ -657,8 +711,8 @@ class OSCAL(LoggableMixin):
             elif self.original_format in ["yaml", "yml"]:
                 # Convert YAML to JSON, then JSON to XML
                 logger.debug("Converting YAML to XML via JSON...")
-                json_content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
-                xsl_converter=self.support.asset(self.oscal_version, self.model, "json-to-xml")
+                json_content = json.dumps(self._dict, indent=INDENT if pretty_print else None)
+                xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
                 if not xsl_converter:
                     logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
                     return
@@ -678,7 +732,7 @@ class OSCAL(LoggableMixin):
             elif self.original_format == "xml":
                 # Convert XML to JSON
                 logger.debug("Converting XML to JSON...")
-                xsl_converter=self.support.asset(self.oscal_version, self.model, "xml-to-json")
+                xsl_converter=self._support.asset(self.oscal_version, self.model, "xml-to-json")
                 if not xsl_converter:
                     logger.error("Unable to locate XSLT converter for XML to JSON conversion.")
                     return
@@ -690,7 +744,7 @@ class OSCAL(LoggableMixin):
             elif self.original_format in ["yaml", "yml"]:
                 # Convert YAML to JSON
                 logger.debug("Converting YAML to JSON...")
-                self.content = json.dumps(self.dict, indent=INDENT if pretty_print else None)
+                self.content = json.dumps(self._dict, indent=INDENT if pretty_print else None)
                 self.original_format = "json"
             else:
                 logger.error(f"Unsupported original format for conversion to JSON: {self.original_format}")
@@ -702,7 +756,6 @@ class OSCAL(LoggableMixin):
             elif self.original_format == "json":
                 # Convert JSON to YAML
                 logger.debug("Converting JSON to YAML...")
-
 
     # -------------------------------------------------------------------------
     def save(self, filename: str="", format: str="", pretty_print: bool=False) -> bool:
@@ -759,16 +812,16 @@ class OSCAL(LoggableMixin):
 
         logger.debug(f"Saving content as {filename} in OSCAL {format.upper()} format.")
         if format == "xml":
-            if self.dict and self.support and not self.tree:
-                xsl_converter=self.support.asset(self.oscal_version, self.model, "json-to-xml")
+            if self._dict and self._support and not self._tree:
+                xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
                 if isinstance(xsl_converter, str):
-                    json_content = json.dumps(self.dict)
+                    json_content = json.dumps(self._dict)
                     xml_output = oscal_json_to_xml(
                         json_content=json_content,
                         xsl_converter=xsl_converter,
                         validate_json=True
                     )
-                    self.tree = ElementTree.ElementTree(ElementTree.fromstring(xml_output))
+                    self._tree = ElementTree.ElementTree(ElementTree.fromstring(xml_output))
                 else:
                     logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot serialize XML.")
                     return False
@@ -779,26 +832,26 @@ class OSCAL(LoggableMixin):
         elif format in ("json", "yml", "yaml"):
             logger.debug("Preparing to save JSON/YAML content...")
 
-            if not self.dict:
-                xsl_converter=self.support.asset(self.oscal_version, self.model, "xml-to-json")
+            if not self._dict:
+                xsl_converter=self._support.asset(self.oscal_version, self.model, "xml-to-json")
                 if isinstance(xsl_converter, str):
                     json_output = oscal_xml_to_json(self.content, xsl_converter=xsl_converter)
                     logger.debug(f"Converted XML content to JSON: {json_output[:100]}...")  # Log a snippet of the JSON output
-                    self.dict = json.loads(json_output)
+                    self._dict = json.loads(json_output)
                 else:
                     logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot serialize JSON.")
                     return False
 
-            if self.dict is None:
+            if self._dict is None:
                 logger.error("No JSON content available to save.")
                 return False
 
             if format == "json":
                 logger.debug("Saving content in JSON format...")
-                status = save_json(self.dict, filename) # pretty_print=pretty_print)
+                status = save_json(self._dict, filename) # pretty_print=pretty_print)
             else: # YAML
                 logger.debug("Saving content in YAML format...")
-                yaml_out = yaml.dump(self.dict, sort_keys=False, indent=INDENT if pretty_print else None)
+                yaml_out = yaml.dump(self._dict, sort_keys=False, indent=INDENT if pretty_print else None)
 
                 status = putfile(filename, yaml_out)
         else:
@@ -828,13 +881,13 @@ class OSCAL(LoggableMixin):
                 logger.warning(f"Setting complex metadata field '{item}' is not yet implemented.")
                 continue
             else:
-                if self.tree is not None:
+                if self._tree is not None:
                     self.__set_field(f"/*/metadata/{item}", content.get(item, ""))
-                elif self.dict is not None:
-                    if "metadata" not in self.dict:
-                        self.dict["metadata"] = {}
+                elif self._dict is not None:
+                    if "metadata" not in self._dict:
+                        self._dict["metadata"] = {}
                         logger.warning("No metadata section found in content. Creating.")
-                    self.dict["metadata"][item] = content.get(item, "")                
+                    self._dict["metadata"][item] = content.get(item, "")                
 
     # -------------------------------------------------------------------------
     def xpath_atomic(self, xExpr: str, context: ElementTree.Element | ElementTree.ElementTree | None = None) -> str:
@@ -855,14 +908,14 @@ class OSCAL(LoggableMixin):
         if context is not None:
             logger.debug(f"Using provided context for XPath Atomic: {xExpr}")
         else:
-            context = self.tree
+            context = self._tree
             logger.debug(f"Using document root as context for XPath Atomic: {xExpr}")
 
         if context is None:
             logger.error("No XML context available for XPath Atomic query.")
             return ""
 
-        results = elementpath.select(context, xExpr, namespaces=self.nsmap)
+        results = elementpath.select(context, xExpr, namespaces=_NSMAP)
         if not results:
             logger.debug(f"No XPath Atomic results found for expression: {xExpr}")
             return ""
@@ -893,7 +946,7 @@ class OSCAL(LoggableMixin):
         if context is not None:
             logger.debug(f"Using provided context for XPath: {xExpr}")
         else:
-            context = self.tree
+            context = self._tree
             logger.debug(f"Using document root as context for XPath: {xExpr}")
 
         if context is None:
@@ -902,7 +955,7 @@ class OSCAL(LoggableMixin):
 
         try:
 
-            result = elementpath.select(context, xExpr, namespaces=self.nsmap)
+            result = elementpath.select(context, xExpr, namespaces=_NSMAP)
             if result is None:
                 ret_value = None
             elif isinstance(result, list):
@@ -917,7 +970,7 @@ class OSCAL(LoggableMixin):
         return ret_value
 
     # -------------------------------------------------------------------------
-    @requires(editable=True)
+    @requires(read_only=False)
     @if_update_successful
     def __set_field(self, path: str, field_value: str):
         """
@@ -963,7 +1016,7 @@ class OSCAL(LoggableMixin):
 
 
     # -------------------------------------------------------------------------
-    @requires(editable=True)
+    @requires(read_only=False)
     @if_update_successful
     def assign_html_string_to_node(self, parent_node: ElementTree.Element, html_string: str):
         """
@@ -997,16 +1050,16 @@ class OSCAL(LoggableMixin):
             logger.error("HTML String: " + html_string)
 
     # -------------------------------------------------------------------------
-    @requires(editable=True)
+    @requires(read_only=False)
     @if_update_successful
     def append_child(self, xpath: str, node_name: str, node_content: str = "", attribute_list: list = []) -> (ElementTree.Element | None):
-        # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self.tree.tag)
+        # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self._tree.tag)
         status = False
         child = None
         try:
             logger.debug("Fetching parent at " + xpath)
             # Use elementpath for reliable XPath processing
-            parent_nodes = elementpath.select(self.tree, xpath, namespaces=self.nsmap)
+            parent_nodes = elementpath.select(self._tree, xpath, namespaces=_NSMAP)
             parent_node = None
             if isinstance(parent_nodes, list) and len(parent_nodes) > 0:
                 parent_node = parent_nodes[0]
@@ -1037,7 +1090,7 @@ class OSCAL(LoggableMixin):
             return None
 
     # -------------------------------------------------------------------------
-    @requires(editable=True)
+    @requires(read_only=False)
     @if_update_successful
     def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
         """
@@ -1067,7 +1120,7 @@ class OSCAL(LoggableMixin):
         # if format == self.original_format:
 
         if format == "xml":
-            # if self.tree is None:
+            # if self._tree is None:
             return self.xml_serializer()
         elif format == "json":
             return self.json_serializer()
@@ -1087,15 +1140,15 @@ class OSCAL(LoggableMixin):
         logger.debug("Serializing the XML tree for text output.")
 
         # Check if tree exists
-        if self.tree is None:
+        if self._tree is None:
             logger.error("No XML tree available for serialization")
             return ""
 
         # Handle both ElementTree and Element objects
-        if isinstance(self.tree, ElementTree.ElementTree):
-            root = self.tree.getroot()
+        if isinstance(self._tree, ElementTree.ElementTree):
+            root = self._tree.getroot()
         else:
-            root = self.tree  # Already an Element
+            root = self._tree  # Already an Element
 
         # Additional safety check
         if root is None:
@@ -1120,7 +1173,7 @@ class OSCAL(LoggableMixin):
         - str: The serialized JSON content as a string.
         """
         logger.debug("Serializing dict for string output as JSON.")
-        out_string = json.dumps(self.dict, indent=INDENT, sort_keys=False)
+        out_string = json.dumps(self._dict, indent=INDENT, sort_keys=False)
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
@@ -1133,7 +1186,7 @@ class OSCAL(LoggableMixin):
         - str: The serialized YAML content as a string.
         """
         logger.debug("Serializing dict for string output as YAML.")
-        out_string: str = yaml.dump(self.dict, indent=INDENT, sort_keys=False)  # type: ignore[assignment]
+        out_string: str = yaml.dump(self._dict, indent=INDENT, sort_keys=False)  # type: ignore[assignment]
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
@@ -1142,24 +1195,12 @@ class OSCAL(LoggableMixin):
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-# class OSCALState(str, Enum):
-#     READY        = "ready"        # The content is valid
-#     NOT_LOADED   = "not-loaded"   # The content has not been loaded
-#     INVALID      = "invalid"      # The content is not valid
-#     EXPIRED      = "expired"      # The content is valid, but cached copy has expired
+class ImportState(str, Enum):
+    READY        = "ready"        # The content is valid
+    NOT_LOADED   = "not-loaded"   # The content has not been loaded
+    INVALID      = "invalid"      # The content is not valid
+    EXPIRED      = "expired"      # The content is valid, but cached copy has expired
 
-# -------------------------------------------------------------------------
-"""
-    - valid or not_valid (self.valid)
-    - local or remote (self.remote)
-        - if remote (always read-only):
-            - cached locally or not (self.cached)
-                - if cached locally:
-                    - cache is valid or expired
-        - if local:
-            - read-only or read-write
-
-"""
 
 
 # -------------------------------------------------------------------------
@@ -1530,6 +1571,39 @@ def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", descripti
     return resource
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # -----------------------------------------------------------------------------
+def create_new_oscal_content(model_name: str, title: str, version: str = "", published: str = "", format: str = "xml",support_db_conn: str = "", support_db_type: str = SUPPORT_DATABASE_DEFAULT_TYPE) -> Optional[OSCAL]:
+    """
+    Returns minimally valid OSCAL content as the
+    appropriate model-specific subclass (e.g., Catalog, Profile, SSP).
+    Currently this is based on loading a template file from package data.
+    In the future, this should be generated based on the latest metaschema definition.
+
+    Args:
+        model_name (str): The OSCAL model name (e.g., "catalog", "system-security-plan").
+        title (str): The title for the new OSCAL content.
+        version (str): Optional content version.
+        published (str): Optional publication date.
+        support_db_conn (str): Optional database connection for OSCAL Support instance.
+        support_db_type (str): Database type (default: "sqlite3").
+
+    Returns:
+        Optional[OSCAL]: The appropriate OSCAL subclass instance, or None on failure.
+    """
+    oscal_object = None
+    support = get_shared_oscal_support(db_conn=support_db_conn, db_type=support_db_type)
+
+    if support.is_model_valid(model_name):
+        content = support.load_file(f"{model_name}.xml", binary=False)
+        if content and isinstance(content, str):
+            return content
+        else:
+            logger.error(f"Failed to load content for model: {model_name}")
+            return ""
+    else:
+        logger.error(f"Unsupported OSCAL model for new content: {model_name}")
+
+    return ""
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # -------------------------------------------------------------------------

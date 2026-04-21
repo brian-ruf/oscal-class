@@ -4,38 +4,29 @@ Functions specific to OSCAL implementation objects. (cDef and SSP)
 from loguru import logger
 from xml.etree import ElementTree
 
-from .oscal_content_class import OSCAL, new_uuid, OSCAL_DEFAULT_XML_NAMESPACE
+from .oscal_content_class import *
 from .oscal_markdown import oscal_markdown_to_html
 from .oscal_content_class import oscal_markdown_to_html_tree
 
-
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ComponentDefinition(OSCAL):
     """Class representing an OSCAL Component Definition (cDef) object."""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
 
-    def __repr__(self):
-        return f"OSCAL Component Definition: {self.content_title}"
-
-    def __str__(self):
-        return f"OSCAL Component Definition: {self.content_title}"
-
-
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class SSP(OSCAL):
     """Class representing an OSCAL System Security Plan (SSP) object.
     Inherits common OSCAL functionality and adds SSP-specific methods
     for managing components, implemented requirements, and by-component statements.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
 
-    def __repr__(self):
-        return f"OSCAL SSP: {self.content_title}"
-
-    def __str__(self):
-        return f"OSCAL SSP: {self.content_title}"
 
     # -------------------------------------------------------------------------
+    @requires(read_only=False)
+    @if_update_successful
     def append_component(self, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = "", props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
         """
         Adds a "component" to the SSP's system implementation section.
@@ -72,6 +63,8 @@ class SSP(OSCAL):
         return component_obj
 
     # -------------------------------------------------------------------------
+    @requires(read_only=False)
+    @if_update_successful
     def append_impl_requirement(self, control_id: str, props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
         """
         Adds an "implemented-requirement" to the SSP's control implementation section.
@@ -104,7 +97,7 @@ class SSP(OSCAL):
 
         return impl_req_obj
 
-
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = "", props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
     """
     Adds a "component" to an SSP's system implementation section.
@@ -199,7 +192,6 @@ def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], l
     return impl_req_obj
 
 
-
 # -----------------------------------------------------------------------------
 def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, description: str, by_component_uuid: str = "", implementation_status: str = "implemented", remarks: str = "") -> (ElementTree.Element | None):
     """
@@ -250,7 +242,6 @@ def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, 
         by_component_obj = None
 
     return by_component_obj
-
 
 # -----------------------------------------------------------------------------
 def append_responsible_role(oscal_obj: ElementTree.Element, role_id: str, party_uuids: list = [], remarks: str = "") -> ElementTree.Element:

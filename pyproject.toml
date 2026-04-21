@@ -45,7 +45,6 @@ Issues = "https://github.com/brian-ruf/oscal-class/issues"
 [project.optional-dependencies]
 dev = [
     "pytest >= 8.0",
-    "python-dateutil >= 2.8",
 ]
 
 [tool.ruff]
