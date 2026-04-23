@@ -4,9 +4,9 @@ Functions specific to OSCAL implementation objects. (cDef and SSP)
 from loguru import logger
 from xml.etree import ElementTree
 
-from .oscal_content_class import *
+from .oscal_content import *
 from .oscal_markdown import oscal_markdown_to_html
-from .oscal_content_class import oscal_markdown_to_html_tree
+from .oscal_content import oscal_markdown_to_html_tree
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ComponentDefinition(OSCAL):

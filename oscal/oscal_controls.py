@@ -8,7 +8,7 @@ from xml.etree import ElementTree
 
 from ruf_common.lfs import getfile
 from ruf_common import network
-from .oscal_content_class import * 
+from .oscal_content import * 
 from .oscal_markdown import oscal_markdown_to_html
 
 

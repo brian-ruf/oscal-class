@@ -29,6 +29,12 @@ The OSCAL Class can have the following states.
     - if local:
         - read-only or read-write
 
+- synced or not synced (`self.synced`)
+    - native XML, JSON or YAML outupt
+        - not synced requires syncing first
+    - native JSON or YAML, XML output
+        - not synced requires syncing first 
+
 
 ## The Import List
 

@@ -18,4 +18,35 @@ The default configuration is to compress each cached file before storing; howeve
 
 This default name and location for the OSCAl Support Module is `./support/oscal_support.db`; however, your project code can override the location and/or the file name. 
 
+To change the location or type of database, issue the following command before instantiating any OSCAL objects or calling `get_support`.
+
+```python
+
+configure_support(support_file="/path/support.db", db_init_mode="auto")
+
+```
+
+If the database file is not found, it is created. This library contains all 
+NIST-published support files for all versions of OSCAL available as of this
+library's published date.
+
+To update the support database directly from the NIST OSCAL GitHub repo, execute the following:
+
+```python
+
+support = get_support()
+
+# Check for a new version of OSCAL. If found, add its support files to the database.
+support.update()
+# or
+support.update(fetch="new")    
+
+# Clear the database and re-acquire the support files for all versions of OSCAL.
+support.update(fetch="all") 
+
+# Refresh the support files for a specific version of OSCAL.
+support.update(fetch="v1.0.0") 
+
+```
+
 The `OSCAL_support` class interacts with the SQLite3 database using ANSI SQL with the intention of expanding support for project and enterprise ANSI SQL databases in the future, such as Postgres, MS SQL Server, and Oracle.

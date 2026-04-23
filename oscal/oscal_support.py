@@ -2,8 +2,16 @@
 OSCAL Support Class
 
 Provides support for managing OSCAL versions and associated support files.
+Designed so that only one instance of the support class is needed within an 
+application, and that instance can be shared across the application for 
+access to OSCAL support files and information.
+
 Includes functionality to fetch OSCAL releases from GitHub, store support files,
 and provide local access to these files for OSCAL processing.
+
+Use configure_support() to initialize the support system with settings other than 
+the defaults, and get_support() to retrieve the shared instance.
+
 """
 import os
 from loguru import logger
@@ -26,7 +34,6 @@ OSCAL_DEFAULT_XML_NAMESPACE = "http://csrc.nist.gov/ns/oscal/1.0"
 NIST_OSCAL_EXTENSION_NAMESPACE = "http://csrc.nist.gov/ns/oscal"
 NIST_RMF_EXTENSION_NAMESPACE = "http://csrc.nist.gov/ns/rmf"
 OSCAL_FORMATS = ["xml", "json", "yaml", "yml"]
-# OSCAL_MODELS = ["catalog", "profile", "component-definition", "system-security-plan", "assessment-plan", "assessment-results", "plan-of-action-and-milestones", "mapping", "shared-responsibility"]
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Release and Support File Patterns
@@ -85,26 +92,50 @@ OSCAL_SUPPORT_TABLES["filecache"] = database.OSCAL_COMMON_TABLES["filecache"]
 
 OSCAL_DATA_TYPES = {}
 
-# ========================================================================
-def setup_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
-    logger.debug(f"Setting up support file: {support_file}")
+support = None
 
-    support = OSCAL_support.create(support_file, db_init_mode=db_init_mode )
-    cycle = 0
-    while not support.ready:
-        logger.debug("Waiting for support object to be ready...")
-        if support.db_state != "unknown":
-            logger.debug(f"Support file status {support.db_state}")
-            break
-        cycle += 1
-        if cycle > 20:
-            logger.error(f"Support object took too long to be ready.({support.db_state})")
-            break
-        sleep(0.25)
-    if not support.ready:
-        logger.error("Support object is not ready.")
-    else:
-        logger.debug("Support file is ready.")
+# ========================================================================
+def configure_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
+    """
+    Configure the OSCAL support system with the specified settings. 
+    This should be called before get_support() and before any OSCAL 
+    content is loaded if you want to use settings other than the defaults.
+    """
+    logger.debug(f"Setting up support file: {support_file}")
+    global support
+
+    if support is None:
+        support = OSCAL_support(support_file, db_init_mode=db_init_mode )
+        cycle = 0
+        while not support.ready:
+            logger.debug("Waiting for support object to be ready...")
+            if support.db_state != "unknown":
+                logger.debug(f"Support file status {support.db_state}")
+                break
+            cycle += 1
+            if cycle > 20:
+                logger.error(f"Support object took too long to be ready.({support.db_state})")
+                break
+            sleep(0.25)
+        if not support.ready:
+            logger.error("Support object is not ready.")
+        else:
+            logger.debug("Support database is ready.")
+
+    return support
+
+# -------------------------------------------------------------------------
+def get_support():
+    """
+    Get the shared instance of the OSCAL support system.
+    Will create the instance if it does not already exist, 
+    using default settings.
+    """
+    logger.debug("Fetching the support object instance.")
+    global support
+
+    if support is None:
+        support = configure_support()
 
     return support
 
@@ -149,6 +180,7 @@ class OSCAL_support:
                 logger.debug(f"Using default database file: {db_conn}")
             else:
                 # Database path specified
+                logger.debug(f"Using specified database file: {db_conn}")
                 self.db_conn = db_conn  # Ensure instance variable is set
 
             # Determine what action to take based on mode
@@ -207,7 +239,6 @@ class OSCAL_support:
 
         logger.debug(f"Final database connection: {self.db_conn}")
         self.db = database.Database(self.db_type, self.db_conn)
-        logger.debug("Support: __init__")
 
         # TODO: Enable running in both sync and async contexts
         # self.async_mode = False
@@ -219,6 +250,7 @@ class OSCAL_support:
         #     self.async_mode = False
         #     self.executor = self._sync_execute
 
+        self.startup()
     # -------------------------------------------------------------------------
     def __repr__(self) -> str:
         return f"<OSCAL_support {'✅' if self.ready else '❌'} {self.db_conn} ({self.db_type}) db_init_mode='{self.db_init_mode}' db_state='{self.db_state}' versions={list(self.versions.keys())}>"
@@ -309,35 +341,6 @@ class OSCAL_support:
             return False
 
     # -------------------------------------------------------------------------
-    def sync_init(self):
-        """Synchronous initialization"""
-        logger.debug("Support: sync_init")
-        self.ready = self.startup()
-
-    # -------------------------------------------------------------------------
-    @classmethod
-    def create(cls, db_conn, db_type="sqlite3", db_init_mode="auto"):
-        """Synchronous factory method to create and initialize OSCAL_support"""
-        logger.debug("Support: create")
-        instance = cls(db_conn, db_type, db_init_mode)
-        if instance.db is not None:
-            instance.sync_init()
-        else:
-            logger.error("Unable to create support database object.")
-            instance.ready = False
-        return instance
-
-    # -------------------------------------------------------------------------
-
-
-    # -------------------------------------------------------------------------
-    @classmethod
-    def create_auto(cls, db_conn, db_type="sqlite3", db_init_mode="auto"):
-        """Auto-detecting factory method - now just returns sync version"""
-        logger.debug("Support: create_auto")
-        return cls.create(db_conn, db_type, db_init_mode)
-
-    # -------------------------------------------------------------------------
     def startup(self, check_for_updates=False, refresh_all=False):
         """
         Perform startup tasks required to provide OSCAL support.
@@ -391,7 +394,7 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def update(self, fetch="new", backend=None):
+    def update(self, fetch="new"): # , backend=None):
         """
         Update OSCAL support content based on the fetch directive.
         - "all": Clears all re-fetches all OSCAL versions and support files.
@@ -407,7 +410,7 @@ class OSCAL_support:
             bool: True if the update was successful, False otherwise.
         """
         status = False
-        self.backend = backend
+        # self.backend = backend
 
         try:
             if fetch == "all":
@@ -951,8 +954,6 @@ class OSCAL_support:
             logger.error(f"Failed to load OSCAL support library file {file_name}: {e}")
             return None
     # -------------------------------------------------------------------------
-
-
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 """
 Functions specific to OSCAL assessment objects. (AP, AR, and POA&M)
 """
-from .oscal_content_class import OSCAL
+from .oscal_content import OSCAL
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class AssessmentPlan(OSCAL):

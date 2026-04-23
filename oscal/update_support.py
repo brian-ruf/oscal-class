@@ -1,6 +1,6 @@
 import sys
 
-from oscal.oscal_support_class import setup_support
+from oscal.oscal_support import setup_support
 import os
 import argparse
 from loguru import logger
