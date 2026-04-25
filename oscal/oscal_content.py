@@ -7,15 +7,6 @@
     See https://github.com/brian-ruf/oscal-class for more details.
 
 """
-
-"""
-TODO
-- Ensure format is synced before saving (ie. updates with XML, but saving to JSON)
-- Verify passed content is working in all three formats
-- Add fetch to get via HREF
-- Build import tree
-- Build profile resolution logic
-"""
 import os
 import json
 import yaml
@@ -36,9 +27,8 @@ from ruf_common.network import download_file
 from ruf_common.data    import detect_data_format, safe_load, safe_load_xml
 from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content, save_json
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
-from .oscal_markdown    import oscal_markdown_to_html
 from .oscal_datatypes   import oscal_date_time_with_timezone
-from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml
+from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml, oscal_markdown_to_html, oscal_markdown_to_html
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Constants
@@ -52,74 +42,15 @@ _VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
 # OSCAL Default Namespace for XML processing
 _NSMAP = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
 
-
 """
-SHORT TERM TODOs:
-- XML vs JSON/YAML (tree vs dict) content handling:
-    - Analysis on trade-offs for one vs the other as authoritative.
-    - Consider all read-only and read/write methods handle both tree and dict
-    - If allowing both for processing, use one method for each operation regardless of format
-        - Is there a way I can have one format structure and translate the other format into 
-            it without having to duplicate code or have a lot of if/else logic? 
-            - For example, if I choose dict as the primary structure for processing, can I 
-                convert XML to dict immediately on loading and then only work with dict for 
-                all operations, even if the original format was XML?
+IN PROGRESS / TODO:
+- 
+- Ensure format is synced before saving (ie. updates with XML, but saving to JSON)
+- Verify passed content is working in all three formats
+- Add fetch to get via HREF
+- Build import tree
+- Build profile resolution logic
 
-- LOADING/SAVING CONTENT:
-    - Finish save-to-file method for local files
-    - Handle hrefs that point to local files, remote URLs, and file:// URIs
-    - Handle hrefs that are URI fragments referencing back-matter/resources within the same file
-    - For remote URLs, mark as read-only.
-
-    - Classify the source based on its href and determine how to load it
-    - Establish/verify basic "loading methods" based on source classification:
-        - For local files, read directly from the file system
-        - For file:// URIs, convert to local file path and read from the file system (same as local files, but need to handle the URI parsing and conversion)
-        - For known but unsupported URI schemes, log a warning that we recognise the scheme but don't have a loading method for it yet
-
-- IMPORTS:
-    - Build an import tree that captures the structure of imports and their resolution status
-    - Provide methods to retry failed imports with new hrefs
-    - Implement properties to derive the effective state of the content based on its characteristics
-
-- PROFILES:
-    - Processes the import tree using above
-    - instantiate catalog object within profile
-        - Catalog is write-write for profile processing only
-        - Profile methods that mimic the read-only catalog 
-            - pass-through to the catalog object
-            - Necessary tailoring and organization logic on top as needed
-    - Resolve contol inclusion and organiztion for entire profile 
-    - Handle control tailoring as controls are called
-    - Method to resolve all control tailring at once after the full control set is assembled
-
-MEDIUM TERM TODOs:
-- LOADING/SAVING CONTENT:
-    - For remote URLs
-        - download the content and store it in a local cache directory
-        - Local copy is read-only and has a TTL after which it is considered stale and needs to be re-fetched
-        - configurable TTL (24 hour default) 
-        - can be manually refreshed by calling code:
-            - refetch from the remote URL and update the local cache copy, resetting the TTL
-        - On loading, check if cached copy exists and is still valid (not expired). 
-            - If so, load from cache. 
-            - If not, fetch from remote URL and update cache.
-        - Keep using cached copy after its TTL expires if the remote URL is not accessible, but mark the content as stale/expired so calling code can decide how to handle it (e.g. warn user, restrict editing, etc.)
-
-
-
-LONG TERM TODOs:
-- ADDRESSABLE ID SCOPE:
-    - Handle hrefs that point to back-matter/resources within imported files (URI fragments)
-    - Handle the ability to address IDs/UUIDs in imported files from an ancestor 
-
-- LOADING/SAVING CONTENT:
-- Konwon API Specifications:
-    - OneDrive, Google Drive, S3, OSCAL API, etc. (Start with read-only OSCAL API)
-    - Need ability to configure/store known API endpoints (Name, Base URL, Supported Operations, Authentication Method)
-    - One fetch and one save method for each API, that handle the specifics of authentication, request formatting, response parsing, error handling, etc.
-- Project approach to handling related OSCAL Files and their local attachments as a single, portable "project file store" that can be saved and loaded as a unit, with the ability to export/import individual files as needed.
-    - !!! See Claude chat on project file stores.
 
 """
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -156,6 +87,17 @@ def if_update_successful(fn):
         return result
     return wrapper
 
+# -----------------------------------------------------------------------------
+def sync_first(fn):
+    """Ensure content is synced before performing the operation."""
+    logger.debug(f"Applying @sync_first decorator to '{fn.__name__}'")
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        if not self._sync():
+            logger.warning(f"Unable to find required format convertion for '{fn.__name__}' on '{self.model}'.")
+            return None
+        return fn(self, *args, **kwargs)
+    return wrapper
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # OSCAL CLASS
@@ -174,9 +116,11 @@ class OSCAL(LoggableMixin):
             read_only: True if local content is read-only, False if it's read-write
             synced   : True if the in-memory tree/dict is in sync with the raw content, False if there are unsaved changes
             unsaved  : True if there are unsaved modifications, False otherwise
+
         Attributes (Caching and Expiration):
             loaded: Timestamp of when the content was loaded (datetime object)
             ttl: Time to live for cached content in seconds (0 or less means never expire)
+
         Attributes (Content and Summary):
             content        : The raw content as a string in its original format
             original_format: The original format of the content (xml, json, yaml)
@@ -194,30 +138,13 @@ class OSCAL(LoggableMixin):
         Properties:
             editable: True if the content can be modified, False otherwise
 
-        Methods:
-            from_content(content: dict, href: Optional[str] = None) -> OSCAL:
-                Initialize an OSCAL instance from already-loaded content.
-
-            from_href(href: str) -> OSCAL:
-                Load OSCAL content from a URI and initialize an instance.
-
-            new(model_name: str, title: str, version: str, published: str, support_db_conn: str, support_db_type: str) -> Optional[OSCAL]:
-                Create a new OSCAL document based on a template for the specified model.
-
-            save(filename: str, format: str, pretty_print: bool) -> bool:
-                Save the current OSCAL content to a file in the specified format.
-
-            validate(format: str) -> bool:
-                Validate the OSCAL content against the appropriate schema for the specified format.
-
-            convert(target_format: str, pretty_print: bool) -> None:
-                Convert the current OSCAL content to the target format (xml, json, yaml).
     """
     def __init_common__(self, ttl: int = 0, support_db_conn: str = "", support_db_type: str = ""):
 
         logger.debug("Initializing common OSCAL class properties...")
 
         # Content Location
+        self._origin      : str = ""   # Origin of the content (e.g. "from_content", "fetched", "new")
         self.href_original: str = ""   # Original href as provided
         self.href_valid   : str = ""   # valid href (may be different than original)
         self.href_local   : str = ""   # local copy (cached copy if remote)
@@ -235,7 +162,7 @@ class OSCAL(LoggableMixin):
         self.ttl: int = 0 # Seconds (0 or less = forever): Time to live for cached content
 
         # Content and Summary
-        self.original_content: str = "" # The raw content as a string in its original format
+        # self.original_content: str = "" # The raw content as a string in its original format
         self.original_format : str = ""
         self.model           : str = ""
         self.oscal_version   : str = ""
@@ -247,14 +174,14 @@ class OSCAL(LoggableMixin):
 
         # Processing Objects
         self.import_list: list = []    # An array of dictionaries 
+        self.import_tree: dict = {}    # A dictionary representing the structure of imports for efficient access
         self._dict: dict | None = None # JSON/YAML constructs
         self._tree = None              # XML constructs
 
         # Validation Status
         self.schema_valid = {}    # A dictionary indicating whether the content is valid against the schema for each format
-        self.schema_valid["xml"]  = None
-        self.schema_valid["json"] = None
-        self.schema_valid["yaml"] = None # YAML schema validation uses the JSON schema
+        self.schema_valid["_tree"]  = None # Will be set to True/False after XML validation, None if not yet validated or not applicable
+        self.schema_valid["_dict"] = None # Will be set to True/False after JSON validation, None if not yet validated or not applicable
         self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
 
         # Get the OSCAL support object 
@@ -271,10 +198,9 @@ class OSCAL(LoggableMixin):
         """
         instance = cls.__new__(cls)
         instance.__init_common__()
-        instance._origin       = "passed"
-        instance.content       = content
+        instance._origin       = "from_content"
         instance.href_original = href if href else ""
-        if instance.initial_validation():
+        if instance.initial_validation(content):
             instance.read_only = False
 
         return instance
@@ -296,7 +222,11 @@ class OSCAL(LoggableMixin):
         instance._origin       = "fetched"
         instance.href_original = href
         # Fetch the content and classify the source
-        instance.initial_validation()
+        content = ""
+        instance._classify_source()
+        if instance.source_supported:
+            content = instance._load_source()
+        instance.initial_validation(content)
         return instance
 
     # -------------------------------------------------------------------------
@@ -322,26 +252,38 @@ class OSCAL(LoggableMixin):
         instance.__init_common__()
         instance._origin     = "new"
         instance.model       = cls.__name__.lower()  # e.g. "catalog", "profile"
-        instance.content     = create_new_oscal_content(instance.model, title, version, published)
-        if instance.initial_validation():
+        content     = create_new_oscal_content(instance.model, title, version, published)
+        if instance.initial_validation(content):
             instance.read_only = False
         return instance
 
     # -------------------------------------------------------------------------
-    def __repr__(self):        
-        
-        return f"OSCAL[{self.model}:{self.oscal_version} {self.original_format.upper()}] {'VALID' if self.schema_valid else 'INVALID'} {self.title})"
+    def __repr__(self):
+        ret_value = ""
+        if self.original_format == "xml":
+            ret_value += "✅" if self.schema_valid["_tree"] else "⚠️"
+        elif self.original_format in ("json", "yaml"):
+            ret_value += "✅" if self.schema_valid["_dict"] else "⚠️"
+
+        ret_value += f" OSCAL[{self.model}:{self.oscal_version} {self.original_format.upper()}] {self.title})"
+
+        return ret_value
+
     # -------------------------------------------------------------------------
     def __str__(self):
         ret_value = ""
-        ret_value += "✅" if self.schema_valid else "⚠️"
+        if self.original_format == "xml":
+            ret_value += "✅" if self.schema_valid["_tree"] else "⚠️"
+        elif self.original_format in ("json", "yaml"):
+            ret_value += "✅" if self.schema_valid["_dict"] else "⚠️"
         ret_value += f" {self.title}" if self.title else " [Untitled]"
         ret_value += f" [{self.model}]" if self.model else ""
         ret_value += f" {self.version}" if self.version else ""
-        ret_value += f" {self.content_publication}" if self.content_publication else ""
+        ret_value += f" {self.published}" if self.published else ""
         ret_value += f"\nSource File: {self.href_original}" if self.href_original else ""
 
         return ret_value
+
     # -------------------------------------------------------------------------
     def _load_source(self) -> str:
         """Fetch or read content from self.source based on classification.
@@ -376,6 +318,7 @@ class OSCAL(LoggableMixin):
             return ""
 
         return content
+
     # -------------------------------------------------------------------------
     def _classify_source(self):
         """Classify self.source as a URI, local/network file path, or unknown.
@@ -426,6 +369,7 @@ class OSCAL(LoggableMixin):
         if not self.source_supported:
             logger.warning(f"File path does not end with a supported extension "
                            f"({', '.join(_VALID_EXTENSIONS)}): {src}")
+
     # -------------------------------------------------------------------------
     @staticmethod
     def _has_valid_extension(path: str) -> bool:
@@ -433,6 +377,7 @@ class OSCAL(LoggableMixin):
         # Use PurePosixPath to extract suffix; works on URL paths too
         suffix = PurePosixPath(path).suffix.lower()
         return suffix in _VALID_EXTENSIONS
+
     # -------------------------------------------------------------------------
     def _build_import_tree(self, new_href: str = "") -> bool:
         """
@@ -477,11 +422,11 @@ class OSCAL(LoggableMixin):
                 logger.warning(f"Unsupported source — cannot load: {self.source} "
                                f"(type={self.source_type}, scheme={self.source_scheme})")
 
-
         if status and tree_obj["type"] == "profile":
             pass # TODO: recursively process imports and build the full import tree
 
         return status
+
     # -------------------------------------------------------------------------
     @property
     def unresolved_imports(self) -> dict:
@@ -530,6 +475,7 @@ class OSCAL(LoggableMixin):
             return "read-only"
         # local
         return "read-write" if self.local and not self.read_only else "read-only"
+
     # -------------------------------------------------------------------------
     @property
     def is_stale(self) -> bool:
@@ -538,6 +484,7 @@ class OSCAL(LoggableMixin):
             return False
         elapsed = (datetime.now(timezone.utc) - self.processed_datetime).total_seconds()
         return elapsed > self.ttl
+
     # -------------------------------------------------------------------------
     def refresh(self):
         """Re-resolve the source profile to update the control set.
@@ -545,8 +492,9 @@ class OSCAL(LoggableMixin):
         """
         logger.info(f"Refreshing content from source file: {self.source_profile}")
         self.processed_datetime = datetime.now(timezone.utc)
+
     # -------------------------------------------------------------------------
-    def initial_validation(self) -> bool:
+    def initial_validation(self, content: str) -> bool:
         """
         Perform initial validation of content, which includes first ensuring the
         content is a recognized OSCAL format type (xml, json or yaml) and
@@ -562,14 +510,14 @@ class OSCAL(LoggableMixin):
         content_version = ""
         content_publication = ""
 
-        self.original_format = detect_data_format(self.content)
+        self.original_format = detect_data_format(content)
         logger.debug(f"Detected content format: {self.original_format}")
 
         if self.original_format in OSCAL_FORMATS:
             logger.debug(f"{self.original_format} is an OSCAL format.")
 
             if self.original_format == "xml":
-                self._tree = safe_load_xml(self.content)
+                self._tree = safe_load_xml(content)
                 if self._tree is not None:
                     status = True
                     oscal_root = self.xpath_atomic("/*/name()")
@@ -582,7 +530,7 @@ class OSCAL(LoggableMixin):
                     logger.error("Content is not well-formed XML.")
 
             elif self.original_format in ("json", "yaml"):
-                loaded = safe_load(self.content, self.original_format)
+                loaded = safe_load(content, self.original_format)
                 if isinstance(loaded, dict):
                     self._dict = loaded
                     logger.debug(f"Loaded content into dictionary for format {self.original_format}.")
@@ -639,8 +587,8 @@ class OSCAL(LoggableMixin):
 
         if format not in OSCAL_FORMATS:
             logger.error(f"The validation format specified ({format}) is not an OSCAL format.")
-            self.valid_oscal = False
-            return self.valid_oscal
+            self.valid = False
+            return self.valid
 
         if format == "xml":
             logger.debug("Validating XML content against schema...")
@@ -649,25 +597,24 @@ class OSCAL(LoggableMixin):
             if xml_schema_content:
                 import xmlschema
                 try:
-
                     # Create schema object from string
                     schema = xmlschema.XMLSchema(xml_schema_content)
 
                     # Validate - returns None if valid, raises exception if invalid
-                    xml_string = self.xml_serializer()
+                    xml_string = self._xml_serializer()
                     schema.validate(xml_string)
-                    self.schema_valid["xml"] = True
+                    self.schema_valid["_tree"] = True
                     logger.debug("XML schema validation passed.")
 
                 except xmlschema.XMLSchemaValidationError as e:
                     logger.error(f"XML schema validation failed: {e.reason}")
-                    self.schema_valid["xml"] = False
+                    self.schema_valid["_tree"] = False
                 except Exception as e:
                     logger.error(f"XML schema validation error: {str(e)}")
-                    self.schema_valid["xml"] = False
+                    self.schema_valid["_tree"] = False
             else:
                 logger.error("Unable to load XML schema for validation.")
-                self.schema_valid["xml"] = False
+                self.schema_valid["_tree"] = False
 
         elif format in ("json", "yaml"):
             logger.debug(f"Validating {format} content against schema...")
@@ -676,7 +623,6 @@ class OSCAL(LoggableMixin):
             if json_schema_content:
                 import jsonschema_rs
                 try:
-
                     # Parse schema string to dict if needed
                     if isinstance(json_schema_content, str):
                         schema_dict = json.loads(json_schema_content)
@@ -689,111 +635,138 @@ class OSCAL(LoggableMixin):
                         # Validate (raises exception with details if invalid)
                         jsonschema_rs.validate(self._dict, schema_dict)  # Does not return a value
 
-                        self.schema_valid["json"] = True
-                        self.schema_valid["yaml"] = True  # YAML uses JSON schema
+                        self.schema_valid["_dict"] = True
                         logger.debug("JSON schema validation passed.")
                     else:
                         logger.error("Loaded JSON schema is not a valid dictionary.")
-                        self.schema_valid["json"] = False
-                        self.schema_valid["yaml"] = False
+                        self.schema_valid["_dict"] = False
 
                 except jsonschema_rs.ValidationError as e:
                     logger.error(f"JSON schema validation failed: {e}")
-                    self.schema_valid["json"] = False
+                    self.schema_valid["_dict"] = False
                 except Exception as e:
                     logger.error(f"JSON schema validation error: {str(e)}")
-                    self.schema_valid["json"] = False
+                    self.schema_valid["_dict"] = False
             else:
                 logger.error("Unable to load JSON schema for validation.")
-                self.schema_valid["json"] = False
+                self.schema_valid["_dict"] = False
 
-        self.valid_oscal = True
-        return self.valid_oscal
+        return self.valid
 
     # -------------------------------------------------------------------------
-    def convert(self, target_format: str, pretty_print: bool=False) -> bool:
+    def _sync(self, target_format: str = "") -> bool:
         """
-        Convert the current OSCAL content to the target format. Options for pretty printing.
-        Args:
-            target_format: The target format to convert to ("xml", "json", or "yaml")
-            pretty_print: Whether to pretty print the output (applies to JSON and YAML)
+        This method syncronizes the _tree and _dict from whichever is primary to 
+        whichever is secondary.
+
+        If target_format is specified, this will compare the original and 
+        specified formats, and it will only sync if necessary to ensure 
+        the target_format is in sync with the source format.
         """
+        logger.debug("Syncing content if necessary...")
         status = False
-        from .oscal_converters import oscal_xml_to_json, oscal_json_to_xml
-        logger.debug(f"Converting OSCAL content to {target_format} format (pretty_print={pretty_print})...")
-
-        _target = target_format.lower()
-        if _target == "xml":
-            if self.original_format == "xml":
-                logger.debug("Content is already in XML format; no conversion needed.")
+        if not self.synced:
+            # If the target format doesn't make sennse, log an error and return False
+            if target_format and target_format not in OSCAL_FORMATS:
+                logger.error(f"Target format specified for sync is not an OSCAL format: {target_format}")
+                return False
+            
+            if target_format == "xml" and self.original_format == "xml":
+                logger.debug("Target format is XML and original format is XML; no sync needed.")
                 status = True
-            elif self.original_format == "json":
-                # Convert JSON to XML
-                logger.debug("Converting JSON to XML...")
-                xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
-                if not xsl_converter:
-                    logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
-                    return False
-                self.content = oscal_json_to_xml(
-                    json_content=self.content,
-                    xsl_converter=xsl_converter,
-                    validate_json=True
-                )
-                self.original_format = "xml"
-            elif self.original_format in ["yaml", "yml"]:
-                # Convert YAML to JSON, then JSON to XML
-                logger.debug("Converting YAML to XML via JSON...")
-                json_content = json.dumps(self._dict, indent=INDENT if pretty_print else None)
-                xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
-                if not xsl_converter:
-                    logger.error("Unable to locate XSLT converter for JSON to XML conversion.")
-                    return False
-                self.content = oscal_json_to_xml(
-                    json_content=json_content,
-                    xsl_converter=xsl_converter,
-                    validate_json=True
-                )
-                self.original_format = "xml"
+            
+            if target_format in ("json", "yaml") and self.original_format in ("json", "yaml"):
+                logger.debug(f"Target format is {target_format.upper()} and original format is {self.original_format.upper()}; no sync needed.")
+                status = True
+            
+            if self.original_format == "xml":
+                if self._tree is not None:
+                    logger.debug("Converting XML tree to dictionary for JSON/YAML representation...")
+                    xsl_converter=self._support.asset(self.oscal_version, self.model, "xml-to-json")
+                    if not xsl_converter:
+                        logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot convert to dict.")
+                        return False
+                    xml_string = self._xml_serializer()
+                    json_string = oscal_xml_to_json(xml_string, xsl_converter=xsl_converter)
+                    self._dict = json.loads(json_string)
+                    self.synced = True
+                    logger.debug("Conversion from XML to dict successful.")
+                    status= True
+                else:
+                    logger.error("No XML tree available to convert to dict.")
+            elif self.original_format in ("json", "yaml"):
+                if self._dict is not None:
+                    logger.debug("Converting dictionary to XML tree for XML representation...")
+                    xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
+                    if not xsl_converter:
+                        logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot convert to XML tree.")
+                        return False
+                    json_string = json.dumps(self._dict)
+                    xml_string = oscal_json_to_xml(json_string, xsl_converter=xsl_converter, validate_json=True)
+                    self._tree = ElementTree.ElementTree(ElementTree.fromstring(xml_string))
+                    self.synced = True
+                    logger.debug("Conversion from dict to XML successful.")
+                    status = True
+                else:
+                    logger.error("No dictionary available to convert to XML tree.")
             else:
-                logger.error(f"Unsupported original format for conversion to XML: {self.original_format}")
-
-        elif _target == "json":
-            if self.original_format == "json":
-                logger.debug("Content is already in JSON format; no conversion needed.")
-                return True
-            elif self.original_format == "xml":
-                # Convert XML to JSON
-                logger.debug("Converting XML to JSON...")
-                xsl_converter=self._support.asset(self.oscal_version, self.model, "xml-to-json")
-                if not xsl_converter:
-                    logger.error("Unable to locate XSLT converter for XML to JSON conversion.")
-                    return False
-                self.content = oscal_xml_to_json(
-                    xml_content=self.content,
-                    xsl_converter=xsl_converter
-                )
-                self.original_format = "json"
-            elif self.original_format in ["yaml", "yml"]:
-                # Convert YAML to JSON
-                logger.debug("Converting YAML to JSON...")
-                self.content = json.dumps(self._dict, indent=INDENT if pretty_print else None)
-                self.original_format = "json"
-            else:
-                logger.error(f"Unsupported original format for conversion to JSON: {self.original_format}")
-
-        elif _target in ("yaml", "yml"):
-            if self.original_format in ["yaml", "yml"]:
-                logger.debug("Content is already in YAML format; no conversion needed.")
-                return True
-            elif self.original_format == "json":
-                # Convert JSON to YAML
-                logger.debug("Converting JSON to YAML...")
-                return True
-
+                logger.error(f"Unsupported original format for conversion: {self.original_format}")
+        else:
+            logger.debug("Content is already synced; no conversion needed.")
+            status = True
+    
         return status
     # -------------------------------------------------------------------------
+    @property
+    def xml(self) -> str:
+        """Return the content as an XML string, converting if necessary."""
+
+        if self.original_format in ("json", "yaml"):
+            if not self.synced:
+                if not self._sync():
+                    logger.error("Failed to sync content for XML serialization.")
+                    return ""
+        elif self.original_format != "xml":
+            logger.error(f"Unsupported original format for XML serialization: {self.original_format}")
+            return ""
+
+        return self._xml_serializer()
+
+    # -------------------------------------------------------------------------
+    @property
+    def json(self) -> str:
+        """Return the content as a JSON string, converting if necessary."""
+
+        if self.original_format == "xml":
+            if not self.synced:
+                if not self._sync():
+                    logger.error("Failed to sync content for JSON serialization.")
+                    return ""
+        elif self.original_format not in ("json", "yaml"):
+            logger.error(f"Unsupported original format for JSON serialization: {self.original_format}")
+            return ""
+
+        return json.dumps(self._dict, indent=INDENT)
+
+    # -------------------------------------------------------------------------
+    @property
+    def yaml(self) -> str:
+        """Return the content as a YAML string, converting if necessary."""
+
+        if self.original_format == "xml":
+            if not self.synced:
+                if not self._sync():
+                    logger.error("Failed to sync content for YAML serialization.")
+                    return ""
+        elif self.original_format not in ("json", "yaml"):
+            logger.error(f"Unsupported original format for YAML serialization: {self.original_format}")
+            return ""
+
+        return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
+
+    # -------------------------------------------------------------------------
     def save(self, filename: str="", format: str="", pretty_print: bool=False) -> bool:
-        f"""
+        """
         Save the current OSCAL content to a file.
         With no parameters, saves to the original location in the original format.
         This will save to any valid filename, even if the file extension does not match the format.
@@ -807,28 +780,22 @@ class OSCAL(LoggableMixin):
             bool: True if save is successful, False otherwise
         """
         status = False
+        content = ""
 
-        # If a format is passed, ensure it is valid
-        if format:
-            format = format.lower()
+        # if no format is passed, use the original format if it is valid
+        if format == "":
+            logger.debug("No format specified for saving; will use original format if valid.")
+            format = self.original_format
             if format not in OSCAL_FORMATS:
-                logger.debug(f"Cannot save in ({format}) format. Not an OSCAL format.")
-
-        # If no format is passed, use the original format
-        else:
-            if self.original_format in OSCAL_FORMATS:
-                format = self.original_format
-            else:
-                logger.error("No format specified for saving OSCAL content.")
+                logger.error(f"No format specified and original format ({format}) is not a valid OSCAL format. Cannot save without a valid format.")
                 return False
 
-        # If no filename is passed, use the original location
+        # if no filename is passed, use the original location if available
         if filename == "":
-            if self.href_original:
-                logger.debug("No filename specified for saving; using original location.")
-                filename = self.href_original
-            else:
-                logger.error("No filename specified for saving OSCAL content.")
+            logger.debug("No filename specified for saving; will use original location if available.")
+            filename = self.href_valid if self.href_valid else self.href_original
+            if filename == "":
+                logger.error("No filename specified and no valid original location available. Cannot save without a filename.")
                 return False
 
         # Ensure the directory exists
@@ -837,61 +804,15 @@ class OSCAL(LoggableMixin):
             logger.error(f"Directory does not exist and could not be created: {os.path.dirname(file_path)}")
             return False
 
-
         logger.debug(f"Saving content as {filename} in OSCAL {format.upper()} format.")
-        if format == "xml":
-            if self._dict and self._support and not self._tree:
-                xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
-                if isinstance(xsl_converter, str):
-                    json_content = json.dumps(self._dict)
-                    xml_output = oscal_json_to_xml(
-                        json_content=json_content,
-                        xsl_converter=xsl_converter,
-                        validate_json=True
-                    )
-                    self._tree = ElementTree.ElementTree(ElementTree.fromstring(xml_output))
-                else:
-                    logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot serialize XML.")
-                    return False
-            else:
-                xml_output = self.xml_serializer()
-            status = putfile(filename, xml_output)
+        content = self.serialize(format=format, pretty_print=pretty_print)
 
-        elif format in ("json", "yml", "yaml"):
-            logger.debug("Preparing to save JSON/YAML content...")
-
-            if not self._dict:
-                xsl_converter=self._support.asset(self.oscal_version, self.model, "xml-to-json")
-                if isinstance(xsl_converter, str):
-                    json_output = oscal_xml_to_json(self.content, xsl_converter=xsl_converter)
-                    logger.debug(f"Converted XML content to JSON: {json_output[:100]}...")  # Log a snippet of the JSON output
-                    self._dict = json.loads(json_output)
-                else:
-                    logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot serialize JSON.")
-                    return False
-
-            if self._dict is None:
-                logger.error("No JSON content available to save.")
-                return False
-
-            if format == "json":
-                logger.debug("Saving content in JSON format...")
-                status = save_json(self._dict, filename) # pretty_print=pretty_print)
-            else: # YAML
-                logger.debug("Saving content in YAML format...")
-                yaml_out = yaml.dump(self._dict, sort_keys=False, indent=INDENT if pretty_print else None)
-
-                status = putfile(filename, yaml_out)
-        else:
-            logger.error(f"Unsupported format for saving: {format}")
-            return False
+        status = putfile(filename, content)
 
         if status:
-            logger.info(f"OSCAL content saved to {filename} in XML format.")
-            self.unsaved = False
-
+            logger.info(f"Content successfully saved to {filename}.")
         else:
-            logger.error(f"Failed to save OSCAL content to {filename} in XML format.")
+            logger.error(f"Failed to save content to {filename}.")
 
         return status
 
@@ -982,9 +903,7 @@ class OSCAL(LoggableMixin):
         if context is None:
             logger.error("No XML context available for XPath query.")
             return None
-
         try:
-
             result = elementpath.select(context, xExpr, namespaces=_NSMAP)
             if result is None:
                 ret_value = None
@@ -1043,7 +962,6 @@ class OSCAL(LoggableMixin):
                     logger.debug(f"Current node before setting: {ElementTree.tostring(current_node, 'utf-8')}")
                     current_node.text = field_value
                     logger.debug(f"Current node after setting: {ElementTree.tostring(current_node, 'utf-8')}")
-
 
     # -------------------------------------------------------------------------
     @requires(read_only=False)
@@ -1129,13 +1047,94 @@ class OSCAL(LoggableMixin):
         return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)
 
     # -------------------------------------------------------------------------
+    def import_tree(self, _seen=None):
+        """Return a JSON-serializable nested dict of this object and all imports."""
+        if _seen is None:
+            _seen = set()
+        _seen.add(id(self))
+
+        node = {
+            "model":         self.model,
+            "title":         self.title,
+            "published":     self.published,
+            "version":       self.version,
+            "last_modified": self.last_modified,
+            "oscal_version": self.oscal_version,
+            "remarks":       self.remarks,
+            "imports":       []
+        }
+
+        for entry in self.import_list:
+            child_obj = entry["object"]
+            child_node = {
+                "href_original": entry.get("href_original"),
+                "href_valid":    entry.get("href_valid"),
+                "status":        str(entry.get("status")),
+                "valid":         entry.get("valid"),
+                "remote":        entry.get("remote"),
+                "cached":        entry.get("cached"),
+            }
+            if child_obj is not None and id(child_obj) not in _seen:
+                child_node.update(child_obj.import_tree(_seen))
+            else:
+                child_node["model"]    = child_obj.model if child_obj else None
+                child_node["title"]    = child_obj.title if child_obj else None
+                child_node["circular"] = child_obj is not None
+                child_node["imports"]  = []
+
+            node["imports"].append(child_node)
+
+        self.import_tree = node
+        return node
+
     # -------------------------------------------------------------------------
-    def serialize(self, format: str = "") -> str:
+    def walk_imports(self, visitor_fn, depth=0, _seen=None):
+        """
+        Walks the import tree, applying the visitor function to each entry.
+        This is a depth-first traversal that tracks seen objects to avoid infinite loops."""
+        if _seen is None:
+            _seen = set()
+        for entry in self.import_list:
+            obj = entry["object"]
+            if obj is None:
+                continue
+            obj_id = id(obj)
+            if obj_id in _seen:
+                continue
+            _seen.add(obj_id)
+            visitor_fn(entry, depth)
+            obj.walk_imports(visitor_fn, depth + 1, _seen)
+
+    # -------------------------------------------------------------------------
+    def find_by_uuid(self, uuid, _seen=None):
+        """
+        Method to search the import tree for an object with a matching UUID. 
+        This is a depth-first search that tracks seen objects to avoid infinite loops.
+        """
+        if _seen is None:
+            _seen = set()
+        for entry in self.import_list:
+            obj = entry["object"]
+            if obj is None:
+                continue
+            obj_id = id(obj)
+            if obj_id in _seen:
+                continue
+            _seen.add(obj_id)
+            result = obj.find_by_uuid(uuid, _seen)
+            if result:
+                return result
+        return None
+
+
+    # -------------------------------------------------------------------------
+    def serialize(self, format: str = "", pretty_print: bool = False) -> str:
         """
         Serializes the current content to a string in the specified format.
         Parameters:
         - format (str): The target format for serialization ("xml", "json", or "yaml")
             Defaults to the original format of the content if not specified.
+        - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
 
         Returns:
         - str: The serialized content as a string.
@@ -1148,27 +1147,31 @@ class OSCAL(LoggableMixin):
             logger.error(f"The requested format for serialization ({format}) is not an OSCAL format.")
             return ""
 
-        if not self.valid_oscal:
-            logger.error("Content is not valid OSCAL. Cannot serialize.")
-            return ""
-
-        # if format == self.original_format:
-
         if format == "xml":
-            # if self._tree is None:
-            return self.xml_serializer()
+            if not self._sync(target_format="xml"):
+                logger.error("Failed to sync content for XML serialization.")
+                return ""
+            return self._xml_serializer(pretty_print=pretty_print)
         elif format == "json":
-            return self.json_serializer()
+            if not self._sync(target_format="json"):
+                logger.error("Failed to sync content for JSON serialization.")
+                return ""
+            return self._json_serializer(pretty_print=pretty_print)
         elif format in ("yaml", "yml"):
-            return self.yaml_serializer()
+            if not self._sync(target_format="yaml"):
+                logger.error("Failed to sync content for YAML serialization.")
+                return ""
+            return self._yaml_serializer(pretty_print=pretty_print)
         else:
             logger.error(f"Unsupported format for serialization: {format}")
             return ""
 
     # -------------------------------------------------------------------------
-    def xml_serializer(self) -> str:
+    def _xml_serializer(self, pretty_print: bool = False) -> str:
         """
         Serializes the current XML tree to a string.
+        Parameters:
+        - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized XML content as a string.
         """
@@ -1201,35 +1204,36 @@ class OSCAL(LoggableMixin):
         return out_string
 
     # -------------------------------------------------------------------------
-    def json_serializer(self) -> str:
+    def _json_serializer(self, pretty_print: bool = False) -> str:
         """
         Serializes the current dict to a string.
+        Parameters:
+        - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized JSON content as a string.
         """
         logger.debug("Serializing dict for string output as JSON.")
-        out_string = json.dumps(self._dict, indent=INDENT, sort_keys=False)
+        out_string = json.dumps(self._dict, indent=INDENT if pretty_print else None, sort_keys=False)
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
 
     # -------------------------------------------------------------------------
-    def yaml_serializer(self) -> str:
+    def _yaml_serializer(self, pretty_print: bool = False) -> str:
         """
         Serializes the current dict to a string.
+        Parameters:
+        - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized YAML content as a string.
         """
         logger.debug("Serializing dict for string output as YAML.")
-        out_string: str = yaml.dump(self._dict, indent=INDENT, sort_keys=False)  # type: ignore[assignment]
+        out_string: str = yaml.dump(self._dict, indent=INDENT if pretty_print else None, sort_keys=False)  # type: ignore[assignment]
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
 
-
-
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 class ImportState(str, Enum):
     READY        = "ready"        # The content is valid
     NOT_LOADED   = "not-loaded"   # The content has not been loaded
@@ -1246,6 +1250,7 @@ def append_props(parent_node: ElementTree.Element, props: list):
     """
     for prop in props:
         append_prop(parent_node, prop)
+
 # -------------------------------------------------------------------------
 def append_prop(parent_node: ElementTree.Element, prop: dict):
     """
@@ -1275,6 +1280,7 @@ def append_prop(parent_node: ElementTree.Element, prop: dict):
             except ElementTree.ParseError as e:
                 logger.error(f"Error parsing remarks HTML: {e}")
                 remarks_node.text = prop.get('remarks', '')
+
 # -----------------------------------------------------------------------------
 def append_links(parent_node: ElementTree.Element, links: list):
     """
@@ -1285,6 +1291,7 @@ def append_links(parent_node: ElementTree.Element, links: list):
     """
     for link in links:
         append_link(parent_node, link)
+
 # -----------------------------------------------------------------------------
 def append_link(parent_node: ElementTree.Element, link: dict):
     """
@@ -1304,9 +1311,7 @@ def append_link(parent_node: ElementTree.Element, link: dict):
     if 'text' in link:
         text_node = ElementTree.SubElement(link_node, "text")
         text_node.text = link.get('text', '')
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# NOTE: oscal_date_time_with_timezone is imported from oscal_datatypes (moved there to avoid circular imports)
+
 # -----------------------------------------------------------------------------
 def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
     """
@@ -1329,172 +1334,6 @@ def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> O
         return ElementTree.fromstring(html_str.encode('utf_8'))
     else:
         return None
-# -------------------------------------------------------------------------
-
-# -------------------------------------------------------------------------
-def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
-    """
-    Converts HTML back to OSCAL markup-line or markup-multiline formatted markdown.
-
-    This function handles the reverse conversion from HTML to the specific markdown subset
-    defined in the NIST Metaschema specification for OSCAL markup-line and markup-multiline data types.
-
-    Args:
-        html_text (str): The HTML text to convert
-        multiline (bool): If True, generates markup-multiline (supports block elements).
-                         If False, generates markup-line (inline elements only).
-
-    Returns:
-        str: Markdown representation of the HTML text
-
-    References:
-        https://pages.nist.gov/metaschema/specification/datatypes/#markup-multiline
-        https://pages.nist.gov/metaschema/specification/datatypes/#markup-line
-    """
-    import re
-
-    if not html_text:
-        return ""
-
-    markdown = html_text.strip()
-
-    # Handle OSCAL parameter insertion: <insert type="param" id-ref="id"/> -> {{ insert: param, id }}
-    markdown = re.sub(r'<insert\s+type="([^"]+)"\s+id-ref="([^"]+)"\s*/>',
-                      r'{{ insert: \1, \2 }}', markdown)
-
-    if multiline:
-        # Handle block-level elements first (only for markup-multiline)
-
-        # Headers: <h1>text</h1> -> # text
-        for level in range(1, 7):
-            markdown = re.sub(f'<h{level}>([^<]+)</h{level}>',
-                             f'{"#" * level} \\1\n\n', markdown)
-
-        # Code blocks: <pre>code</pre> -> ```code```
-        def fix_code_block(match):
-            content = match.group(1)
-            return f'\n\n```\n{content}\n```\n\n'
-        markdown = re.sub(r'<pre>([^<]*)</pre>', fix_code_block, markdown, flags=re.DOTALL)
-
-        # Tables: Convert HTML table back to markdown table
-        def convert_html_table(match):
-            table_html = match.group(0)
-
-            # Extract header row
-            header_match = re.search(r'<tr>((?:<th[^>]*>[^<]*</th>)+)</tr>', table_html)
-            if not header_match:
-                return table_html  # Not a valid table structure
-
-            header_cells = re.findall(r'<th[^>]*>([^<]*)</th>', header_match.group(1))
-
-            # Extract alignment information
-            alignments = []
-            for th_match in re.finditer(r'<th[^>]*align="([^"]*)"[^>]*>', header_match.group(1)):
-                alignments.append(th_match.group(1))
-
-            # Extract data rows
-            data_rows = []
-            for row_match in re.finditer(r'<tr>((?:<td[^>]*>.*?</td>)+)</tr>', table_html, flags=re.DOTALL):
-                cells = re.findall(r'<td[^>]*>(.*?)</td>', row_match.group(1), flags=re.DOTALL)
-                data_rows.append(cells)
-
-            if not header_cells or not data_rows:
-                return table_html
-
-            # Build markdown table
-            table_lines = []
-
-            # Header row
-            table_lines.append('| ' + ' | '.join(header_cells) + ' |')
-
-            # Separator row with alignment
-            separators = []
-            for i, header in enumerate(header_cells):
-                align = alignments[i] if i < len(alignments) else 'left'
-                if align == 'center':
-                    separators.append(':---:')
-                elif align == 'right':
-                    separators.append('---:')
-                else:
-                    separators.append('---')
-            table_lines.append('| ' + ' | '.join(separators) + ' |')
-
-            # Data rows
-            for row in data_rows:
-                # Pad row to match header length
-                while len(row) < len(header_cells):
-                    row.append('')
-                table_lines.append('| ' + ' | '.join(row[:len(header_cells)]) + ' |')
-
-            return '\n\n' + '\n'.join(table_lines) + '\n\n'
-
-        # Match HTML tables
-        markdown = re.sub(r'<table>.*?</table>', convert_html_table, markdown, flags=re.DOTALL)
-
-        # Blockquotes: <blockquote>text</blockquote> -> > text
-        markdown = re.sub(r'<blockquote>([^<]+)</blockquote>', r'\n\n> \1\n\n', markdown)
-
-        # Lists - unordered: <ul><li>text</li></ul> -> - text
-        markdown = re.sub(r'<ul><li>([^<]+)</li></ul>', r'\n\n- \1\n', markdown)
-
-        # Lists - ordered: <ol><li>text</li></ol> -> 1. text
-        markdown = re.sub(r'<ol><li>([^<]+)</li></ol>', r'\n\n1. \1\n', markdown)
-
-        # Paragraphs: <p>text</p> -> text (with newlines)
-        markdown = re.sub(r'<p>([^<]+)</p>', r'\1\n\n', markdown)
-
-    # Handle inline formatting (for both markup types)
-
-    # Images: <img alt="alt" src="src" title="title"/> -> ![alt](src "title")
-    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>',
-                      r'![\1](\2 "\3")', markdown)
-    markdown = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s*/>',
-                      r'![\1](\2)', markdown)
-
-    # Links: <a href="url" title="title">text</a> -> [text](url "title")
-    markdown = re.sub(r'<a\s+href="([^"]+)"\s+title="([^"]*)">([^<]+)</a>',
-                      r'[\3](\1 "\2")', markdown)
-    markdown = re.sub(r'<a\s+href="([^"]+)">([^<]+)</a>',
-                      r'[\2](\1)', markdown)
-
-    # Strong emphasis: <strong>text</strong> -> **text**
-    markdown = re.sub(r'<strong>([^<]+)</strong>', r'**\1**', markdown)
-
-    # Emphasis: <em>text</em> -> *text*
-    markdown = re.sub(r'<em>([^<]+)</em>', r'*\1*', markdown)
-
-    # Inline code: <code>text</code> -> `text`
-    markdown = re.sub(r'<code>([^<]+)</code>', r'`\1`', markdown)
-
-    # Superscript: <sup>text</sup> -> ^text^
-    markdown = re.sub(r'<sup>([^<]+)</sup>', r'^\1^', markdown)
-
-    # Subscript: <sub>text</sub> -> ~text~
-    markdown = re.sub(r'<sub>([^<]+)</sub>', r'~\1~', markdown)
-
-    # Clean up any remaining HTML tags or artifacts
-    markdown = re.sub(r'<[^>]+>', '', markdown)
-
-    if multiline:
-        # For multiline, preserve line structure but clean up excess whitespace
-        lines = markdown.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            line = line.strip()
-            if line:
-                cleaned_lines.append(line)
-            elif cleaned_lines and cleaned_lines[-1]:  # Add empty lines only between content
-                cleaned_lines.append('')
-
-        # Join lines and clean up multiple consecutive empty lines
-        markdown = '\n'.join(cleaned_lines)
-        markdown = re.sub(r'\n\n\n+', '\n\n', markdown)
-    else:
-        # For inline only, collapse whitespace
-        markdown = re.sub(r'\s+', ' ', markdown)
-
-    markdown = markdown.strip()
-    return markdown
 
 # -------------------------------------------------------------------------
 def _format_table_helper(table_lines: list) -> str:
@@ -1602,7 +1441,7 @@ def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", descripti
     back_matter.append(resource)
 
     return resource
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 # -----------------------------------------------------------------------------
 def create_new_oscal_content(model_name: str, title: str, version: str = "", published: str = "", format: str = "xml" ) -> Optional[OSCAL]:
     """
@@ -1616,8 +1455,7 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
         title (str): The title for the new OSCAL content.
         version (str): Optional content version.
         published (str): Optional publication date.
-        support_db_conn (str): Optional database connection for OSCAL Support instance.
-        support_db_type (str): Database type (default: "sqlite3").
+        format (str): The desired format for the new content ("xml", "json", "yaml"). Defaults to "xml".
 
     Returns:
         Optional[OSCAL]: The appropriate OSCAL subclass instance, or None on failure.
@@ -1637,14 +1475,12 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
 
     return ""
 
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 # -----------------------------------------------------------------------------
 def new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':
     print("OSCAL Content Class Module. This is not intended to be run as a stand-alone module.")
 

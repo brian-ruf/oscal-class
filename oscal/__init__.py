@@ -1,6 +1,5 @@
 from loguru import logger
-
-# # Disable library logging by default - callers can enable with:
+# # Disable logging for oscal library by default. Callers can enable with:
 # #   from loguru import logger
 # #   logger.enable("oscal")
 logger.disable("oscal")
@@ -8,7 +7,6 @@ logger.disable("oscal")
 from . import oscal_support  # noqa: E402
 from . import oscal_content # noqa: E402
 from . import oscal_datatypes # noqa: E402
-from . import oscal_markdown # noqa: E402
 from . import oscal_controls # noqa: E402
 from . import oscal_assessment # noqa: E402
 from . import oscal_implementation # noqa: E402
@@ -32,7 +30,7 @@ from typing import Optional  # noqa: E402
 _MODEL_CLASS_MAP = {
     "catalog": Catalog,
     "profile": Profile,
-    "mapping": Mapping,
+    "mapping-collection": Mapping,
     "component-definition": ComponentDefinition,
     "system-security-plan": SSP,
     "assessment-plan": AssessmentPlan,
@@ -131,7 +129,6 @@ __all__ = [
     "oscal_support",
     "oscal_content",
     "oscal_datatypes",
-    "oscal_markdown",
     "oscal_controls",
     "oscal_implementation",
     "oscal_assessment",

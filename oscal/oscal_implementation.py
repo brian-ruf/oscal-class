@@ -5,7 +5,6 @@ from loguru import logger
 from xml.etree import ElementTree
 
 from .oscal_content import *
-from .oscal_markdown import oscal_markdown_to_html
 from .oscal_content import oscal_markdown_to_html_tree
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

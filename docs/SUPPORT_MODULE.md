@@ -1,10 +1,6 @@
 ## The OSCAL Support Module
 
-The `OSCAL_Support` class creates and maintains a database that contains all of the NIST-published support files for all OSCAL versions and models. This is referred to in documentation as the _OSCAL Support Module_.
 
-The `OSCAL` class is able to validate and convert any OSCAL version and module where the NIST-published support files are present in the _OSCAL Support Model_. No Internet connection required.
-
-As NIST publishes additional modules, they can be added to the OSCAL Support Module. An Internet connect is rquired to update the OSCAL Support Module; however, once updated, it can be copied to any computer for use.
 
 ### Designed for Air Gapped Environments
 

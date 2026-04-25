@@ -1,16 +1,13 @@
 """
-Functions specific to OSCAL control objects. (Catalog, Profile, and Controls)
+Functions specific to OSCAL control objects. (Catalog, Profile, and Mapping)
 """
 from loguru import logger
 from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree
 
-from ruf_common.lfs import getfile
-from ruf_common import network
 from .oscal_content import * 
-from .oscal_markdown import oscal_markdown_to_html
-
+from .oscal_converters import oscal_markdown_to_html
 
 """
 PROFILES **** <<<<====---- ****
@@ -23,7 +20,6 @@ PROFILES **** <<<<====---- ****
     and a controls tree that tracks the resolved controls and their sources.
 
 """
-
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Catalog(OSCAL):

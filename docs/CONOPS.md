@@ -1,12 +1,13 @@
-# OSCAL Class Concept of Operations (ConOps)
+# Concept of Operations (ConOps)
 
-The core modules are:
-- `oscal_content_class.py`: A class to contain and manage an OSCAL artifact. One instance per artifact.
-- `oscal_support_class.py`: A class to manage tanages the NIST-published OSCAL support files. One instance per application. 
+The OSCAL Class is designed to support any version of OSCAL and all published models. It is further designed to be used in air gapped environments where Internet connectivity may not be available.
 
-## `oscal_content_class` ConOps
+The `OSCAL_Support` class creates and maintains a database that contains all of the NIST-published support files for all OSCAL versions and models. This is referred to in documentation as the _OSCAL Support Module_.
 
-This module includes the `OSCAL` class as well as several stand-alone functions that support processing of OSCAL content. The `OSCAL` class is designed to exist as one class instance per OSCAL document.
+The `OSCAL` class is able to validate and convert any OSCAL version and module where the NIST-published support files are present in the _OSCAL Support Model_. No Internet connection required.
+
+As NIST publishes additional models and OSCAL versions, they can be added to the OSCAL Support Module. An Internet connect is rquired to update the OSCAL Support Module; however, once updated, it can be copied to any computer for use.
+
 
 ### Class Initiation:
 
@@ -17,15 +18,13 @@ This module includes the `OSCAL` class as well as several stand-alone functions 
 
 Content is acquired by the instance in one of two ways:
 1. **Passed Directly**: When valid OSCAL XML, JSON or YAML content is passed directly via the `content` attribute.
-1. **Loaded from File**: When valid OSCAL XML, JSON, or YAML content is present in an accessible file specified via the `filename` attribute.
-
-
+1. **Loaded from File or URL**: When valid OSCAL XML, JSON, or YAML content is present in an accessible file specified via the `filename` attribute.
 
 
 #### Validate Content
 
 Once acquired, content is interogated as follows:
-1. Is the content a recognized OSCAL format?
+1. Is the content a recognized OSCAL format (XML, JSON or YAML)?
 1. Is the content well formed in its native format?
 1. Does the content have a single `/*/metadata/oscal-version` field?
 1. Is the value in the `oscal-version`field a supported* OSCAL version?

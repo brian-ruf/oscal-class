@@ -40,6 +40,12 @@ class TestDetectModelRootKey:
     def test_component_definition(self):
         assert _detect_model_root_key({"component-definition": {}}) == "component-definition"
 
+    def test_mapping(self):
+        assert _detect_model_root_key({"mapping": {}}) == "mapping"
+
+    def test_mapping_collection(self):
+        assert _detect_model_root_key({"mapping-collection": {}}) == "mapping-collection"
+
     def test_unknown_returns_none(self):
         assert _detect_model_root_key({"not-oscal": {}}) is None
 
@@ -114,6 +120,77 @@ class TestResequenceOscal:
         data = {"catalog": {}}
         result = resequence_oscal(data)
         assert result == {"catalog": {}}
+
+    def test_mapping_root_key_comes_first(self):
+        data = {
+            "$schema": "http://example.com/schema",
+            "mapping": {
+                "mappings": [],
+                "provenance": {},
+                "metadata": {},
+                "uuid": "map-root-1",
+            },
+        }
+        result = resequence_oscal(data)
+        keys = list(result.keys())
+        assert keys[0] == "mapping"
+
+        mapping_keys = list(result["mapping"].keys())
+        assert mapping_keys.index("uuid") < mapping_keys.index("metadata")
+        assert mapping_keys.index("metadata") < mapping_keys.index("provenance")
+        assert mapping_keys.index("provenance") < mapping_keys.index("mappings")
+
+    def test_mapping_collection_and_maps_resequenced(self):
+        data = {
+            "mapping-collection": {
+                "mappings": [
+                    {
+                        "target-resource": {"href": "b", "type": "profile"},
+                        "maps": [
+                            {
+                                "targets": [{"id-ref": "ac-1", "type": "control"}],
+                                "relationship": "subset-of",
+                                "sources": [{"id-ref": "ac-1", "type": "control"}],
+                                "uuid": "entry-1",
+                            }
+                        ],
+                        "source-resource": {"href": "a", "type": "catalog"},
+                        "uuid": "mapping-1",
+                    }
+                ],
+                "provenance": {
+                    "mapping-description": "desc",
+                    "status": "draft",
+                    "matching-rationale": "semantic",
+                    "method": "human",
+                },
+                "metadata": {
+                    "version": "1.0",
+                    "last-modified": "2026-01-01T00:00:00Z",
+                    "oscal-version": "1.2.1",
+                    "title": "Mapping",
+                },
+                "uuid": "root-1",
+            }
+        }
+
+        result = resequence_oscal(data)
+        root_keys = list(result["mapping-collection"].keys())
+        assert root_keys.index("uuid") < root_keys.index("metadata")
+        assert root_keys.index("metadata") < root_keys.index("provenance")
+        assert root_keys.index("provenance") < root_keys.index("mappings")
+
+        mapping_obj = result["mapping-collection"]["mappings"][0]
+        mapping_keys = list(mapping_obj.keys())
+        assert mapping_keys.index("uuid") < mapping_keys.index("source-resource")
+        assert mapping_keys.index("source-resource") < mapping_keys.index("target-resource")
+        assert mapping_keys.index("target-resource") < mapping_keys.index("maps")
+
+        map_entry = mapping_obj["maps"][0]
+        map_keys = list(map_entry.keys())
+        assert map_keys.index("uuid") < map_keys.index("relationship")
+        assert map_keys.index("relationship") < map_keys.index("sources")
+        assert map_keys.index("sources") < map_keys.index("targets")
 
     def test_nested_metadata_keys_resequenced(self):
         # OSCAL canonical order for metadata (from COMMON_METADATA_KEYS):

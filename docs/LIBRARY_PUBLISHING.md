@@ -1,7 +1,8 @@
 # Publishing to PyPI
 
-Releases are published automatically to [PyPI](https://pypi.org/project/ruf-common/)
-by GitHub Actions when a GitHub Release is created. No manual upload steps are required.
+_INTENDED FOR INTERNAL USE_
+
+Releases are published automatically to [PyPI](https://pypi.org/project/ruf-common/) via GitHub Actions when a GitHub Release is created. No manual upload steps are required.
 
 ## Prerequisites (one-time setup)
 

@@ -1,19 +1,13 @@
 # OSCAL Class
 
-A class for creation, manipulation, validation and format convertion of OSCAL content.
+A class for creation, management, validation and format convertion of OSCAL content.
 All published OSCAL versions, formats and models can be validated and converted.
-Creation and manipulation is OSCAL 1.2.1 compliant where implemented.
+Creation and management is OSCAL 1.2.1 compliant.
 
 OSCAL XML, JSON and YAML formats are supported.
-This class ingests and validates OSCAL content in its native format using the appropriate
-NIST-published OSCAL schema.
+This class ingests, validates and manages OSCAL content in its native format.
 
-Conversion between XML and JSON in either direction uses the NIST-published conversion XSLT stylesheets.
-Conversion between JSON and YAML in either direction uses internal conversion via Python dictionaries.
-
-In the fFuture this library will perform validation and conversion using the NIST-published
-OSCAL metaschema definitions, which include additional rules not handled by the XML and JSON schemas.
-
+Conversion between XML and JSON in either direction uses NIST-published OSCAL support files to ensure accuracy.
 
 
 ## OSCAL Class States
@@ -23,7 +17,7 @@ The OSCAL Class can have the following states.
 - valid or not valid (`self.valid`)
 - local or remote (`self.remote`)
     - if remote (always read-only):
-        - cached locally or not (self.cached)
+        - cached* locally or not (self.cached)
             - if cached locally:
                 - cache is valid or expired
     - if local:
@@ -35,8 +29,11 @@ The OSCAL Class can have the following states.
     - native JSON or YAML, XML output
         - not synced requires syncing first 
 
+* local caching of remote content is not yet implemented.
 
 ## The Import List
+
+Each OSCAL object maints a `dict` of its imported files in the `.import_list` attribute. This `dict` uses the following structure:
 
 ```python
 self.import_list = [
@@ -52,8 +49,8 @@ self.import_list = [
         "model" : "profile",                                # "profile" or "catalog"
         "status": ImportStatus.FAILED,
         "error" : "",                               # why it failed (empty if loaded)
-        "object": OSCAL object if loaded, else None,
-        "import_list": [ ... ]
+        "object": OSCAL object if loaded, else None
     } 
-] # An array of dictionaries representing imported OSCAL content
+] 
 ```
+
