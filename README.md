@@ -110,3 +110,18 @@ oscal_catalog_obj = oscal_content_class.OSCAL(content=oscal_content)
 
 ```
 
+## Use of AI for Creating/Maintaining This Library
+
+**No portion of this library was "vibe coded".**
+
+Early versions of this library were written entirely without the use of AI tools.
+
+Claude/Claude Code and GitHub Co-pilot have been used in a manner similar to pair-programming. This includes:
+- options analysis when planning approaches
+- improving alignment with "pythonic" best practices
+- targeted code reviews
+- resolving linter issues
+- aid in debugging and testing
+- drafting individual functions/methods that I refine and test 
+- drafting portions of documentation
+- drafting/creating unit tests

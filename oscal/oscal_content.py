@@ -7,6 +7,7 @@
     See https://github.com/brian-ruf/oscal-class for more details.
 
 """
+from __future__         import annotations
 import os
 import json
 import yaml
@@ -20,7 +21,9 @@ from datetime           import datetime
 from enum               import Enum
 from pathlib            import PurePosixPath, PureWindowsPath
 from urllib.parse       import urlparse
+from urllib.request     import urlopen
 from xml.etree          import ElementTree
+from dataclasses        import dataclass, field
 
 from ruf_common.logging import LoggableMixin
 from ruf_common.network import download_file
@@ -37,8 +40,8 @@ INDENT = 2 # Number of spaces to use for indentation in pretty-printed output
 _SUPPORTED_URI_SCHEMES = {"http", "https", "file"}
 # URI schemes we recognise but cannot fetch yet
 _KNOWN_URI_SCHEMES = {"ftp", "ftps", "sftp", "s3", "gs", "az"}
-# Valid OSCAL file extensions
-_VALID_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
+# URI schemes we can handle with Python stdlib tooling (no third-party SDKs)
+_SIMPLE_URI_SCHEMES = {"http", "https", "file", "ftp", "data"}
 # OSCAL Default Namespace for XML processing
 _NSMAP = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
 
@@ -144,10 +147,10 @@ class OSCAL(LoggableMixin):
         logger.debug("Initializing common OSCAL class properties...")
 
         # Content Location
-        self._origin      : str = ""   # Origin of the content (e.g. "from_content", "fetched", "new")
-        self.href_original: str = ""   # Original href as provided
-        self.href_valid   : str = ""   # valid href (may be different than original)
-        self.href_local   : str = ""   # local copy (cached copy if remote)
+        self._origin      : str = ""     # Origin of the content (e.g. "from_content", "fetched", "new")
+        self.href         : str = ""     # Working href
+        self.href_valid   : bool = False # Validated href that was successfully loaded (may be different than original if original failed and was retried with a new href)
+        self._refs: list[OscalRef] = []
 
         # Class States
         self.valid    : bool = False # content passed OSCAL validation
@@ -207,25 +210,25 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @classmethod
-    def from_href(cls, href: str):
-        """Load OSCAL content from a URI.
-        
-        May be called on OSCAL directly (when model type is unknown) or on a
-        specific model class. When called on OSCAL, dispatches to the appropriate
-        subclass after inspecting the content.
-        
-        Args:
-            href: URI identifying the OSCAL content to load.
+    def load(cls, source: str | dict | OscalRef | list):
         """
+        Load OSCAL content from one or more URIs.
+
+        Accepts:
+            - str               : bare href
+            - OscalRef          : already-typed ref
+            - list[str|OscalRef]: mixed list of any of the above
+
+        Returns self to allow method chaining.
+        """
+
         instance = cls.__new__(cls)
         instance.__init_common__()
         instance._origin       = "fetched"
-        instance.href_original = href
-        # Fetch the content and classify the source
-        content = ""
-        instance._classify_source()
-        if instance.source_supported:
-            content = instance._load_source()
+        instance._refs = _normalize_refs(source)
+
+        content = load_content(instance._refs) 
+        
         instance.initial_validation(content)
         return instance
 
@@ -285,100 +288,6 @@ class OSCAL(LoggableMixin):
         return ret_value
 
     # -------------------------------------------------------------------------
-    def _load_source(self) -> str:
-        """Fetch or read content from self.source based on classification.
-
-        Returns the raw file content as a string, or empty string on failure.
-        """
-        src = self.source.strip()
-        content = ""
-
-        try:
-            if self.source_type == "uri" and self.source_scheme == "file":
-                # file:// URI → convert to local path
-                local_path = urlparse(src).path
-                logger.info(f"Loading controls from file:// URI: {local_path}")
-                content = getfile(local_path)
-            elif self.source_type == "uri" and self.source_scheme in {"http", "https"}:
-                logger.info(f"Loading controls from URL: {src}")
-                content = download_file(src)
-            elif self.source_type == "file":
-                logger.info(f"Loading controls from file: {src}")
-                content = getfile(src)
-            else:
-                logger.warning(f"No loader implemented for source: {src} "
-                               f"(type={self.source_type}, scheme={self.source_scheme})")
-                return ""
-        except Exception as e:
-            logger.error(f"Failed to load source '{src}': {e}")
-            return ""
-
-        if not content:
-            logger.error(f"Source returned no content: {src}")
-            return ""
-
-        return content
-
-    # -------------------------------------------------------------------------
-    def _classify_source(self):
-        """Classify self.source as a URI, local/network file path, or unknown.
-
-        Sets self.source_type, self.source_scheme, and self.source_supported.
-        Logs a warning for any source type we recognise but cannot handle yet,
-        and for anything we cannot classify at all.
-        """
-        src = self.source.strip()
-
-        # --- Windows UNC path (\\server\share\...) ---
-        if src.startswith("\\\\"):
-            self.source_type = "file"
-            self.source_scheme = ""
-            self.source_supported = self._has_valid_extension(src)
-            if not self.source_supported:
-                logger.warning(f"UNC path does not end with a supported extension "
-                               f"({', '.join(_VALID_EXTENSIONS)}): {src}")
-            return
-
-        # --- Try parsing as a URI ---
-        parsed = urlparse(src)
-
-        if parsed.scheme and len(parsed.scheme) > 1:
-            # Has a multi-char scheme → treat as URI
-            # (single-char "scheme" is likely a Windows drive letter, e.g. C:)
-            self.source_type = "uri"
-            self.source_scheme = parsed.scheme.lower()
-
-            if self.source_scheme in _SUPPORTED_URI_SCHEMES:
-                self.source_supported = self._has_valid_extension(parsed.path)
-                if not self.source_supported:
-                    logger.warning(f"URI does not end with a supported extension "
-                                   f"({', '.join(_VALID_EXTENSIONS)}): {src}")
-            elif self.source_scheme in _KNOWN_URI_SCHEMES:
-                self.source_supported = False
-                logger.warning(f"URI scheme '{self.source_scheme}' is recognised "
-                               f"but not yet supported: {src}")
-            else:
-                self.source_supported = False
-                logger.warning(f"Unknown URI scheme '{self.source_scheme}': {src}")
-            return
-
-        # --- Local / network file path (POSIX, Windows drive-letter, relative) ---
-        self.source_type = "file"
-        self.source_scheme = ""
-        self.source_supported = self._has_valid_extension(src)
-        if not self.source_supported:
-            logger.warning(f"File path does not end with a supported extension "
-                           f"({', '.join(_VALID_EXTENSIONS)}): {src}")
-
-    # -------------------------------------------------------------------------
-    @staticmethod
-    def _has_valid_extension(path: str) -> bool:
-        """Return True if *path* ends with .xml, .json, .yaml, or .yml (case-insensitive)."""
-        # Use PurePosixPath to extract suffix; works on URL paths too
-        suffix = PurePosixPath(path).suffix.lower()
-        return suffix in _VALID_EXTENSIONS
-
-    # -------------------------------------------------------------------------
     def _build_import_tree(self, new_href: str = "") -> bool:
         """
         Internal method to build the structure of imports for efficient access.
@@ -396,10 +305,10 @@ class OSCAL(LoggableMixin):
         # classify and load the source
         if self.source != "":
             logger.debug(f"Building Import Tree for {self.source}")
-            self._classify_source()
+            classify_source() # TODO: Implement classify_source() to determine the source type and scheme, and set self.source_supported, self.source_type, and self.source_scheme accordingly
             if self.source_supported:
                 logger.debug(f"Source classified as type '{self.source_type}' with scheme '{self.source_scheme}'. Attempting to load content.")
-                content = self._load_source()
+                content = load_source() # TODO: Implement load_source() to fetch content based on the classified source type and scheme
                 if content:
                     oscal_file = OSCAL(content=content)
                     if oscal_file.is_valid():
@@ -1234,12 +1143,202 @@ class OSCAL(LoggableMixin):
         return out_string
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Data Classes
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ImportState(str, Enum):
     READY        = "ready"        # The content is valid
     NOT_LOADED   = "not-loaded"   # The content has not been loaded
     INVALID      = "invalid"      # The content is not valid
     EXPIRED      = "expired"      # The content is valid, but cached copy has expired
 
+# -------------------------------------------------------------------------
+@dataclass
+class OscalRef:
+    """A single resolved reference: an href with an optional media type."""
+    href: str
+    media_type: str | None = None
+    hashes: list[dict] | None = None        # promoted from _extra
+    source_type: str = field(default="unknown", init=False, repr=False, compare=False)
+    source_scheme: str = field(default="", init=False, repr=False, compare=False)
+    source_supported: bool = field(default=False, init=False, repr=False, compare=False)
+    _extra: dict = field(default_factory=dict, repr=False, compare=False)
+
+    def __repr__(self) -> str:
+        if self.media_type:
+            return f"OscalRef({self.href!r}, {self.media_type!r})"
+        return f"OscalRef({self.href!r})"
+
+        # {"href": "<original_href>", "media-type": "<media_type>", "valid": True/False, "error": "<error_message_if_invalid>"}
+
+# -------------------------------------------------------------------------
+def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
+    if isinstance(source, str):
+        return [OscalRef(href=source)]
+    if isinstance(source, OscalRef):
+        return [source]
+    if isinstance(source, dict):
+        href = source.get("href")
+        if not href:
+            raise ValueError(f"ref dict missing required 'href' key: {source!r}")
+        known = {"href", "media-type", "hashes"}
+        return [OscalRef(
+            href=href,
+            media_type=source.get("media-type"),
+            hashes=source.get("hashes"),
+            _extra={k: v for k, v in source.items() if k not in known}
+        )]
+    if isinstance(source, list):
+        return [_normalize_refs(item)[0] for item in source]
+    raise TypeError(
+        f"load() expected str, dict, OscalRef, or list — got {type(source).__name__}"
+    )
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Functions
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def load_content(source: str | dict | OscalRef | list, media_type: str = "", only_oscal: bool = False) -> str:
+    """Load content from one or more sources and return the first successful payload."""
+    logger.debug("Loading content from source")
+    refs = _normalize_refs(source)
+
+    for ref in refs:
+        classify_source(ref, only_oscal=only_oscal)
+
+    # Try each ref in order and return the first successfully loaded content.
+    for ref in refs:
+        if not ref.source_supported:
+            logger.warning(f"Skipping unsupported source: {ref.href} "
+                           f"(type={ref.source_type}, scheme={ref.source_scheme})")
+            continue
+
+        content = load_source(ref)
+        if content:
+            return content
+
+        logger.warning(f"Failed to load content from source: {ref.href}")
+
+    logger.error("No usable content could be loaded from provided sources")
+    return ""
+
+def load_source(ref: OscalRef) -> str:
+    """Fetch or read content from a classified OscalRef.
+
+    Returns the raw file content as a string, or empty string on failure.
+    """
+    src = ref.href.strip()
+    content = ""
+
+    try:
+        if ref.source_type == "uri" and ref.source_scheme == "file":
+            # file:// URI → convert to local path
+            parsed = urlparse(src)
+            local_path = parsed.path
+            if parsed.netloc:
+                # file://server/share/path -> //server/share/path
+                local_path = f"//{parsed.netloc}{parsed.path}"
+            logger.info(f"Loading controls from file:// URI: {local_path}")
+            content = getfile(local_path)
+        elif ref.source_type == "uri" and ref.source_scheme in {"http", "https"}:
+            logger.info(f"Loading controls from URL: {src}")
+            content = download_file(src, "oscal_remote_content")
+        elif ref.source_type == "uri" and ref.source_scheme in {"ftp", "data"}:
+            # Keep this stdlib-only for simple, unauthenticated URI access.
+            logger.info(f"Loading controls from URI via urllib: {src}")
+            with urlopen(src) as response:  # nosec B310 - intentional unauthenticated read
+                payload = response.read()
+            content = payload.decode("utf-8", errors="replace")
+        elif ref.source_type == "file":
+            logger.info(f"Loading controls from file: {src}")
+            content = getfile(src)
+        else:
+            logger.warning(f"No loader implemented for source: {src} "
+                            f"(type={ref.source_type}, scheme={ref.source_scheme})")
+            return ""
+    except Exception as e:
+        logger.error(f"Failed to load source '{src}': {e}")
+        return ""
+
+    if not content:
+        logger.error(f"Source returned no content: {src}")
+        return ""
+
+    return content
+
+# -------------------------------------------------------------------------
+def load_uri(cls, uri: str, media_type: str = "") -> dict:
+    """Load content from a URI.
+        
+    Args:
+        uri: URI or list of URIs identifying content to load.
+    """
+
+
+# -------------------------------------------------------------------------
+def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
+    """
+    Classify a source reference by path/URI type and Python stdlib accessibility.
+
+    This classification intentionally does not use file extensions because many
+    valid content endpoints (for example APIs) do not have predictable suffixes.
+
+    ref: The OscalRef object containing the URI to classify. 
+        This function will set the source_type, source_scheme, and 
+        source_supported fields on the ref object based on the classification.
+
+    only_oscal: Reserved for future content-shape validation. It currently does
+        not change source classification behavior.
+    """
+    uri = ref.href.strip()
+
+    if not uri:
+        ref.source_type = "unknown"
+        ref.source_scheme = ""
+        ref.source_supported = False
+        logger.warning("Empty source href cannot be classified")
+        return False
+
+    # --- Windows UNC path (\\server\share\...) ---
+    if uri.startswith("\\\\"): # Note: Windows UNC paths start with double backslashes (these are escaped in Python strings, so we check for "\\\\")
+        ref.source_type = "file"
+        ref.source_scheme = ""
+        ref.source_supported = True
+        return True
+
+    # --- UNC-like file path written with forward slashes (//server/share/...) ---
+    if uri.startswith("//"):
+        ref.source_type = "file"
+        ref.source_scheme = ""
+        ref.source_supported = True
+        return True
+
+    # --- Try parsing as a URI ---
+    parsed = urlparse(uri)
+
+    if parsed.scheme and len(parsed.scheme) > 1:
+        # Has a multi-char scheme → treat as URI
+        # (single-char "scheme" is likely a Windows drive letter, e.g. C:)
+        ref.source_type = "uri"
+        ref.source_scheme = parsed.scheme.lower()
+
+        if ref.source_scheme in _SIMPLE_URI_SCHEMES:
+            ref.source_supported = True
+        elif ref.source_scheme in _KNOWN_URI_SCHEMES:
+            ref.source_supported = False
+            logger.warning(f"URI scheme '{ref.source_scheme}' is recognised "
+                            f"but not yet supported: {uri}")
+        else:
+            ref.source_supported = False
+            logger.warning(f"Unknown URI scheme '{ref.source_scheme}': {uri}")
+        return True
+
+    # --- Local / network file path (POSIX, Windows drive-letter, relative) ---
+    ref.source_type = "file"
+    ref.source_scheme = ""
+    ref.source_supported = True
+
+    return True
+
+# -------------------------------------------------------------------------
 # -------------------------------------------------------------------------
 def append_props(parent_node: ElementTree.Element, props: list):
     """
@@ -1479,8 +1578,7 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
 def new_uuid() -> str:
     return str(uuid.uuid4())
 
-
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':
-    print("OSCAL Content Class Module. This is not intended to be run as a stand-alone module.")
+    print("OSCAL Class Module. This is not intended to be run as a stand-alone module.")
 
