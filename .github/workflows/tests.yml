@@ -25,10 +25,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install test dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest loguru python-dateutil markdown PyYAML
+          pip install -e ".[dev]"
 
       - name: Run tests
         run: pytest tests/unit -v
