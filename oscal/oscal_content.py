@@ -649,6 +649,19 @@ class OSCAL(LoggableMixin):
                 logger.error("OSCAL VERSION IS NOT RECOGNIZED: " + oscal_version)
                 status = False
 
+        # TEMPORARY: All content-manipulation methods operate on the XML tree only.
+        # Until dict-based equivalents are added, force JSON/YAML content into XML
+        # as the primary representation so those methods work regardless of load format.
+        # TO REVERSE: delete this block and the logger.debug line that follows it.
+        if status and self.original_format in ("json", "yaml"):
+            logger.debug(f"TEMPORARY: Converting {self.original_format.upper()} to XML primary representation.")
+            if self._sync():
+                self.original_format = "xml"
+                logger.debug("TEMPORARY: Primary format switched to XML.")
+            else:
+                logger.warning("TEMPORARY: dict-to-XML conversion failed; content manipulation methods will not work.")
+        # END TEMPORARY
+
         return status
 
     # -------------------------------------------------------------------------

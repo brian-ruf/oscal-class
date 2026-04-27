@@ -47,7 +47,7 @@ class TestLoads:
         obj = OSCAL.loads(raw)
         assert obj is not None
         assert obj.model == "profile"
-        assert obj.original_format == "json"
+        assert obj.original_format == "xml"  # TEMPORARY: JSON is force-converted to XML on load
         assert obj.title != ""
 
     def test_from_xml_string(self):
@@ -64,7 +64,7 @@ class TestLoads:
         obj = OSCAL.loads(raw)
         assert obj is not None
         assert obj.model == "profile"
-        assert obj.original_format == "yaml"
+        assert obj.original_format == "xml"  # TEMPORARY: YAML is force-converted to XML on load
 
     def test_href_is_stored(self):
         """Optional href argument is preserved on the instance."""
@@ -120,7 +120,7 @@ class TestLoad:
         obj = OSCAL.load(_JSON_PROFILE)
         assert obj is not None
         assert obj.model == "profile"
-        assert obj.original_format == "json"
+        assert obj.original_format == "xml"  # TEMPORARY: JSON is force-converted to XML on load
         assert obj.title != ""
 
     def test_load_xml_file(self):
@@ -135,13 +135,13 @@ class TestLoad:
         obj = OSCAL.load(_YAML_PROFILE)
         assert obj is not None
         assert obj.model == "profile"
-        assert obj.original_format == "yaml"
+        assert obj.original_format == "xml"  # TEMPORARY: YAML is force-converted to XML on load
 
     def test_load_catalog_json(self):
         """load() identifies a catalog model from JSON."""
         obj = OSCAL.load(_JSON_CATALOG)
         assert obj.model == "catalog"
-        assert obj.original_format == "json"
+        assert obj.original_format == "xml"  # TEMPORARY: JSON is force-converted to XML on load
 
     def test_load_catalog_xml(self):
         """load() identifies a catalog model from XML."""
@@ -186,7 +186,7 @@ class TestAcquire:
         ]
         obj = OSCAL.acquire(sources)
         assert obj.model == "profile"
-        assert obj.original_format == "json"  # first in list wins
+        assert obj.original_format == "xml"  # TEMPORARY: JSON is force-converted to XML on load; first in list still wins
 
     def test_acquire_fallback_to_second_source(self):
         """acquire() falls back to a valid source when the first is unreachable."""
@@ -455,7 +455,7 @@ class TestSave:
     def test_save_loaded_json_to_xml(self):
         """A file loaded as JSON can be saved in XML format."""
         obj = self._load_profile()
-        assert obj.original_format == "json"
+        assert obj.original_format == "xml"  # TEMPORARY: JSON is force-converted to XML on load
         with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as fh:
             path = fh.name
         try:
@@ -483,14 +483,15 @@ class TestSave:
 
     def test_save_uses_original_format_when_none_specified(self):
         """save() falls back to original_format when format= is omitted."""
+        # TEMPORARY: JSON source is force-converted to XML on load, so dump() with no
+        # format argument now produces XML. Update to JSON when temp conversion is removed.
         obj = self._load_profile()
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as fh:
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as fh:
             path = fh.name
         try:
-            result = obj.dump(path)  # no format argument
+            result = obj.dump(path)  # no format argument — uses original_format ("xml")
             assert result is True
-            with open(path) as fh:
-                data = json.load(fh)
-            assert "profile" in data
+            reloaded = OSCAL.load(path)
+            assert reloaded.model == "profile"
         finally:
             os.unlink(path)
