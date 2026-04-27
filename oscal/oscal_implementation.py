@@ -1,6 +1,7 @@
 """
 Functions specific to OSCAL implementation objects. (cDef and SSP)
 """
+from __future__ import annotations
 from loguru import logger
 from xml.etree import ElementTree
 
