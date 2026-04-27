@@ -2,7 +2,7 @@
 
 _INTENDED FOR INTERNAL USE_
 
-Releases are published automatically to [PyPI](https://pypi.org/project/ruf-common/) via GitHub Actions when a GitHub Release is created. No manual upload steps are required.
+Releases are published automatically to [PyPI](https://pypi.org/project/oscal/) via GitHub Actions when a GitHub Release is created. No manual upload steps are required.
 
 ## Prerequisites (one-time setup)
 
@@ -48,8 +48,8 @@ package and uploads it to PyPI automatically.
 
 ### 5. Verify
 
-- **Workflow:** https://github.com/brian-ruf/ruf-common-python/actions
-- **PyPI listing:** https://pypi.org/project/ruf-common/
+- **Workflow:** https://github.com/brian-ruf/oscal-class/actions
+- **PyPI listing:** https://pypi.org/project/oscal/
 
 ## Version numbering guidelines
 
