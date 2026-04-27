@@ -1,0 +1,14 @@
+name: Question
+description: Ask your question
+labels: ['question']
+body:
+  - type: markdown
+    attributes:
+      value: If the [FAQ](https://github.com/brian-ruf/oscal-class/wiki/FAQ) does not answer your question, please ask below.
+  - type: textarea
+    id: question-text
+    attributes:
+      label: Question
+      description: Please enter your question
+    validations:
+      required: true
