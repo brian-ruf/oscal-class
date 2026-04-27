@@ -1,16 +1,14 @@
 """
 OSCAL Support Class
 
-Provides support for managing OSCAL versions and associated support files.
-Designed so that only one instance of the support class is needed within an 
-application, and that instance can be shared across the application for 
-access to OSCAL support files and information.
+Provides support for NIST-published OSCAL support files for all versions of OSCAL.
 
-Includes functionality to fetch OSCAL releases from GitHub, store support files,
-and provide local access to these files for OSCAL processing.
+Always instantiate using the `get_support` function. 
+This ensures that only one instance of the support class exists within the application, and is shared across the application for access to OSCAL support files and information.
 
-Use configure_support() to initialize the support system with settings other than 
-the defaults, and get_support() to retrieve the shared instance.
+The OSCAL content classes rely on this class to perform validation and conversion.
+
+More information: https://github.com/brian-ruf/oscal-class/blob/main/docs/SUPPORT_MODULE.md
 
 """
 import os
@@ -18,6 +16,7 @@ from loguru import logger
 from importlib import resources
 import uuid
 from time import sleep
+from typing import Optional
 from ruf_common.lfs import chkdir, putfile, chkfile
 from ruf_common import helper
 from ruf_common import database
@@ -95,17 +94,28 @@ OSCAL_DATA_TYPES = {}
 support = None
 
 # ========================================================================
-def configure_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
+def configure_support(
+    support_file=SUPPORT_DATABASE_DEFAULT_FILE,
+    db_init_mode="auto",
+    *,
+    db_path: Optional[str] = None,
+    init_mode: Optional[str] = None,
+):
     """
     Configure the OSCAL support system with the specified settings. 
     This should be called before get_support() and before any OSCAL 
     content is loaded if you want to use settings other than the defaults.
     """
+    if db_path is not None:
+        support_file = db_path
+    if init_mode is not None:
+        db_init_mode = init_mode
+
     logger.debug(f"Setting up support file: {support_file}")
     global support
 
     if support is None:
-        support = OSCAL_support(support_file, db_init_mode=db_init_mode )
+        support = OSCALSupport(support_file, db_init_mode=db_init_mode)
         cycle = 0
         while not support.ready:
             logger.debug("Waiting for support object to be ready...")
@@ -139,8 +149,13 @@ def get_support():
 
     return support
 
+
+def setup_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
+    """Compatibility helper for update utility scripts."""
+    return configure_support(support_file=support_file, db_init_mode=db_init_mode)
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-class OSCAL_support:
+class OSCALSupport:
     def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto", db_compress_files=COMPRESS_SUPPORT_FILES_IN_DATABASE):
         """
         Initialize OSCAL Support.
@@ -164,7 +179,7 @@ class OSCAL_support:
         self.backend    = None      # If working within an application, this is the backend object
         self._cache     = {}        # Internal cache for support operations
 
-        logger.debug(f"Initializing OSCAL_support with db_type='{db_type}', db_conn='{db_conn}', db_init_mode='{db_init_mode}'")
+        logger.debug(f"Initializing OSCALSupport with db_type='{db_type}', db_conn='{db_conn}', db_init_mode='{db_init_mode}'")
 
         # Handle database initialization based on mode and type
         should_extract = False
@@ -253,7 +268,7 @@ class OSCAL_support:
         self.startup()
     # -------------------------------------------------------------------------
     def __repr__(self) -> str:
-        return f"<OSCAL_support {'✅' if self.ready else '❌'} {self.db_conn} ({self.db_type}) db_init_mode='{self.db_init_mode}' db_state='{self.db_state}' versions={list(self.versions.keys())}>"
+        return f"<OSCALSupport {'✅' if self.ready else '❌'} {self.db_conn} ({self.db_type}) db_init_mode='{self.db_init_mode}' db_state='{self.db_state}' versions={list(self.versions.keys())}>"
     # -------------------------------------------------------------------------
     def __str__(self) -> str:
         return f"OSCAL Support: {list(self.versions.keys())}\n{'✅' if self.ready else '❌'} {self.db_conn} ({self.db_type}'): {self.db_state}"
@@ -274,7 +289,7 @@ class OSCAL_support:
         import zipfile
         try:
             logger.debug("Opening oscal_support.zip from oscal.data...")
-            with resources.open_binary('oscal.data', 'oscal_support.zip') as default_db:
+            with resources.files("oscal.data").joinpath("oscal_support.zip").open("rb") as default_db:
                 with zipfile.ZipFile(default_db) as z:
                     member = "oscal_support.db"
                     if member in z.namelist():
@@ -394,7 +409,7 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def update(self, fetch="new"): # , backend=None):
+    def update(self, mode="new", fetch=None): # , backend=None):
         """
         Update OSCAL support content based on the fetch directive.
         - "all": Clears all re-fetches all OSCAL versions and support files.
@@ -410,6 +425,10 @@ class OSCAL_support:
             bool: True if the update was successful, False otherwise.
         """
         status = False
+        if fetch is not None:
+            mode = fetch
+
+        fetch = mode
         # self.backend = backend
 
         try:
@@ -444,12 +463,12 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def asset(self, oscal_version, model_name, asset_type):
+    def get_asset(self, version, model, asset_type):
         """
         Returns the asset for the specified OSCAL version and model name.
         Args:
-            oscal_version (str): The OSCAL version (e.g., "v1.0.0").
-            model_name (str): The OSCAL model name (e.g., "system-security-plan").
+            version (str): The OSCAL version (e.g., "v1.0.0").
+            model (str): The OSCAL model name (e.g., "system-security-plan").
             asset_type (str): The type of asset to retrieve (e.g., "xml-schema", "json-schema").
         Returns:
             The asset content if found, None otherwise.
@@ -457,25 +476,30 @@ class OSCAL_support:
         filecache_uuid = None
         asset = None
 
-        if oscal_version in self.versions:
-            query = f"SELECT filecache_uuid FROM oscal_support WHERE version = '{oscal_version}' and model = '{model_name}' and type = '{asset_type}'"
+        if version in self.versions:
+            query = f"SELECT filecache_uuid FROM oscal_support WHERE version = '{version}' and model = '{model}' and type = '{asset_type}'"
             results = self.db.query(query)
             if results is not None:
                 filecache_uuid = results[0].get("filecache_uuid", None)
                 # logger.debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
-                logger.debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
+                logger.debug(f"Found filecache UUID {filecache_uuid} for {version} and {model}.")
                 # Check if the filecache UUID is valid
                 if filecache_uuid:
                     # Get the asset from the filecache
                     asset = helper.normalize_content(self.db.retrieve_file(filecache_uuid))
                 else:
-                    logger.error(f"Unable to find asset for {oscal_version} and {model_name}.")
+                    logger.error(f"Unable to find asset for {version} and {model}.")
             else:
-                logger.error(f"Unable to find asset for {oscal_version} and {model_name}.")
+                logger.error(f"Unable to find asset for {version} and {model}.")
         else:
-            logger.error(f"OSCAL version {oscal_version} is either not valid or not supported.")
+            logger.error(f"OSCAL version {version} is either not valid or not supported.")
 
         return asset
+
+    # -------------------------------------------------------------------------
+    def asset(self, oscal_version, model_name, asset_type):
+        """Backward-compatible wrapper for get_asset()."""
+        return self.get_asset(oscal_version, model_name, asset_type)
 
     # -------------------------------------------------------------------------
     def supported(self, oscal_version, assets):
@@ -489,22 +513,28 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def is_model_valid(self, model_name, version="all") -> bool:
+    def is_valid_model(self, model, version="all") -> bool:
         """
         Check if the specified OSCAL model is valid for the given version.
         Args:
-            model_name (str): The OSCAL model name to check (e.g., "system-security-plan").
+            model (str): The OSCAL model name to check (e.g., "system-security-plan").
             version (str): The OSCAL version to check against (e.g., "v1.0.0").
         Returns:
             bool: True if the model is valid for the specified version, False otherwise.
         """
         is_valid = False
-        models = self.enumerate_models(version)
-        if model_name in models:
+        models = self.list_models(version)
+        if model in models:
             is_valid = True
         return is_valid
+
     # -------------------------------------------------------------------------
-    def enumerate_models(self, version: str = "all") -> list[str]:
+    def is_model_valid(self, model_name, version="all") -> bool:
+        """Backward-compatible wrapper for is_valid_model()."""
+        return self.is_valid_model(model_name, version)
+
+    # -------------------------------------------------------------------------
+    def list_models(self, version: str = "all") -> list[str]:
         """
         Enumerate the supported models for a given OSCAL version.
         Args:
@@ -536,6 +566,11 @@ class OSCAL_support:
             self._cache[CACHE_MODELS_PER_VERSION][version] = models
 
         return models
+
+    # -------------------------------------------------------------------------
+    def enumerate_models(self, version: str = "all") -> list[str]:
+        """Backward-compatible wrapper for list_models()."""
+        return self.list_models(version)
 
     # -------------------------------------------------------------------------
     def add_asset(self, oscal_version, model_name, asset_type, content, filename=None):
@@ -657,12 +692,17 @@ class OSCAL_support:
         return status
 
     # -------------------------------------------------------------------------
-    def get_latest_version(self):
+    def latest_version(self):
         """Returns the latest supported OSCAL version."""
         latest_version = None
         if self.versions:
             latest_version = sorted(self.versions.keys(), reverse=True)[0]
         return latest_version
+
+    # -------------------------------------------------------------------------
+    def get_latest_version(self):
+        """Backward-compatible wrapper for latest_version()."""
+        return self.latest_version()
     # -------------------------------------------------------------------------
     def __get_oscal_versions(self, fetch="latest"):
         """Pulls OSCAL version information and support files from GitHub and loads it into the database."""
@@ -925,35 +965,40 @@ class OSCAL_support:
         logger.info(status)
 
     # -------------------------------------------------------------------------
-    def load_file(self, file_name, binary=False):
+    def load_file(self, name, binary=False, *, as_bytes=None):
         """Load a schema XML file from package data."""
+        if as_bytes is not None:
+            binary = as_bytes
+
         CACHE_FROM_DATA = "from_data"
         if CACHE_FROM_DATA in self._cache:
-            if file_name in self._cache[CACHE_FROM_DATA]:
-                return self._cache[CACHE_FROM_DATA][file_name]
+            if name in self._cache[CACHE_FROM_DATA]:
+                return self._cache[CACHE_FROM_DATA][name]
         else:
             self._cache[CACHE_FROM_DATA] = {}
 
         try:
             if binary:
-                with resources.open_binary("oscal.data", file_name) as f:
-                    content = f.read()
-                self._cache[CACHE_FROM_DATA][file_name] = content
-                logger.debug(f"Loaded binary schema file: {file_name}")
+                content = resources.files("oscal.data").joinpath(name).read_bytes()
+                self._cache[CACHE_FROM_DATA][name] = content
+                logger.debug(f"Loaded binary schema file: {name}")
                 return content
 
             else:
-                with resources.open_text("oscal.data", file_name) as f:
-                    content = f.read()
+                content = resources.files("oscal.data").joinpath(name).read_text(encoding="utf-8")
 
-            self._cache[CACHE_FROM_DATA][file_name] = content
-            logger.debug(f"Loaded schema file: {file_name}")
+            self._cache[CACHE_FROM_DATA][name] = content
+            logger.debug(f"Loaded schema file: {name}")
             return content
 
         except Exception as e:
-            logger.error(f"Failed to load OSCAL support library file {file_name}: {e}")
+            logger.error(f"Failed to load OSCAL support library file {name}: {e}")
             return None
     # -------------------------------------------------------------------------
+
+
+# Backwards-compatible class alias
+OSCAL_support = OSCALSupport
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':

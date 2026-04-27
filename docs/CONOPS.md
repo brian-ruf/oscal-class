@@ -9,10 +9,11 @@ The `OSCAL` class is able to validate and convert any OSCAL version and module w
 As NIST publishes additional models and OSCAL versions, they can be added to the OSCAL Support Module. An Internet connect is rquired to update the OSCAL Support Module; however, once updated, it can be copied to any computer for use.
 
 
-### Class Initiation:
+### OSCAL Class Initiation:
 
 1. Acquire Content
-1. Validate Content
+1. Validate Content (automatic)
+1. Import Content (automatic)
 
 #### Acquire content
 
@@ -20,6 +21,7 @@ Content is acquired by the instance in one of two ways:
 1. **Passed Directly**: When valid OSCAL XML, JSON or YAML content is passed directly via the `content` attribute.
 1. **Loaded from File or URL**: When valid OSCAL XML, JSON, or YAML content is present in an accessible file specified via the `filename` attribute.
 
+New OSCAL content may also be generated.
 
 #### Validate Content
 
@@ -35,12 +37,17 @@ NOTES:
 - The OSCAL Class has an OSCAL support module that contains the NIST-published OSCAL validation and conversion support files for each OSCAL version. The support module can "learn" newer versions of OSCAL as they are published.  
 - The appropriate XML schema is used for XML content. The appropriate JSON schema is used for JSON and YAML content.
 
+### OSCAL Class Inheritence
 
-## `oscal_support_class` ConOps
+The class for each OSCAL model inherits the OSCAL class. All OSCAL common capabilities are defined here. This includes importing, format conversion and validation as well as `metadata` and `back-matter` interaction. Other common constructs such as properties and links are also handled in the core OSCAL module.
+
+Model-specific classes are grouped by OSCAL layer and include both model-specific and layer-specific capabilities. For example, `oscal_controls.py` includes the `Catalog`, `Profile` and `Mapping` classes and all functions related to controls and control groups. It also includes profile resolution capabilites.
+
+## OSCAL Support Class ConOps
 
 This module includes the `OSCAL_support` class and one stand-alone function. This class manages the NIST-published OSCAL support files (metaschema, schema, and converters) for supported OSCAL versions. 
 
-It is designed to exist as one class instance per for the entire application and to shared by each `oscal_content_class` instance; however, there should not be issues if this class is instantiated more than once.
+It is designed to exist as one class instance per for the entire application and to shared by each `OSCAL` instance; however, there should not be issues if this class is instantiated more than once.
 
 # JSON Native (Effective April 2026)
 

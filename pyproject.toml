@@ -24,16 +24,17 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Operating System :: OS Independent",
 ]
-keywords = ["oscal", "nist", "security", "compliance", "ssp", "fedramp", "csf"]
+keywords = ["oscal", "nist", "security", "compliance", "automation", "ssp", "fedramp", "csf"]
 
 dependencies = [
-    "loguru        >= 0.7.3",
-    "saxonche      == 12.9.0",
-    "jsonschema_rs >= 0.26.1",
-    "xmlschema     >= 3.4.3",
-    "PyYAML        >= 6.0",
-    "markdown      >= 3.0.0",
-    "ruf-common    >= 2.0.3",
+    "loguru          >= 0.7.3",
+    "saxonche        == 12.9.0",
+    "jsonschema_rs   >= 0.26.1",
+    "jsonpath-python >= 1.1.5",
+    "xmlschema       >= 3.4.3",
+    "PyYAML          >= 6.0",
+    "markdown        >= 3.0.0",
+    "ruf-common      >= 2.0.3",
 ]
 
 [project.urls]

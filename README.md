@@ -38,59 +38,63 @@ Installation
 pip install oscal
 ```
 
-To use the `OSCAL` class in your code, import the `oscal_content_class` module from the `oscal` library:
+To use the OSCAL classes in your code, import from the `oscal` library:
+
+```python
+from oscal import Catalog
+
+# Create a new catalog object
+catalog = Catalog.new(
+    title="My Catalog", 
+    version="DRAFT-1.0", 
+    published="2026-03-02T00:00:00Z"
+)
+
+# Create a control group and controls
+catalog.create_control_group("", "ac", "Access Control", 
+                             props=[{"name":"label", "value": "AC"}, 
+                                    {"name":"sort-id", "value": "001"}])
+
+catalog.create_control("ac", "ac-1", "Access Control Policy and Procedures",
+                       props=[{"name":"label", "value": "AC-1"}, 
+                              {"name":"sort-id", "value": "001-001"}],
+                       statements=["The organization develops, documents, and disseminates an access control policy that addresses purpose, scope, roles, responsibilities, management commitment, coordination among organizational entities, and compliance."])
+
+catalog.create_control("ac", "ac-2", "Access Control Enforcement",
+                       props=[{"name":"label", "value": "AC-2"}, 
+                              {"name":"sort-id", "value": "001-002"}],
+                       statements=["The organization enforces access control policies through technical and administrative mechanisms."])
+
+# Save to multiple formats
+catalog.dump("test_catalog.json", format="json", pretty_print=True)
+catalog.dump("test_catalog.xml",  format="xml",  pretty_print=True)
+catalog.dump("test_catalog.yaml", format="yaml", pretty_print=True)
+
+```
+
+### Load OSCAL content from a file
+
+Open OSCAL content directly from a local file:
+
+```python
+from oscal import Catalog
+
+# Load from file
+catalog = Catalog.load("./catalog.xml")
+
+# Save to other formats
+catalog.dump("test_catalog.json", format="json", pretty_print=True)
+catalog.dump("test_catalog.xml", format="xml", pretty_print=True)
+catalog.dump("test_catalog.yaml", format="yaml", pretty_print=True)
+
+```
+
+### Parse OSCAL content from a string
+
+Use `loads()` with OSCAL content already in memory:
 
 ```python
 from oscal import OSCAL
-
-# Create a new OCAL catalog object
-oscal_catalog_obj = OSCAL.new(
-                     model_name="catalog", 
-                     title="My Catalog", 
-                     version="DRAFT-1.0", 
-                     published="2026-03-02T00:00:00Z")
-
-oscal_catalog_obj.create_control_group("", "ac", "Access Control", 
-                                       props=[{"name":"label", "value": "AC"}, 
-                                              {"name":"sort-id", "value": "001"}])
-
-oscal_catalog_obj.create_control("ac", "ac-1", "Access Control Policy and Procedures",
-                                       props=[{"name":"label", "value": "AC-1"}, 
-                                              {"name":"sort-id", "value": "001-001"}],
-                                              statements=["The organization develops, documents, and disseminates an access control policy that addresses purpose, scope, roles, responsibilities, management commitment, coordination among organizational entities, and compliance."],
-                                              )
-
-oscal_catalog_obj.create_control("ac", "ac-2", "Access Control Enforcement",
-                                       props=[{"name":"label", "value": "AC-2"}, 
-                                              {"name":"sort-id", "value": "001-002"}],
-                                              statements=["The organization enforces access control policies through technical and administrative mechanisms."],
-                                              )
-
-if oscal_catalog_obj:
-    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.xml",  format="xml",  pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
-
-```
-
-### Instantiate the OSCAL class
-
-Open OSCAL content directly from a file:
-```python
-from oscal import oscal_content_class as oscal_content
-
-oscal_catalog_obj = oscal_content_class.OSCAL(filename="./catalog.xml")
-
-if oscal_catalog_obj:
-    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
-
-```
-
-Use an existing OSCAL string:
-
-```python
 
 oscal_content = """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -102,11 +106,10 @@ oscal_content = """
       <version>DRAFT</version>
       <oscal-version>1.1.3</oscal-version>
    </metadata>
-
 </catalog>
 """
 
-oscal_catalog_obj = oscal_content_class.OSCAL(content=oscal_content)
+catalog = OSCAL.loads(oscal_content)
 
 ```
 

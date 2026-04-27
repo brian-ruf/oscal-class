@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mapping-collection xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="d51ca4f5-89a5-4be6-a99d-c2e9c9aaecf6">
+   <metadata>
+      <title>Control Mapping Collection</title>
+      <last-modified>2026-04-26T12:00:00-04:00</last-modified>
+      <version>DRAFT</version>
+      <oscal-version>1.2.1</oscal-version>
+   </metadata>
+   <provenance method="human" matching-rationale="semantic" status="draft">
+      <mapping-description></mapping-description>
+   </provenance>
+   <mapping uuid="a1ef11d5-92cb-4d01-be3b-595f6965a3c3">
+      <source-resource type="catalog" href="#"></source-resource>
+      <target-resource type="catalog" href="#"></target-resource>
+      <map uuid="87f789cb-c170-4d12-b78f-4bd301312653">
+         <relationship>no-relationship</relationship>
+         <source type="catalog" id-ref="a"></source>
+         <target type="catalog" id-ref="b"></target>
+      </map>
+   </mapping>
+   
+</mapping-collection>

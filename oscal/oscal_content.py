@@ -13,6 +13,10 @@ import json
 import yaml
 import uuid
 import elementpath
+try:
+    import jsonpath  # noqa: F401  (reserved for future JSONPath queries)
+except ModuleNotFoundError:
+    jsonpath = None  # noqa: F401
 from loguru             import logger
 from typing             import Optional, Any
 from datetime           import datetime, timezone
@@ -139,7 +143,7 @@ class OSCAL(LoggableMixin):
             self.import_list = [] # An array of dictionaries representing imported OSCAL content
 
         Properties:
-            editable: True if the content can be modified, False otherwise
+            is_editable: True if the content can be modified, False otherwise
 
     """
     def __init_common__(self, ttl: int = 0, support_db_conn: str = "", support_db_type: str = ""):
@@ -147,8 +151,9 @@ class OSCAL(LoggableMixin):
         logger.debug("Initializing common OSCAL class properties...")
 
         # Content Location
-        self._origin      : str = ""     # Origin of the content (e.g. "from_content", "fetched", "new")
+        self._origin      : str = ""     # Origin of the content (e.g. "load", "acquire", "new")
         self.href         : str = ""     # Working href
+        self.href_original: str = ""     # The original href as provided (e.g., in an import statement)
         self.href_valid   : bool = False # Validated href that was successfully loaded (may be different than original if original failed and was retried with a new href)
         self._refs: list[OscalRef] = []
 
@@ -192,17 +197,59 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @classmethod
-    def from_content(cls, content: dict, *, href: str | None = None):
-        """Initialize from already-loaded OSCAL content.
+    def loads(cls, content: str | dict, *, href: str | None = None):
+        """Initialize from in-memory OSCAL content.
         
         Args:
-            content:    OSCAL content as a dictionary.
+            content: OSCAL content already available in memory (string or dictionary).
             href: Optional URI identifying the original content source.
         """
         instance = cls.__new__(cls)
         instance.__init_common__()
-        instance._origin       = "from_content"
+        instance._origin       = "loads"
         instance.href_original = href if href else ""
+
+        normalized_content = json.dumps(content) if isinstance(content, dict) else content
+        if instance.initial_validation(normalized_content):
+            instance.read_only = False
+
+        return instance
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def load(cls, source: str | os.PathLike | Any, *, href: str | None = None):
+        """Initialize from a local file path or file-like object.
+
+        This aligns with Python's conventional `load(...)` behavior.
+        Use `loads(...)` for in-memory strings/dicts, and `acquire(...)` for
+        URI/reference resolution and fallback sources.
+        """
+        instance = cls.__new__(cls)
+        instance.__init_common__()
+        instance._origin = "load"
+
+        content = ""
+        resolved_href = href if href else ""
+
+        if hasattr(source, "read"):
+            payload = source.read()
+            if isinstance(payload, (bytes, bytearray)):
+                content = payload.decode("utf-8", errors="replace")
+            else:
+                content = str(payload)
+            if not resolved_href:
+                resolved_href = str(getattr(source, "name", ""))
+        elif isinstance(source, (str, os.PathLike)):
+            path = os.fspath(source)
+            content = getfile(path)
+            if not resolved_href:
+                resolved_href = path
+        else:
+            raise TypeError(
+                f"load() expected path-like or file-like object — got {type(source).__name__}"
+            )
+
+        instance.href_original = resolved_href
         if instance.initial_validation(content):
             instance.read_only = False
 
@@ -210,27 +257,52 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @classmethod
-    def load(cls, source: str | dict | OscalRef | list):
+    def acquire(cls, source: str | dict | OscalRef | list):
         """
-        Load OSCAL content from one or more URIs.
+        Acquire OSCAL content from one or more URI/reference sources.
 
         Accepts:
-            - str               : bare href
+            - str               : URI or path-like href
             - OscalRef          : already-typed ref
-            - list[str|OscalRef]: mixed list of any of the above
+            - dict              : reference dict with at least "href"
+            - list[...]         : mixed list of any of the above
 
         Returns self to allow method chaining.
         """
 
         instance = cls.__new__(cls)
         instance.__init_common__()
-        instance._origin       = "fetched"
+        instance._origin       = "acquire"
         instance._refs = _normalize_refs(source)
 
         content = load_content(instance._refs) 
         
         instance.initial_validation(content)
         return instance
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_string(cls, content: str, *, href: str | None = None):
+        """Explicit constructor for in-memory OSCAL string content."""
+        return cls.loads(content, href=href)
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_dict(cls, content: dict, *, href: str | None = None):
+        """Explicit constructor for in-memory OSCAL dictionary content."""
+        return cls.loads(content, href=href)
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_file(cls, source: str | os.PathLike | Any, *, href: str | None = None):
+        """Explicit constructor for local file path or file-like object."""
+        return cls.load(source, href=href)
+
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_uri(cls, source: str | dict | OscalRef | list):
+        """Explicit constructor for URI/reference acquisition."""
+        return cls.acquire(source)
 
     # -------------------------------------------------------------------------
     @classmethod
@@ -259,6 +331,62 @@ class OSCAL(LoggableMixin):
         if instance.initial_validation(content):
             instance.read_only = False
         return instance
+
+    # -------------------------------------------------------------------------
+    def dump(self, filename: str="", format: str="", pretty_print: bool=False) -> bool:
+        """
+        Write the current OSCAL content to a file.
+        With no parameters, saves to the original location in the original format.
+        This will save to any valid filename, even if the file extension does not match the format.
+
+        Args:
+            filename (str): The path to the file where content will be saved.
+            format (str): The format to save the content in {OSCAL_FORMATS}.
+            pretty_print (bool): Whether to pretty print the output.
+
+        Returns:
+            bool: True if write is successful, False otherwise
+        """
+        status = False
+        content = ""
+
+        # if no format is passed, use the original format if it is valid
+        if format == "":
+            logger.debug("No format specified for dump; will use original format if valid.")
+            format = self.original_format
+            if format not in OSCAL_FORMATS:
+                logger.error(f"No format specified and original format ({format}) is not a valid OSCAL format. Cannot save without a valid format.")
+                return False
+
+        # if no filename is passed, use the original location if available
+        if filename == "":
+            logger.debug("No filename specified for dump; will use original location if available.")
+            filename = self.href_valid if self.href_valid else self.href_original
+            if filename == "":
+                logger.error("No filename specified and no valid original location available. Cannot save without a filename.")
+                return False
+
+        # Ensure the directory exists
+        file_path = os.path.dirname(os.path.abspath(filename))
+        if not chkdir(file_path, make_if_not_present=True):
+            logger.error(f"Directory does not exist and could not be created: {os.path.dirname(file_path)}")
+            return False
+
+        logger.debug(f"Writing content as {filename} in OSCAL {format.upper()} format.")
+        content = self.dumps(format=format, pretty_print=pretty_print)
+
+        if not content:
+            logger.error(f"Serialization to {format.upper()} produced no content. Cannot save.")
+            return False
+
+        status = putfile(filename, content)
+
+        if status:
+            logger.info(f"Content successfully written to {filename}.")
+        else:
+            logger.error(f"Failed to write content to {filename}.")
+
+        return status
 
     # -------------------------------------------------------------------------
     def __repr__(self):
@@ -358,7 +486,7 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @property
-    def cache_expired(self) -> bool:
+    def is_cache_expired(self) -> bool:
         """Only meaningful when remote and cached."""
         if self.local or not self.cached or self.ttl <= 0:
             return False
@@ -366,7 +494,7 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @property
-    def editable(self) -> bool:
+    def is_editable(self) -> bool:
         """Can this content be modified?"""
         return self.valid and self.local and not self.read_only
 
@@ -379,7 +507,7 @@ class OSCAL(LoggableMixin):
         if self.remote:
             if not self.cached:
                 return "not-cached"
-            if self.cache_expired:
+            if self.is_cache_expired:
                 return "expired"
             return "read-only"
         # local
@@ -462,7 +590,7 @@ class OSCAL(LoggableMixin):
         if status:
             if oscal_version in self._support.versions:
                 self.oscal_version = oscal_version
-                if oscal_root in self._support.enumerate_models(self.oscal_version):
+                if oscal_root in self._support.list_models(self.oscal_version):
                     self.model = oscal_root
                     self.title = content_title
                     self.version = content_version
@@ -501,7 +629,7 @@ class OSCAL(LoggableMixin):
 
         if format == "xml":
             logger.debug("Validating XML content against schema...")
-            xml_schema_content = self._support.asset(self.oscal_version, self.model, "xml-schema")
+            xml_schema_content = self._support.get_asset(self.oscal_version, self.model, "xml-schema")
 
             if xml_schema_content:
                 import xmlschema
@@ -527,7 +655,7 @@ class OSCAL(LoggableMixin):
 
         elif format in ("json", "yaml"):
             logger.debug(f"Validating {format} content against schema...")
-            json_schema_content = self._support.asset(self.oscal_version, self.model, "json-schema")
+            json_schema_content = self._support.get_asset(self.oscal_version, self.model, "json-schema")
 
             if json_schema_content:
                 import jsonschema_rs
@@ -591,7 +719,7 @@ class OSCAL(LoggableMixin):
             if self.original_format == "xml":
                 if self._tree is not None:
                     logger.debug("Converting XML tree to dictionary for JSON/YAML representation...")
-                    xsl_converter=self._support.asset(self.oscal_version, self.model, "xml-to-json")
+                    xsl_converter=self._support.get_asset(self.oscal_version, self.model, "xml-to-json")
                     if not xsl_converter:
                         logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot convert to dict.")
                         return False
@@ -606,7 +734,7 @@ class OSCAL(LoggableMixin):
             elif self.original_format in ("json", "yaml"):
                 if self._dict is not None:
                     logger.debug("Converting dictionary to XML tree for XML representation...")
-                    xsl_converter=self._support.asset(self.oscal_version, self.model, "json-to-xml")
+                    xsl_converter=self._support.get_asset(self.oscal_version, self.model, "json-to-xml")
                     if not xsl_converter:
                         logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot convert to XML tree.")
                         return False
@@ -672,58 +800,6 @@ class OSCAL(LoggableMixin):
             return ""
 
         return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
-
-    # -------------------------------------------------------------------------
-    def save(self, filename: str="", format: str="", pretty_print: bool=False) -> bool:
-        """
-        Save the current OSCAL content to a file.
-        With no parameters, saves to the original location in the original format.
-        This will save to any valid filename, even if the file extension does not match the format.
-
-        Args:
-            filename (str): The path to the file where content will be saved.
-            format (str): The format to save the content in {OSCAL_FORMATS}.
-            pretty_print (bool): Whether to pretty print the output.
-
-        Returns:
-            bool: True if save is successful, False otherwise
-        """
-        status = False
-        content = ""
-
-        # if no format is passed, use the original format if it is valid
-        if format == "":
-            logger.debug("No format specified for saving; will use original format if valid.")
-            format = self.original_format
-            if format not in OSCAL_FORMATS:
-                logger.error(f"No format specified and original format ({format}) is not a valid OSCAL format. Cannot save without a valid format.")
-                return False
-
-        # if no filename is passed, use the original location if available
-        if filename == "":
-            logger.debug("No filename specified for saving; will use original location if available.")
-            filename = self.href_valid if self.href_valid else self.href_original
-            if filename == "":
-                logger.error("No filename specified and no valid original location available. Cannot save without a filename.")
-                return False
-
-        # Ensure the directory exists
-        file_path = os.path.dirname(os.path.abspath(filename))
-        if not chkdir(file_path, make_if_not_present=True):
-            logger.error(f"Directory does not exist and could not be created: {os.path.dirname(file_path)}")
-            return False
-
-        logger.debug(f"Saving content as {filename} in OSCAL {format.upper()} format.")
-        content = self.serialize(format=format, pretty_print=pretty_print)
-
-        status = putfile(filename, content)
-
-        if status:
-            logger.info(f"Content successfully saved to {filename}.")
-        else:
-            logger.error(f"Failed to save content to {filename}.")
-
-        return status
 
     # -------------------------------------------------------------------------
     @requires(read_only=False)
@@ -1037,9 +1113,9 @@ class OSCAL(LoggableMixin):
 
 
     # -------------------------------------------------------------------------
-    def serialize(self, format: str = "", pretty_print: bool = False) -> str:
+    def dumps(self, format: str = "", pretty_print: bool = False) -> str:
         """
-        Serializes the current content to a string in the specified format.
+        Serialize the current content to a string in the specified format.
         Parameters:
         - format (str): The target format for serialization ("xml", "json", or "yaml")
             Defaults to the original format of the content if not specified.
@@ -1190,7 +1266,7 @@ def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
     if isinstance(source, list):
         return [_normalize_refs(item)[0] for item in source]
     raise TypeError(
-        f"load() expected str, dict, OscalRef, or list — got {type(source).__name__}"
+        f"acquire() expected str, dict, OscalRef, or list — got {type(source).__name__}"
     )
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1562,8 +1638,8 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
     oscal_object = None
     support = get_support()
 
-    if support.is_model_valid(model_name):
-        content = support.load_file(f"{model_name}.xml", binary=False)
+    if support.is_valid_model(model_name):
+        content = support.load_file(f"{model_name}.xml", as_bytes=False)
         if content and isinstance(content, str):
             return content
         else:

@@ -1,75 +1,99 @@
-# ROADMAP
+# ROADMAP (_Updated Apl 26, 2026_)
 
-## Short Term
+The sequencing of releases may change in response to client needs and other external factors.
 
-- XML vs JSON/YAML (tree vs dict) content handling:
-    xx Analysis on trade-offs for one vs the other as authoritative.
-    - tree/dict duality - native format determines which is primary
-    - methods handle both, but only process the primary
+## Past (Version 1.x)
+
+- Support Module: Acquire and manage NIST-pubished support files
+    - Support files in local SQLite database
+    - Support files in local Folder
+    - Deploy, update, and repopulate
+- OSCAL Content Class: 
+    - Simple local loading and saving
+    - Auto-detect OSCAL format, version and model
+    - Validation using NIST schema files
+    - Load any OSCAL format (XML, JSON, YAML)
+    - Convert and save in any OSCAL format (XML, JSON, YAML)
+        - Currently relies on SaxonC-HE and NIST XSLT 3.x Convertion files
+
+## Version 2.0.x: Refactoring, XML/JSON Parity
+
+- [x] Separate class for each model
+- [x] Refactor class attributes, methods (names, organization)
+- [x] Efficiency and maintainability improvements
+- [x] Robust Loading from local and 
+- [x] Selection/adoption of xpath-like capability for JSON
+
+## Version 2.1.x: Importing Dependency Chain
+
+- [ ] Top level imports 
+    - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
+    - POAM -> SSP -> Profile -> [ Profile | Catalog ]
+    - cDef -> cDef
+- [ ] Failed import handling
+- [ ] Basic addressibility across imported files
+
+## Version 2.2.x: Profile Resolution
+
+- [ ] Control Tree Generation/Caching
+- [ ] By-Control Tailoring
+- [ ] Saving Resolved Profile Catalogs
+
+## Version 2.3.x: Local Caching
+
+- [ ] Cache remotely acquired files locally
+- [ ] Automatic cache refresh based on TTL
+- [ ] Manually triggered refresh
+- [ ] Fallback to cache after expiration when remote content is not available.
+
+## Version 2.4.x: Project Approach
+
+- [ ] Project-based Storage
+    - Save cluster of related files together
+        - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
+        - POAM -> SSP -> Profile -> [ Profile | Catalog ]
+    - SQLite-based
+    - Load cluster of related files
+    - External attachment packing with project
+
+- [ ] External attachment handling    
+    - In SQLite project file
+    - As external files relative to SQLite project file
+
+## Version 2.4.x: Indexes and Robust Addressibility
+
+- [ ] Generate and maintain metaschema-defined indexes
+- [ ] Generate and maintain extra-metaschema indexes 
+- [ ] Handle metaschema-defined uniqueness constraints
+- [ ] Enable robust addressibility across project files
+  - Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements
 
 
-- LOADING/SAVING CONTENT:
-    - Finish save-to-file method for local files
-    - Handle hrefs that point to local files, remote URLs, and file:// URIs
-    - Handle hrefs that are URI fragments referencing back-matter/resources within the same file
-    - For remote URLs, mark as read-only.
-
-    - Classify the source based on its href and determine how to load it
-    - Establish/verify basic "loading methods" based on source classification:
-        - For local files, read directly from the file system
-        - For file:// URIs, convert to local file path and read from the file system (same as local files, but need to handle the URI parsing and conversion)
-        - For known but unsupported URI schemes, log a warning that we recognise the scheme but don't have a loading method for it yet
-
-- IMPORTS:
-    - Build an import tree that captures the structure of imports and their resolution status
-    - Provide methods to retry failed imports with new hrefs
-    - Implement properties to derive the effective state of the content based on its characteristics
-
-- PROFILES:
-    - Processes the import tree using above
-    - instantiate catalog object within profile
-        - Catalog is write-write for profile processing only
-        - Profile methods that mimic the read-only catalog 
-            - pass-through to the catalog object
-            - Necessary tailoring and organization logic on top as needed
-    - Resolve contol inclusion and organiztion for entire profile 
-    - Handle control tailoring as controls are called
-    - Method to resolve all control tailring at once after the full control set is assembled
+## Future
 
 
-## Medium Term
+- [ ] Robust URI and APIs Handling for Content Acquisition/Storage
+    - Additional API Specifications
+    - Credentialed/Access-token Handling
+    - S3 and similar cloud-native storage capabiities 
 
-- LOADING/SAVING CONTENT:
-    - For remote URLs
-        - download the content and store it in a local cache directory
-        - Local copy is read-only and has a TTL after which it is considered stale and needs to be re-fetched
-        - configurable TTL (24 hour default) 
-        - can be manually refreshed by calling code:
-            - refetch from the remote URL and update the local cache copy, resetting the TTL
-        - On loading, check if cached copy exists and is still valid (not expired). 
-            - If so, load from cache. 
-            - If not, fetch from remote URL and update cache.
-        - Keep using cached copy after its TTL expires if the remote URL is not accessible, but mark the content as stale/expired so calling code can decide how to handle it (e.g. warn user, restrict editing, etc.)
+- [ ] Content Library
+    - Cached local copy of commonly used OSCAL content, such as the NIST SP 800-53 catalog and FedRAMP profiles.
+    - Ability to add/refresh/remove content
 
-- CONVERSION:
-    - Shift from saxon/XSLT-based conversion to in-code conversion using Python libraries (e.g. xmltodict, dicttoxml, PyYAML)
-        
-- VALIDATION:
-    - metaschema constraint evaluation always uses XML
-        - If JSON is primary, convert to XML for MsC validation
+- [ ] Preferred Conversion
+    - Enable conversion of OSCAL content using pure python and direct interpretation of metaschema
+        - Eliminates dependency on XSLT 3.x processing for format converstion
 
+- [ ] Preferred Validation
+    - Enable validation of OSCAL content using pure Python and direct interpretation of NIST metaschema 
+        - Eliminate dependency on XML/JSON schema files
+        - Enables more complex metaschema checks 
 
-## Long Term
+- [ ] Project Storage and Sharing Enhancements
+    - Enable multi-user interaction of shared project files
+    - Enable storage on shared network drives
+    - Enable storage on shared cloud drives (OneDrive, Google Drive)
+    - Enablue use of enterprise databases
 
-- ADDRESSABLE ID SCOPE:
-    - Handle hrefs that point to back-matter/resources within imported files (URI fragments)
-    - Handle the ability to address IDs/UUIDs in imported files from an ancestor 
-
-- LOADING/SAVING CONTENT:
-- Konwon API Specifications:
-    - OneDrive, Google Drive, S3, OSCAL API, etc. (Start with read-only OSCAL API)
-    - Need ability to configure/store known API endpoints (Name, Base URL, Supported Operations, Authentication Method)
-    - One fetch and one save method for each API, that handle the specifics of authentication, request formatting, response parsing, error handling, etc.
-- Project approach to handling related OSCAL Files and their local attachments as a single, portable "project file store" that can be saved and loaded as a unit, with the ability to export/import individual files as needed.
-    - !!! See Claude chat on project file stores.
 

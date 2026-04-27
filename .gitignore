@@ -2,7 +2,6 @@ venv/
 .venv/
 .vscode/
 HOLD/
-test-data/
 __pycache__/
 support/
 *.pyc
