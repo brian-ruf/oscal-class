@@ -128,3 +128,16 @@ Claude/Claude Code and GitHub Co-pilot have been used in a manner similar to pai
 - drafting individual functions/methods that I refine and test 
 - drafting portions of documentation
 - drafting/creating unit tests
+
+---
+<div align="center">
+<img width="10%" align="center" alt="Ruf Risk Logo" src="https://github.com/user-attachments/assets/d4b19372-3a77-40aa-978f-c986b7ded260" /><br />
+
+_Cybersecurity Consulting_  <br />
+https://RufRisk.com<br />
+https://www.linkedin.com/company/rufrisk/<br />
+
+**Brian J. Ruf**, CISSP, CCSP, PMP<br />
+OSCAL Co-Creator, Independent Consultant<br />
+https://www.linkedin.com/in/brianruf/<br />
+</div>
