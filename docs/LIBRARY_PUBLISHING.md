@@ -20,7 +20,7 @@ In `pyproject.toml`, bump the version number following [Semantic Versioning](htt
 version = "X.Y.Z"
 ```
 
-### 2. Commit and push
+### 2. Commit and push your release branch
 
 ```bash
 git add pyproject.toml
@@ -28,14 +28,22 @@ git commit -m "Bump version to vX.Y.Z"
 git push
 ```
 
-### 3. Tag the commit
+### 3. Open a pull request and merge to main
+
+Create a PR from your release branch into `main`, get it reviewed, and merge it.
+The tag must point to a commit on `main` — the workflow checks out whatever commit
+the tag references, so tagging before merging would publish the wrong code.
+
+### 4. Tag the merge commit on main
 
 ```bash
+git checkout main
+git pull
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-### 4. Create the GitHub Release
+### 5. Create the GitHub Release
 
 1. Go to [Releases → New release](https://github.com/brian-ruf/oscal-class/releases/new)
 2. Select tag **`vX.Y.Z`**
@@ -46,7 +54,7 @@ git push origin vX.Y.Z
 Publishing the release triggers the `publish.yml` workflow, which builds the
 package and uploads it to PyPI automatically.
 
-### 5. Verify
+### 6. Verify
 
 - **Workflow:** https://github.com/brian-ruf/oscal-class/actions
 - **PyPI listing:** https://pypi.org/project/oscal/
