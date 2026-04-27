@@ -5,8 +5,9 @@ from loguru import logger
 from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree
+from enum import Enum
 
-from .oscal_content import * 
+from .oscal_content import OSCAL, requires, if_update_successful, OSCAL_DEFAULT_XML_NAMESPACE, append_props, append_links
 from .oscal_converters import oscal_markdown_to_html
 
 """

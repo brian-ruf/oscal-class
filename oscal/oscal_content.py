@@ -17,9 +17,7 @@ from loguru             import logger
 from typing             import Optional, Any
 from datetime           import datetime, timezone
 from functools          import wraps
-from datetime           import datetime
 from enum               import Enum
-from pathlib            import PurePosixPath, PureWindowsPath
 from urllib.parse       import urlparse
 from urllib.request     import urlopen
 from xml.etree          import ElementTree
@@ -28,10 +26,10 @@ from dataclasses        import dataclass, field
 from ruf_common.logging import LoggableMixin
 from ruf_common.network import download_file
 from ruf_common.data    import detect_data_format, safe_load, safe_load_xml
-from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content, save_json
+from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
 from .oscal_datatypes   import oscal_date_time_with_timezone
-from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml, oscal_markdown_to_html, oscal_markdown_to_html
+from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml, oscal_markdown_to_html
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Constants
@@ -1714,7 +1712,6 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
     Returns:
         Optional[OSCAL]: The appropriate OSCAL subclass instance, or None on failure.
     """
-    oscal_object = None
     support = get_support()
 
     if support.is_valid_model(model_name):
