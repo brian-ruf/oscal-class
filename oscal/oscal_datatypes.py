@@ -14,14 +14,14 @@ def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ
     If an error occurs, returns an empty string.
     """
     from datetime import datetime, timezone
-    from dateutil import parser as date_parser
 
     if date_time is None:
         date_time = datetime.now()
     elif isinstance(date_time, str):
         # Parse string into datetime object
         try:
-            date_time = date_parser.parse(date_time)
+            normalized_date_time = date_time.replace("Z", "+00:00")
+            date_time = datetime.fromisoformat(normalized_date_time)
         except Exception as error:
             logger.error(f"{type(error).__name__} error parsing date/time string '{date_time}': {str(error)}")
             return ""

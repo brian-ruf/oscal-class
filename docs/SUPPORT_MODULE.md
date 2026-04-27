@@ -1,21 +1,109 @@
-## The OSCAL Support Module
+# The OSCAL Support Module
 
-The `OSCAL_Support` class creates and maintains a database that contains all of the NIST-published support files for all OSCAL versions and models. This is referred to in documentation as the _OSCAL Support Module_.
+The OSCAL Support Module acquires, stores, and serves local copies of NIST-published OSCAL support files used for validation and format conversion.
 
-The `OSCAL` class is able to validate and convert any OSCAL version and module where the NIST-published support files are present in the _OSCAL Support Model_. No Internet connection required.
+The support database distributed with this library is pre-populated with all OSCAL versions available at release time, enabling offline and air-gapped operation.
 
-As NIST publishes additional modules, they can be added to the OSCAL Support Module. An Internet connect is rquired to update the OSCAL Support Module; however, once updated, it can be copied to any computer for use.
+## Designed For Air-Gapped Environments
 
-### Designed for Air Gapped Environments
+The module keeps OSCAL support artifacts in a local database so applications can validate and convert OSCAL content without a live network dependency.
 
-The concept behind the _OSCAL Support Module_ is that it can be generated or updated on an Internet-connected computer and then conveyed into an air gapped environment for use. When updated, it enables support for all published OSCAL formats, versions, and models.   
+When needed, you can update support content from an internet-connected machine and then move the updated database to offline environments.
 
-### Open Standard
+## Database Defaults
 
-The OSCAL Support Module is a SQLite 3 database, implemented without encryption so that tables can be inspected. Each cached file is stored as a blob. 
+- Default support DB path: ./support/oscal_support.db (relative to runtime working directory)
+- Default DB type: sqlite3
+- Support files are cached in the database and may be compressed for size efficiency
 
-The default configuration is to compress each cached file before storing; however, the compression can be turned off for even greater transparency with the trade-off of increased file size. 
+## Primary API
 
-This default name and location for the OSCAl Support Module is `./support/oscal_support.db`; however, your project code can override the location and/or the file name. 
+The canonical class name is OSCALSupport.
 
-The `OSCAL_support` class interacts with the SQLite3 database using ANSI SQL with the intention of expanding support for project and enterprise ANSI SQL databases in the future, such as Postgres, MS SQL Server, and Oracle.
+The module also exposes a singleton configuration/access pattern:
+
+```python
+from oscal.oscal_support import configure_support, get_support
+
+# Optional explicit configuration before loading any OSCAL content
+configure_support(db_path="/path/support.db", init_mode="auto")
+
+# Shared support object used by OSCAL classes
+support = get_support()
+```
+
+configure_support supports both naming styles for compatibility:
+
+- Pythonic aliases: db_path, init_mode
+- Legacy names: support_file, db_init_mode
+
+Supported init_mode values:
+
+- auto: extract packaged DB when missing/empty, otherwise use existing DB
+- extract: always try packaged extraction; create empty DB if extraction fails
+- create: create an empty DB from scratch
+
+## Updating Support Content
+
+Use update on OSCALSupport to refresh support data:
+
+```python
+support = get_support()
+
+# Check for new OSCAL releases (default)
+support.update()
+support.update(mode="new")
+
+# Re-fetch all supported versions
+support.update(mode="all")
+
+# Re-fetch a specific version
+support.update(mode="v1.0.0")
+```
+
+For compatibility, update(fetch="...") is still accepted.
+
+## Core Methods
+
+Commonly used methods include:
+
+- get_asset(version, model, asset_type)
+- list_models(version="all")
+- is_valid_model(model, version="all")
+- latest_version()
+- load_file(name, as_bytes=False)
+
+Compatibility wrappers remain available:
+
+- asset(...)
+- enumerate_models(...)
+- is_model_valid(...)
+- get_latest_version()
+- load_file(..., binary=...)
+
+## Compatibility Notes
+
+The previous class name OSCAL_support is retained as an alias to OSCALSupport for backward compatibility.
+
+Likewise, setup_support(...) is retained as a compatibility helper and forwards to configure_support(...).
+
+## Packaging Update Utility
+
+This repository includes an internal utility script that updates support assets and re-zips the distributable support DB payload:
+
+- oscal/update_support.py
+
+That utility is intended for library maintenance workflows, not typical library consumers.
+
+Current usage:
+
+```bash
+python oscal/update_support.py --new
+python oscal/update_support.py --all
+```
+
+It configures support via configure_support(db_path=..., init_mode="auto") and calls support_obj.update(mode=...).
+
+## Future Direction
+
+The support layer currently targets SQLite while using ANSI SQL-oriented patterns intended to ease future support for additional relational backends.

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-model href="https://raw.githubusercontent.com/usnistgov/OSCAL/v1.1.3/xml/schema/oscal_complete_schema.xsd" schematypens="http://www.w3.org/2001/XMLSchema" title="OSCAL complete schema"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="eeecad28-cf1d-4268-9a50-91feee82e62f">
+    <metadata>
+        <title>Test Profile</title>
+        <last-modified>2026-04-17T21:18:16.691917588Z</last-modified>
+        <version>1.0</version>
+        <oscal-version>1.2.1</oscal-version>
+    </metadata>
+
+	<import href="#051a77c1-b61d-4995-8275-dacfe688d510">
+		<include-all>
+    </import>
+
+    <import href="#051a77c1-b61d-4995-8275-dacfe688d510">
+        <include-all>
+    </import>
+
+    <back-matter>
+        <resource uuid="e9d6719d-c4a3-4d74-9227-907e227427bf">
+            <title>FedRAMP Baseline</title>
+            <description>This is a test resource.</description>
+            <rlink href="json/FedRAMP_rev5_HIGH-baseline_profile.json" media-type="application/json"/>
+        </resource>
+        <resource uuid="051a77c1-b61d-4995-8275-dacfe688d510">
+            <title>CIS Controls</title>
+            <description>This is a test resource.</description>
+            <rlink href="https://registry.oscal.io/api/v1/pirooz-javan/catalogs/b0783eae-6c21-411a-967a-44ec5465a41d" media-type="application/json"/>
+    </back-matter>
+</profile>

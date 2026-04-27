@@ -1,0 +1,68 @@
+# Publishing to PyPI
+
+_INTENDED FOR INTERNAL USE_
+
+Releases are published automatically to [PyPI](https://pypi.org/project/oscal/) via GitHub Actions when a GitHub Release is created. No manual upload steps are required.
+
+## Prerequisites (one-time setup)
+
+- A `pypi` environment configured in the GitHub repository settings
+- A Trusted Publisher configured on PyPI linking this repo's `publish.yml` workflow to the project
+
+## Release steps
+
+### 1. Update the version
+
+In `pyproject.toml`, bump the version number following [Semantic Versioning](https://semver.org/):
+
+```toml
+[project]
+version = "X.Y.Z"
+```
+
+### 2. Commit and push your release branch
+
+```bash
+git add pyproject.toml
+git commit -m "Bump version to vX.Y.Z"
+git push
+```
+
+### 3. Open a pull request and merge to main
+
+Create a PR from your release branch into `main`, get it reviewed, and merge it.
+The tag must point to a commit on `main` — the workflow checks out whatever commit
+the tag references, so tagging before merging would publish the wrong code.
+
+### 4. Tag the merge commit on main
+
+```bash
+git checkout main
+git pull
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+### 5. Create the GitHub Release
+
+1. Go to [Releases → New release](https://github.com/brian-ruf/oscal-class/releases/new)
+2. Select tag **`vX.Y.Z`**
+3. Set the title to **`vX.Y.Z`**
+4. Add release notes summarizing the changes
+5. Click **"Publish release"**
+
+Publishing the release triggers the `publish.yml` workflow, which builds the
+package and uploads it to PyPI automatically.
+
+### 6. Verify
+
+- **Workflow:** https://github.com/brian-ruf/oscal-class/actions
+- **PyPI listing:** https://pypi.org/project/oscal/
+
+## Version numbering guidelines
+
+| Change type | Example | When to use |
+|---|---|---|
+| Patch `X.Y.Z+1` | `1.0.1` → `1.0.2` | Bug fixes, no API changes |
+| Minor `X.Y+1.0` | `1.0.2` → `1.1.0` | New features, backward-compatible |
+| Major `X+1.0.0` | `1.1.0` → `2.0.0` | Breaking changes |

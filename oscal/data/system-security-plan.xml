@@ -2,10 +2,9 @@
 <system-security-plan xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="8561a2f5-9e57-47c2-81ce-e0499806a3f2">
    <metadata>
       <title>System Security Plan (SSP)</title>
-      <published>2025-09-10T12:00:00-04:00</published>
-      <last-modified>2025-09-10T12:00:00-04:00</last-modified>
+      <last-modified>2026-04-26T12:00:00-04:00</last-modified>
       <version>DRAFT</version>
-      <oscal-version>1.2.0</oscal-version>
+      <oscal-version>1.2.1</oscal-version>
    </metadata>
    
    <import-profile href="#"/>

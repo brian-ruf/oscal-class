@@ -14,7 +14,7 @@ When a new version of OSCAL is published, the support module can be updated on a
 
 #### Inspection
 
-Inspection of the OSCAL Support Module is possible using any SQLite database viewer. Note that the suport files are ZIP compressed within the database; however, no encryption is used in order to facilitate inspection. 
+Inspection of the OSCAL Support Module is possible using any SQLite database viewer. Note that the support files are ZIP compressed within the database; however, no encryption is used in order to facilitate inspection. 
 
 For more information see the [Support Module](docs/SUPPORT_MODULE.md) documentation.
 
@@ -24,7 +24,7 @@ The Python OSCAL Class is intended to be used as a library for your OSCAL python
 
 Add the following to your `requirements.txt` file or `pyproject.toml` file:
 
-- Latest published verson use: `oscal`
+- Latest published version use: `oscal`
 
 - Most up-to-date, unpublished version use: `git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal`
 
@@ -38,59 +38,63 @@ Installation
 pip install oscal
 ```
 
-To use the `OSCAL` class in your code, import the `oscal_content_class` module from the `oscal` library:
+To use the OSCAL classes in your code, import from the `oscal` library:
 
 ```python
-from oscal import oscal_content_class as oscal_content
+from oscal import Catalog
 
-# Create a new OCAL catalog object
-oscal_catalog_obj = oscal_content.create_new_oscal_content(
-                     model_name="catalog", 
-                     title="My Catalog", 
-                     version="DRAFT-1.0", 
-                     published="2026-03-02T00:00:00Z")
+# Create a new catalog object
+catalog = Catalog.new(
+    title="My Catalog", 
+    version="DRAFT-1.0", 
+    published="2026-03-02T00:00:00Z"
+)
 
-oscal_catalog_obj.create_control_group("", "ac", "Access Control", 
-                                       props=[{"name":"label", "value": "AC"}, 
-                                              {"name":"sort-id", "value": "001"}])
+# Create a control group and controls
+catalog.create_control_group("", "ac", "Access Control", 
+                             props=[{"name":"label", "value": "AC"}, 
+                                    {"name":"sort-id", "value": "001"}])
 
-oscal_catalog_obj.create_control("ac", "ac-1", "Access Control Policy and Procedures",
-                                       props=[{"name":"label", "value": "AC-1"}, 
-                                              {"name":"sort-id", "value": "001-001"}],
-                                              statements=["The organization develops, documents, and disseminates an access control policy that addresses purpose, scope, roles, responsibilities, management commitment, coordination among organizational entities, and compliance."],
-                                              )
+catalog.create_control("ac", "ac-1", "Access Control Policy and Procedures",
+                       props=[{"name":"label", "value": "AC-1"}, 
+                              {"name":"sort-id", "value": "001-001"}],
+                       statements=["The organization develops, documents, and disseminates an access control policy that addresses purpose, scope, roles, responsibilities, management commitment, coordination among organizational entities, and compliance."])
 
-oscal_catalog_obj.create_control("ac", "ac-2", "Access Control Enforcement",
-                                       props=[{"name":"label", "value": "AC-2"}, 
-                                              {"name":"sort-id", "value": "001-002"}],
-                                              statements=["The organization enforces access control policies through technical and administrative mechanisms."],
-                                              )
+catalog.create_control("ac", "ac-2", "Access Control Enforcement",
+                       props=[{"name":"label", "value": "AC-2"}, 
+                              {"name":"sort-id", "value": "001-002"}],
+                       statements=["The organization enforces access control policies through technical and administrative mechanisms."])
 
-if oscal_catalog_obj:
-    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
+# Save to multiple formats
+catalog.dump("test_catalog.json", format="json", pretty_print=True)
+catalog.dump("test_catalog.xml",  format="xml",  pretty_print=True)
+catalog.dump("test_catalog.yaml", format="yaml", pretty_print=True)
 
 ```
 
-### Instantiate the OSCAL class
+### Load OSCAL content from a file
 
-Open OSCAL content directly from a file:
+Open OSCAL content directly from a local file:
+
 ```python
-from oscal import oscal_content_class as oscal_content
+from oscal import Catalog
 
-oscal_catalog_obj = oscal_content_class.OSCAL(filename="./catalog.xml")
+# Load from file
+catalog = Catalog.load("./catalog.xml")
 
-if oscal_catalog_obj:
-    oscal_catalog_obj.save("test_catalog.json", format="json", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.xml", format="xml", pretty_print=True)
-    oscal_catalog_obj.save("test_catalog.yaml", format="yaml", pretty_print=True)
+# Save to other formats
+catalog.dump("test_catalog.json", format="json", pretty_print=True)
+catalog.dump("test_catalog.xml", format="xml", pretty_print=True)
+catalog.dump("test_catalog.yaml", format="yaml", pretty_print=True)
 
 ```
 
-Use an existing OSCAL string:
+### Parse OSCAL content from a string
+
+Use `loads()` with OSCAL content already in memory:
 
 ```python
+from oscal import OSCAL
 
 oscal_content = """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -102,11 +106,25 @@ oscal_content = """
       <version>DRAFT</version>
       <oscal-version>1.1.3</oscal-version>
    </metadata>
-
 </catalog>
 """
 
-oscal_catalog_obj = oscal_content_class.OSCAL(content=oscal_content)
+catalog = OSCAL.loads(oscal_content)
 
 ```
 
+## Use of AI for Creating/Maintaining This Library
+
+**No portion of this library was "vibe coded".**
+
+Early versions of this library were written entirely without the use of AI tools.
+
+Claude/Claude Code and GitHub Co-pilot have been used in a manner similar to pair-programming. This includes:
+- options analysis when planning approaches
+- improving alignment with "pythonic" best practices
+- targeted code reviews
+- resolving linter issues
+- aid in debugging and testing
+- drafting individual functions/methods that I refine and test 
+- drafting portions of documentation
+- drafting/creating unit tests
