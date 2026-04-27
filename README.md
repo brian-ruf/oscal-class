@@ -1,6 +1,6 @@
 # OSCAL Python Library
 
-This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) XML, JSON and YAML content. It provides classes for OSCAL content. The classes are able to perform validation, format conversion and some content manipulation. 
+This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) XML, JSON and YAML content. It provides classes to perform validation, format conversion and some content manipulation. 
 
 It handles all published OSCAL versions, and can "learn" new versions as they are published by NIST.
 
