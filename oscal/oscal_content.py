@@ -177,8 +177,18 @@ class OSCAL(LoggableMixin):
         self.schema_valid["_dict"] = None # Will be set to True/False after JSON validation, None if not yet validated or not applicable
         self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
 
-        # Get the OSCAL support object 
-        self._support = get_support() 
+        # Get the OSCAL support object
+        self._support = get_support()
+
+        # Call subclass initialization hook (no-op in base; overridden by subclasses)
+        self._init_common()
+
+    # -------------------------------------------------------------------------
+    def _init_common(self):
+        """Subclass initialization hook. Override in model-specific subclasses
+        to initialize attributes that are not part of the base OSCAL class.
+        Always call super()._init_common() at the start of the override.
+        """
 
     # -------------------------------------------------------------------------
     # Backward-compatible state aliases

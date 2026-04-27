@@ -156,7 +156,6 @@ class Catalog(OSCAL):
                     remarks_node = ElementTree.SubElement(control, "remarks")
                     self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
                 parent_node.append(control)
-                self.content_modified()
                 status = True
             else:
                 logger.warning(f"CREATE CONTROL: Unable to find parent group with id {parent_id}")
@@ -247,7 +246,6 @@ class Catalog(OSCAL):
                     self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
 
                 parent_node.append(group)
-                self.content_modified()
                 status = True
             else:
                 logger.warning(f"CREATE GROUP: Unable to find parent group with id {parent_id}")
