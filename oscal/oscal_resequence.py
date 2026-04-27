@@ -3,18 +3,18 @@
 oscal_resequence.py
 
 Resequences keys in OSCAL JSON and YAML files to match the canonical order
-defined in NIST OSCAL 1.2.0 syntax documentation. Data and parent/child
+defined in NIST OSCAL syntax documentation. Data and parent/child
 relationships are preserved exactly; only key ordering changes.
 
 Supports all 8 OSCAL models:
   - Catalog
   - Profile
+  - Mapping Collection
   - Component Definition
   - System Security Plan (SSP)
   - System Assessment Plan (SAP)
   - System Assessment Results (SAR)
   - Plan of Action and Milestones (POA&M)
-  - Assessment Layer (shared sub-structures)
 
 Usage:
     python oscal_resequence.py <input_file> [output_file]
@@ -633,6 +633,55 @@ POAM_ITEM_KEYS = [
 
 POAM_RELATED_FINDING_KEYS = ["finding-uuid"]
 
+# ── Mapping Collection ───────────────────────────────────────────────────────
+
+MAPPING_COLLECTION_ROOT_KEYS = [
+    "uuid", "metadata", "provenance", "mappings", "back-matter",
+]
+
+MAPPING_PROVENANCE_KEYS = [
+    "method", "matching-rationale", "status", "confidence-score",
+    "coverage", "mapping-description", "responsible-parties", "props",
+    "links", "remarks",
+]
+
+MAPPING_KEYS = [
+    "uuid", "method", "matching-rationale", "status", "source-resource",
+    "target-resource", "maps", "props", "links", "remarks",
+    "mapping-description", "source-gap-summary", "target-gap-summary",
+    "confidence-score", "coverage",
+]
+
+MAPPING_MAP_ENTRY_KEYS = [
+    "uuid", "ns", "matching-rationale", "relationship", "sources",
+    "targets", "qualifiers", "confidence-score", "coverage", "props",
+    "links", "remarks",
+]
+
+MAPPING_ITEM_KEYS = [
+    "type", "id-ref", "props", "links", "remarks",
+]
+
+MAPPING_RESOURCE_REFERENCE_KEYS = [
+    "ns", "type", "href", "props", "links", "remarks",
+]
+
+MAPPING_QUALIFIER_KEYS = [
+    "subject", "predicate", "category", "description", "remarks",
+]
+
+MAPPING_GAP_SUMMARY_KEYS = [
+    "uuid", "unmapped-controls",
+]
+
+MAPPING_CONFIDENCE_SCORE_KEYS = ["category", "percentage"]
+
+MAPPING_COVERAGE_KEYS = ["generation-method", "target-coverage"]
+
+MAPPING_SELECT_CONTROL_KEYS = [
+    "with-child-controls", "with-ids", "matching",
+]
+
 # ── Master dispatch table ────────────────────────────────────────────────────
 # Maps (context_path_tuple, key_name) → ordered_key_list.
 # A context path of ("*",) acts as a wildcard for objects matched anywhere
@@ -645,6 +694,8 @@ ORDERING_BY_PARENT: dict[str, list[str]] = {
     # ── Root model objects ──────────────────────────────────────────────────
     "catalog":                      CATALOG_ROOT_KEYS,
     "profile":                      PROFILE_ROOT_KEYS,
+    "mapping":                      MAPPING_COLLECTION_ROOT_KEYS,
+    "mapping-collection":           MAPPING_COLLECTION_ROOT_KEYS,
     "component-definition":         COMPONENT_DEF_ROOT_KEYS,
     "system-security-plan":         SSP_ROOT_KEYS,
     "assessment-plan":              SAP_ROOT_KEYS,
@@ -796,6 +847,21 @@ ORDERING_BY_PARENT: dict[str, list[str]] = {
     "plan-of-action-and-milestones.local-definitions": POAM_LOCAL_DEFS_KEYS,
     "poam-items":                   POAM_ITEM_KEYS,
     "related-findings":             POAM_RELATED_FINDING_KEYS,
+
+    # ── Mapping Collection ─────────────────────────────────────────────────
+    "provenance":                   MAPPING_PROVENANCE_KEYS,
+    "mappings":                     MAPPING_KEYS,
+    "maps":                         MAPPING_MAP_ENTRY_KEYS,
+    "source-resource":              MAPPING_RESOURCE_REFERENCE_KEYS,
+    "target-resource":              MAPPING_RESOURCE_REFERENCE_KEYS,
+    "sources":                      MAPPING_ITEM_KEYS,
+    "targets":                      MAPPING_ITEM_KEYS,
+    "qualifiers":                   MAPPING_QUALIFIER_KEYS,
+    "source-gap-summary":           MAPPING_GAP_SUMMARY_KEYS,
+    "target-gap-summary":           MAPPING_GAP_SUMMARY_KEYS,
+    "confidence-score":             MAPPING_CONFIDENCE_SCORE_KEYS,
+    "coverage":                     MAPPING_COVERAGE_KEYS,
+    "unmapped-controls":            MAPPING_SELECT_CONTROL_KEYS,
 }
 
 
@@ -866,6 +932,8 @@ def _detect_model_root_key(data: dict) -> Optional[str]:
     known_roots = [
         "catalog",
         "profile",
+        "mapping",
+        "mapping-collection",
         "component-definition",
         "system-security-plan",
         "assessment-plan",

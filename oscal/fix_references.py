@@ -21,6 +21,7 @@ OSCAL_MODELS = [
     'assessment-results',
     'system-security-plan',
     'component-definition',
+    'mapping-collection',
     'profile',
     'catalog',
     'plan-of-action-and-milestones'

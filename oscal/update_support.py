@@ -1,6 +1,6 @@
 import sys
 
-from oscal.oscal_support_class import setup_support
+from oscal.oscal_support import configure_support
 import os
 import argparse
 from loguru import logger
@@ -31,10 +31,10 @@ SUPPORT_ZIP_PATH = os.path.abspath(os.path.join(script_dir, "data", "oscal_suppo
 
 logger.info("Database absolute path: " + SUPPORT_DB_PATH)
 logger.info(f"Update mode: {update_mode}")
-supportObj = setup_support(SUPPORT_DB_PATH)
+support_obj = configure_support(db_path=SUPPORT_DB_PATH, init_mode="auto")
 
 
-if supportObj.update(update_mode):
+if support_obj.update(mode=update_mode):
     logger.info("Support assets updated successfully.")
 
     # Zip the updated support database for distribution

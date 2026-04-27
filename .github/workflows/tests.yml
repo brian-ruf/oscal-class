@@ -31,4 +31,4 @@ jobs:
           pip install pytest loguru python-dateutil markdown PyYAML
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/unit -v

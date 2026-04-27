@@ -1,16 +1,22 @@
 """
 Functions specific to OSCAL assessment objects. (AP, AR, and POA&M)
 """
-from .oscal_content_class import OSCAL
+from .oscal_content import OSCAL
 
-class assessment_plan(OSCAL):
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class AssessmentPlan(OSCAL):
     """Class representing an OSCAL Assessment Plan (AP) object."""
-    pass
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
 
-class assessment_results(OSCAL):
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class AssessmentResults(OSCAL):
     """Class representing an OSCAL Assessment Results (AR) object."""
-    pass
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
 
-class poam(OSCAL):
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class POAM(OSCAL):
     """Class representing an OSCAL Plan of Action and Milestones (POA&M) object."""
-    pass
+    def _init_common(self):
+        super()._init_common()        # run OSCAL's common init first
