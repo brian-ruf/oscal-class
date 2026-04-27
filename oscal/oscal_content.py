@@ -13,10 +13,6 @@ import json
 import yaml
 import uuid
 import elementpath
-try:
-    import jsonpath  # noqa: F401  (reserved for future JSONPath queries)
-except ModuleNotFoundError:
-    jsonpath = None  # noqa: F401
 from loguru             import logger
 from typing             import Optional, Any
 from datetime           import datetime, timezone
@@ -49,17 +45,6 @@ _SIMPLE_URI_SCHEMES = {"http", "https", "file", "ftp", "data"}
 # OSCAL Default Namespace for XML processing
 _NSMAP = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
 
-"""
-IN PROGRESS / TODO:
-- 
-- Ensure format is synced before saving (ie. updates with XML, but saving to JSON)
-- Verify passed content is working in all three formats
-- Add fetch to get via HREF
-- Build import tree
-- Build profile resolution logic
-
-
-"""
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Factory Methods and Initializers
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -68,7 +53,7 @@ def requires(**conditions):
 
     Usage:
         @requires(writable=True)
-        @requires(remote=True, cached=True)
+        @requires(is_remote=True, is_cached=True)
     """
     def decorator(fn):
         @wraps(fn)
@@ -88,8 +73,8 @@ def if_update_successful(fn):
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
         result = fn(self, *args, **kwargs)
-        self.synced = False 
-        self.unsaved = True 
+        self.is_synced = False
+        self.is_unsaved = True
         self.last_modified = oscal_date_time_with_timezone()
         return result
     return wrapper
@@ -113,16 +98,16 @@ class OSCAL(LoggableMixin):
     """
         Attributes (Content Location):
             href_original: The original href as provided (e.g., in an import statement)
-            href_valid   : The validated href that was successfully loaded (may be different than original if original failed and was retried with a new href)
-            href_local   : The local file path where the content is stored (same as href_valid for local files, or the path to the cached copy for remote files)
+            is_valid_href: True if the href is accessible and the content was loaded successfully
+            href         : Working href (may differ from href_original after redirect/retry)
 
         Attributes (Class States):
-            valid    : True if the content passed OSCAL validation, False otherwise
-            local    : True if the source is a local file, False if it's remote (http/https)
-            cached   : True if remote content has a local cache copy, False otherwise
-            read_only: True if local content is read-only, False if it's read-write
-            synced   : True if the in-memory tree/dict is in sync with the raw content, False if there are unsaved changes
-            unsaved  : True if there are unsaved modifications, False otherwise
+            is_valid    : True if the content passed OSCAL validation, False otherwise
+            is_local    : True if the source is a local file, False if it's remote (http/https)
+            is_cached   : True if remote content has a local cache copy, False otherwise
+            is_read_only: True if local content is read-only, False if it's read-write
+            is_synced   : True if the in-memory tree/dict is in sync with the raw content, False if there are unsaved changes
+            is_unsaved  : True if there are unsaved modifications, False otherwise
 
         Attributes (Caching and Expiration):
             loaded: Timestamp of when the content was loaded (datetime object)
@@ -154,16 +139,16 @@ class OSCAL(LoggableMixin):
         self._origin      : str = ""     # Origin of the content (e.g. "load", "acquire", "new")
         self.href         : str = ""     # Working href
         self.href_original: str = ""     # The original href as provided (e.g., in an import statement)
-        self.href_valid   : bool = False # Validated href that was successfully loaded (may be different than original if original failed and was retried with a new href)
+        self.is_valid_href: bool = False # True if the href is accessible and the contant was able to be fetched.
         self._refs: list[OscalRef] = []
 
         # Class States
-        self.valid    : bool = False # content passed OSCAL validation
-        self.local    : bool = True  # source is local file (vs http/https)
-        self.cached   : bool = False # remote content has a local cache copy
-        self.read_only: bool = True  # local content is read-only (not read-write)
-        self.synced   : bool = False # Boolean indicating whether the tree and dict are in sync
-        self.unsaved  : bool = True  # Boolean indicating whether there are unsaved modifications
+        self.is_valid    : bool = False # content passed OSCAL validation
+        self.is_local    : bool = True  # source is local file (vs http/https)
+        self.is_cached   : bool = False # remote content has a local cache copy
+        self.is_read_only: bool = True  # local content is read-only (not read-write)
+        self.is_synced   : bool = False # Boolean indicating whether the tree and dict are in sync
+        self.is_unsaved  : bool = True  # Boolean indicating whether there are unsaved modifications
 
         # Caching and Expiration
         self.loaded: datetime = datetime.now() # Timestamp of when the content was loaded
@@ -196,6 +181,68 @@ class OSCAL(LoggableMixin):
         self._support = get_support() 
 
     # -------------------------------------------------------------------------
+    # Backward-compatible state aliases
+    @property
+    def valid(self) -> bool:
+        return self.is_valid
+
+    @valid.setter
+    def valid(self, value: bool):
+        self.is_valid = value
+
+    @property
+    def local(self) -> bool:
+        return self.is_local
+
+    @local.setter
+    def local(self, value: bool):
+        self.is_local = value
+
+    @property
+    def remote(self) -> bool:
+        return self.is_remote
+
+    @remote.setter
+    def remote(self, value: bool):
+        self.is_local = not value
+
+    @property
+    def cached(self) -> bool:
+        return self.is_cached
+
+    @cached.setter
+    def cached(self, value: bool):
+        self.is_cached = value
+
+    @property
+    def read_only(self) -> bool:
+        return self.is_read_only
+
+    @read_only.setter
+    def read_only(self, value: bool):
+        self.is_read_only = value
+
+    @property
+    def synced(self) -> bool:
+        return self.is_synced
+
+    @synced.setter
+    def synced(self, value: bool):
+        self.is_synced = value
+
+    @property
+    def unsaved(self) -> bool:
+        return self.is_unsaved
+
+    @unsaved.setter
+    def unsaved(self, value: bool):
+        self.is_unsaved = value
+
+    @property
+    def is_remote(self) -> bool:
+        return not self.is_local
+
+    # -------------------------------------------------------------------------
     @classmethod
     def loads(cls, content: str | dict, *, href: str | None = None):
         """Initialize from in-memory OSCAL content.
@@ -211,7 +258,7 @@ class OSCAL(LoggableMixin):
 
         normalized_content = json.dumps(content) if isinstance(content, dict) else content
         if instance.initial_validation(normalized_content):
-            instance.read_only = False
+            instance.is_read_only = False
 
         return instance
 
@@ -251,7 +298,7 @@ class OSCAL(LoggableMixin):
 
         instance.href_original = resolved_href
         if instance.initial_validation(content):
-            instance.read_only = False
+            instance.is_read_only = False
 
         return instance
 
@@ -329,7 +376,7 @@ class OSCAL(LoggableMixin):
         instance.model       = cls.__name__.lower()  # e.g. "catalog", "profile"
         content     = create_new_oscal_content(instance.model, title, version, published)
         if instance.initial_validation(content):
-            instance.read_only = False
+            instance.is_read_only = False
         return instance
 
     # -------------------------------------------------------------------------
@@ -361,7 +408,7 @@ class OSCAL(LoggableMixin):
         # if no filename is passed, use the original location if available
         if filename == "":
             logger.debug("No filename specified for dump; will use original location if available.")
-            filename = self.href_valid if self.href_valid else self.href_original
+            filename = self.href if self.href else self.href_original
             if filename == "":
                 logger.error("No filename specified and no valid original location available. Cannot save without a filename.")
                 return False
@@ -433,10 +480,10 @@ class OSCAL(LoggableMixin):
         # classify and load the source
         if self.source != "":
             logger.debug(f"Building Import Tree for {self.source}")
-            classify_source() # TODO: Implement classify_source() to determine the source type and scheme, and set self.source_supported, self.source_type, and self.source_scheme accordingly
+            classify_source() 
             if self.source_supported:
                 logger.debug(f"Source classified as type '{self.source_type}' with scheme '{self.source_scheme}'. Attempting to load content.")
-                content = load_source() # TODO: Implement load_source() to fetch content based on the classified source type and scheme
+                content = load_source() 
                 if content:
                     oscal_file = OSCAL(content=content)
                     if oscal_file.is_valid():
@@ -458,9 +505,6 @@ class OSCAL(LoggableMixin):
                 tree_obj["error"] = "Source type or scheme is not supported for loading"
                 logger.warning(f"Unsupported source — cannot load: {self.source} "
                                f"(type={self.source_type}, scheme={self.source_scheme})")
-
-        if status and tree_obj["type"] == "profile":
-            pass # TODO: recursively process imports and build the full import tree
 
         return status
 
@@ -488,7 +532,7 @@ class OSCAL(LoggableMixin):
     @property
     def is_cache_expired(self) -> bool:
         """Only meaningful when remote and cached."""
-        if self.local or not self.cached or self.ttl <= 0:
+        if self.is_local or not self.is_cached or self.ttl <= 0:
             return False
         return (datetime.now() - self.loaded).total_seconds() > self.ttl
 
@@ -496,22 +540,22 @@ class OSCAL(LoggableMixin):
     @property
     def is_editable(self) -> bool:
         """Can this content be modified?"""
-        return self.valid and self.local and not self.read_only
+        return self.is_valid and self.is_local and not self.is_read_only
 
     # -------------------------------------------------------------------------
     @property
     def state(self) -> str:
         """Derive the effective state from the independent dimensions."""
-        if not self.valid:
+        if not self.is_valid:
             return "invalid"
-        if self.remote:
-            if not self.cached:
+        if self.is_remote:
+            if not self.is_cached:
                 return "not-cached"
             if self.is_cache_expired:
                 return "expired"
             return "read-only"
         # local
-        return "read-write" if self.local and not self.read_only else "read-only"
+        return "read-write" if self.is_local and not self.is_read_only else "read-only"
 
     # -------------------------------------------------------------------------
     @property
@@ -597,7 +641,6 @@ class OSCAL(LoggableMixin):
                     self.published = content_publication
                     logger.debug(f"OSCAL model '{self.model}' and version '{self.oscal_version}' identified.")
                     status = True
-                    # **** TODO: VALIDATE ****
                     self.validate()
                 else:
                     logger.error("ROOT ELEMENT IS NOT AN OSCAL MODEL: " + oscal_root)
@@ -617,15 +660,14 @@ class OSCAL(LoggableMixin):
         Currently uses the appropriate format schema.
         Eventually will use meataschema for direct validation.
         """
-        # TODO: Implement actual validation logic here
-        logger.debug("Validating OSCAL content...")
+
         if format == "":
             format = self.original_format
 
         if format not in OSCAL_FORMATS:
             logger.error(f"The validation format specified ({format}) is not an OSCAL format.")
-            self.valid = False
-            return self.valid
+            self.is_valid = False
+            return self.is_valid
 
         if format == "xml":
             logger.debug("Validating XML content against schema...")
@@ -641,17 +683,21 @@ class OSCAL(LoggableMixin):
                     xml_string = self._xml_serializer()
                     schema.validate(xml_string)
                     self.schema_valid["_tree"] = True
+                    self.is_valid = True
                     logger.debug("XML schema validation passed.")
 
                 except xmlschema.XMLSchemaValidationError as e:
                     logger.error(f"XML schema validation failed: {e.reason}")
                     self.schema_valid["_tree"] = False
+                    self.is_valid = False
                 except Exception as e:
                     logger.error(f"XML schema validation error: {str(e)}")
                     self.schema_valid["_tree"] = False
+                    self.is_valid = False
             else:
                 logger.error("Unable to load XML schema for validation.")
                 self.schema_valid["_tree"] = False
+                self.is_valid = False
 
         elif format in ("json", "yaml"):
             logger.debug(f"Validating {format} content against schema...")
@@ -670,25 +716,30 @@ class OSCAL(LoggableMixin):
                     if isinstance(schema_dict, dict) and isinstance(self._dict, dict):
 
                         # Validate (raises exception with details if invalid)
-                        jsonschema_rs.validate(self._dict, schema_dict)  # Does not return a value
+                        jsonschema_rs.validate(schema_dict, self._dict)  # schema first, instance second
 
                         self.schema_valid["_dict"] = True
+                        self.is_valid = True
                         logger.debug("JSON schema validation passed.")
                     else:
                         logger.error("Loaded JSON schema is not a valid dictionary.")
                         self.schema_valid["_dict"] = False
+                        self.is_valid = False
 
                 except jsonschema_rs.ValidationError as e:
                     logger.error(f"JSON schema validation failed: {e}")
                     self.schema_valid["_dict"] = False
+                    self.is_valid = False
                 except Exception as e:
                     logger.error(f"JSON schema validation error: {str(e)}")
                     self.schema_valid["_dict"] = False
+                    self.is_valid = False
             else:
                 logger.error("Unable to load JSON schema for validation.")
                 self.schema_valid["_dict"] = False
+                self.is_valid = False
 
-        return self.valid
+        return self.is_valid
 
     # -------------------------------------------------------------------------
     def _sync(self, target_format: str = "") -> bool:
@@ -702,7 +753,7 @@ class OSCAL(LoggableMixin):
         """
         logger.debug("Syncing content if necessary...")
         status = False
-        if not self.synced:
+        if not self.is_synced:
             # If the target format doesn't make sennse, log an error and return False
             if target_format and target_format not in OSCAL_FORMATS:
                 logger.error(f"Target format specified for sync is not an OSCAL format: {target_format}")
@@ -726,7 +777,7 @@ class OSCAL(LoggableMixin):
                     xml_string = self._xml_serializer()
                     json_string = oscal_xml_to_json(xml_string, xsl_converter=xsl_converter)
                     self._dict = json.loads(json_string)
-                    self.synced = True
+                    self.is_synced = True
                     logger.debug("Conversion from XML to dict successful.")
                     status= True
                 else:
@@ -741,7 +792,7 @@ class OSCAL(LoggableMixin):
                     json_string = json.dumps(self._dict)
                     xml_string = oscal_json_to_xml(json_string, xsl_converter=xsl_converter, validate_json=True)
                     self._tree = ElementTree.ElementTree(ElementTree.fromstring(xml_string))
-                    self.synced = True
+                    self.is_synced = True
                     logger.debug("Conversion from dict to XML successful.")
                     status = True
                 else:
@@ -759,7 +810,7 @@ class OSCAL(LoggableMixin):
         """Return the content as an XML string, converting if necessary."""
 
         if self.original_format in ("json", "yaml"):
-            if not self.synced:
+            if not self.is_synced:
                 if not self._sync():
                     logger.error("Failed to sync content for XML serialization.")
                     return ""
@@ -775,7 +826,7 @@ class OSCAL(LoggableMixin):
         """Return the content as a JSON string, converting if necessary."""
 
         if self.original_format == "xml":
-            if not self.synced:
+            if not self.is_synced:
                 if not self._sync():
                     logger.error("Failed to sync content for JSON serialization.")
                     return ""
@@ -791,7 +842,7 @@ class OSCAL(LoggableMixin):
         """Return the content as a YAML string, converting if necessary."""
 
         if self.original_format == "xml":
-            if not self.synced:
+            if not self.is_synced:
                 if not self._sync():
                     logger.error("Failed to sync content for YAML serialization.")
                     return ""
@@ -802,7 +853,7 @@ class OSCAL(LoggableMixin):
         return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def set_metadata(self, content: dict = {}):
         """
@@ -904,7 +955,7 @@ class OSCAL(LoggableMixin):
         return ret_value
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def __set_field(self, path: str, field_value: str):
         """
@@ -949,7 +1000,7 @@ class OSCAL(LoggableMixin):
                     logger.debug(f"Current node after setting: {ElementTree.tostring(current_node, 'utf-8')}")
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def assign_html_string_to_node(self, parent_node: ElementTree.Element, html_string: str):
         """
@@ -983,7 +1034,7 @@ class OSCAL(LoggableMixin):
             logger.error("HTML String: " + html_string)
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def append_child(self, xpath: str, node_name: str, node_content: str = "", attribute_list: list = []) -> (ElementTree.Element | None):
         # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self._tree.tag)
@@ -1023,7 +1074,7 @@ class OSCAL(LoggableMixin):
             return None
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
         """
@@ -1056,8 +1107,13 @@ class OSCAL(LoggableMixin):
                 "href_valid":    entry.get("href_valid"),
                 "status":        str(entry.get("status")),
                 "valid":         entry.get("valid"),
+                "is_valid":      entry.get("is_valid", entry.get("valid")),
+                "local":         entry.get("local"),
+                "is_local":      entry.get("is_local", entry.get("local")),
                 "remote":        entry.get("remote"),
+                "is_remote":     entry.get("is_remote", entry.get("remote")),
                 "cached":        entry.get("cached"),
+                "is_cached":     entry.get("is_cached", entry.get("cached")),
             }
             if child_obj is not None and id(child_obj) not in _seen:
                 child_node.update(child_obj.import_tree(_seen))
@@ -1604,11 +1660,11 @@ def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", descripti
         back_matter = back_matter[0]
     else:
         back_matter = ElementTree.Element("back-matter")
-        if oscal_obj.tree is not None:
-            if isinstance(oscal_obj.tree, ElementTree.ElementTree):
-                root_node = oscal_obj.tree.getroot()
+        if oscal_obj._tree is not None:
+            if isinstance(oscal_obj._tree, ElementTree.ElementTree):
+                root_node = oscal_obj._tree.getroot()
             else:
-                root_node = oscal_obj.tree
+                root_node = oscal_obj._tree
 
             if root_node is not None:
                 root_node.append(back_matter)

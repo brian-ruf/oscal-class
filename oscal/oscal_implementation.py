@@ -55,7 +55,7 @@ class SSP(OSCAL):
             else:
                 logger.error("Failed to find system-implementation element in SSP.")
                 component_obj = None
-        except (Exception, BaseException) as error:
+        except Exception as error:
             logger.error(f"Error appending component (type={component_type}) {component_title}: " + type(error).__name__ + " - " + str(error))
             component_obj = None
 
@@ -90,7 +90,7 @@ class SSP(OSCAL):
                 control_implementation_obj[0].append(impl_req_obj)
             else:
                 logger.error("Failed to find control-implementation element in SSP.")
-        except (Exception, BaseException) as error:
+        except Exception as error:
             logger.error(f"Error appending implemented-requirement for control: {control_id}: " + type(error).__name__ + " - " + str(error))
             impl_req_obj = None
 
@@ -146,7 +146,7 @@ def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, 
         else:
             logger.error("Failed to find system-implementation element in SSP.")
             component_obj = None
-    except (Exception, BaseException) as error:
+    except Exception as error:
         logger.error(f"Error appending component (type={component_type}) {component_title}: " + type(error).__name__ + " - " + str(error))
         component_obj = None
 
@@ -184,7 +184,7 @@ def append_impl_requirement(ssp_obj: OSCAL, control_id: str, props: list = [], l
             system_imiplementation_obj[0].append(impl_req_obj)
         else:
             logger.error("Failed to find system-implementation element in SSP.")
-    except (Exception, BaseException) as error:
+    except Exception as error:
         logger.error(f"Error appending implemented-requirement for control: {control_id}: " + type(error).__name__ + " - " + str(error))
         impl_req_obj = None
 
@@ -236,7 +236,7 @@ def append_by_component(impl_req_obj: ElementTree.Element, component_uuid: str, 
 
         logger.debug("Appending by-component to implemented-requirement")
         impl_req_obj.append(by_component_obj)
-    except (Exception, BaseException) as error:
+    except Exception as error:
         logger.error("Error appending by-component: " + type(error).__name__ + " - " + str(error))
         by_component_obj = None
 

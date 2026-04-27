@@ -14,7 +14,7 @@ When a new version of OSCAL is published, the support module can be updated on a
 
 #### Inspection
 
-Inspection of the OSCAL Support Module is possible using any SQLite database viewer. Note that the suport files are ZIP compressed within the database; however, no encryption is used in order to facilitate inspection. 
+Inspection of the OSCAL Support Module is possible using any SQLite database viewer. Note that the support files are ZIP compressed within the database; however, no encryption is used in order to facilitate inspection. 
 
 For more information see the [Support Module](docs/SUPPORT_MODULE.md) documentation.
 
@@ -24,7 +24,7 @@ The Python OSCAL Class is intended to be used as a library for your OSCAL python
 
 Add the following to your `requirements.txt` file or `pyproject.toml` file:
 
-- Latest published verson use: `oscal`
+- Latest published version use: `oscal`
 
 - Most up-to-date, unpublished version use: `git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal`
 
