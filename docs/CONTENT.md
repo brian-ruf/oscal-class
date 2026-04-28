@@ -172,9 +172,3 @@ For ease of processing any variation of syntax with `import` is assigned an `imp
 
 `source` and `target` are specific to the mapping model, and must be differentiated from each other. `control-implementation` is specific to the component definition model and must be differentiated from `import-component-definition`. 
 
-=== 
-Model office
-- 800-53 r5 catalog
-- Tailored NIST Moderate Moderate Profile
-- Requirements for PostgreSQL CIS
-- Ubuntu: DISA and CIS

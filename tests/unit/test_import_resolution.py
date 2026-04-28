@@ -13,7 +13,7 @@ Covers:
 import os
 import pytest
 from oscal import OSCAL, Catalog
-from oscal.oscal_content import ContentState, ImportState
+from oscal.oscal_content import ContentState, ImportFailureCode, ImportState
 
 _IMPORTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -145,7 +145,8 @@ class TestBackmatterImport:
 # ---------------------------------------------------------------------------
 
 class TestImportErrors:
-    def test_fragment_no_matching_resource(self):
+    def test_fragment_invalid_uuid(self):
+        """'#no-such-uuid-...' is not a valid UUID — must fail as FRAGMENT_INVALID_UUID."""
         xml = """<?xml version="1.0" encoding="UTF-8"?>
 <profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-000000000099">
   <metadata>
@@ -167,8 +168,34 @@ class TestImportErrors:
         result = obj.resolve_imports()
         assert len(result) == 1
         assert result[0]["status"] == ImportState.INVALID
+        assert result[0]["failure"].code == ImportFailureCode.FRAGMENT_INVALID_UUID
         assert obj.imports_resolved is False
         assert obj.content_state == ContentState.VALID
+
+    def test_fragment_valid_uuid_no_resource(self):
+        """Valid UUID fragment with no matching back-matter resource → RESOURCE_NOT_FOUND."""
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-000000000098">
+  <metadata>
+    <title>Missing Resource Profile</title>
+    <last-modified>2026-04-28T00:00:00Z</last-modified>
+    <version>1.0</version>
+    <oscal-version>1.2.1</oscal-version>
+  </metadata>
+  <import href="#aabbccdd-0000-4000-a000-000000000099">
+    <include-all/>
+  </import>
+  <merge>
+    <combine method="keep"/>
+    <as-is>true</as-is>
+  </merge>
+</profile>"""
+        obj = OSCAL.loads(xml)
+        assert obj.is_valid
+        result = obj.resolve_imports()
+        assert len(result) == 1
+        assert result[0]["status"] == ImportState.INVALID
+        assert result[0]["failure"].code == ImportFailureCode.RESOURCE_NOT_FOUND
 
     def test_import_state_loaded_automatically(self):
         """resolve_imports runs automatically on load; import_list is populated immediately."""
@@ -184,7 +211,7 @@ class TestImportErrors:
 class TestImportEntryStructure:
     _REQUIRED_KEYS = {
         "href_original", "href_valid", "status",
-        "is_valid", "is_local", "is_remote", "is_cached", "object",
+        "is_valid", "is_local", "is_remote", "is_cached", "object", "failure",
     }
 
     def test_entry_has_required_keys(self, profile_direct):

@@ -197,11 +197,12 @@ class TestAcquire:
         obj = OSCAL.acquire(sources)
         assert obj.model == "profile"
 
-    def test_acquire_nonexistent_file_returns_empty_model(self):
-        """acquire() on a missing file returns an object with no model."""
-        obj = OSCAL.acquire("/nonexistent/path/missing.json")
-        assert obj is not None
-        assert obj.model == ""
+    def test_acquire_nonexistent_file_raises(self):
+        """acquire() on a missing file raises ImportLoadError with LOCAL_NOT_FOUND."""
+        from oscal.oscal_content import ImportFailureCode, ImportLoadError
+        with pytest.raises(ImportLoadError) as exc_info:
+            OSCAL.acquire("/nonexistent/path/missing.json")
+        assert exc_info.value.code == ImportFailureCode.LOCAL_NOT_FOUND
 
     def test_origin_is_acquire(self):
         """_origin is set to 'acquire' after acquire()."""

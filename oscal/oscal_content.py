@@ -20,6 +20,7 @@ from functools          import wraps
 from enum               import Enum, IntEnum
 from urllib.parse       import urlparse, urljoin
 from urllib.request     import urlopen
+from urllib.error       import HTTPError, URLError
 from xml.etree          import ElementTree
 from dataclasses        import dataclass, field
 
@@ -606,6 +607,12 @@ class OSCAL(LoggableMixin):
         return {href: details for href, details in self.import_tree.items() if details.get('status') == 'failed'}
 
     # -------------------------------------------------------------------------
+    @property
+    def failed_imports(self) -> list[dict]:
+        """Return import_list entries that failed, each carrying a populated 'failure' field."""
+        return [e for e in self.import_list if e.get("failure") is not None]
+
+    # -------------------------------------------------------------------------
     def retry_import(self, failed_href: str, replacement_href: str) -> bool:
         """Retry a failed import by replacing its href and re-attempting resolution.
         Returns True if the retry was initiated, False if the failed_href was not found.
@@ -704,31 +711,73 @@ class OSCAL(LoggableMixin):
                 "is_remote":     None,
                 "is_cached":     False,
                 "object":        None,
+                "failure":       None,  # ImportFailure instance when status is INVALID
             }
 
-            # Resolve candidate hrefs: fragment refs (#uuid) go through back-matter
+            # --- Fragment ref: resolve through back-matter ---
             if raw_href.startswith("#"):
-                uuid = raw_href[1:]
-                rlinks = _backmatter_rlinks(self, uuid)
-                # Expand each rlink with format-equivalent fallbacks (.xml/.json/.yaml)
-                candidates = []
-                for rl in rlinks:
-                    candidates.append(rl)
-                    candidates.extend(_oscal_format_variants(rl))
-                if not candidates:
-                    logger.error(
-                        f"resolve_imports: fragment '{raw_href}' has no matching "
-                        f"back-matter resource or resource has no rlinks."
+                fragment = raw_href[1:]
+
+                if not _is_valid_uuid(fragment):
+                    entry["status"]  = ImportState.INVALID
+                    entry["failure"] = ImportFailure(
+                        code=ImportFailureCode.FRAGMENT_INVALID_UUID,
+                        href_original=raw_href,
+                        message=f"Fragment '{fragment}' is not a valid UUID",
                     )
-                    entry["status"] = ImportState.INVALID
+                    logger.error(f"resolve_imports: fragment '{raw_href}' is not a valid UUID.")
                     self.import_list.append(entry)
                     continue
+
+                resource_info = _backmatter_resource(self, fragment)
+
+                if resource_info is None:
+                    entry["status"]  = ImportState.INVALID
+                    entry["failure"] = ImportFailure(
+                        code=ImportFailureCode.RESOURCE_NOT_FOUND,
+                        href_original=raw_href,
+                        resource_uuid=fragment,
+                        message=f"No back-matter resource found with UUID '{fragment}'",
+                    )
+                    logger.error(f"resolve_imports: no back-matter resource with UUID '{fragment}'.")
+                    self.import_list.append(entry)
+                    continue
+
+                if not resource_info["rlinks"] and not resource_info["has_base64"]:
+                    entry["status"]  = ImportState.INVALID
+                    entry["failure"] = ImportFailure(
+                        code=ImportFailureCode.RESOURCE_NO_VIABLE_CONTENT,
+                        href_original=raw_href,
+                        resource_uuid=fragment,
+                        resource_title=resource_info.get("title", ""),
+                        resource_description=resource_info.get("description", ""),
+                        message=f"Back-matter resource '{fragment}' has no rlinks or base64 content",
+                    )
+                    logger.error(f"resolve_imports: resource '{fragment}' has no viable content.")
+                    self.import_list.append(entry)
+                    continue
+
+                # Build candidates from rlinks in order; base64 fallback is future work
+                candidates = []
+                for rl in resource_info["rlinks"]:
+                    candidates.append(rl)
+                    candidates.extend(_oscal_format_variants(rl))
+
+                # Stash resource metadata so the failure record can carry it
+                entry["resource_uuid"]        = fragment
+                entry["resource_title"]       = resource_info.get("title", "")
+                entry["resource_description"] = resource_info.get("description", "")
+
             else:
                 candidates = [_resolve_href(base_path, raw_href)]
 
-            # Try each candidate in order; use the first that loads as valid OSCAL
+            # --- Try each candidate in order; use the first that yields valid OSCAL ---
+            rlinks_tried: list[str] = []
+            last_load_error: ImportLoadError | None = None
+
             for candidate in candidates:
                 resolved = _resolve_href(base_path, candidate)
+                rlinks_tried.append(resolved)
                 try:
                     child = OSCAL.acquire(resolved)
                     if child.is_valid:
@@ -739,16 +788,47 @@ class OSCAL(LoggableMixin):
                         entry["is_remote"]  = child.is_remote
                         entry["is_cached"]  = child.is_cached
                         entry["status"]     = ImportState.READY
+                        last_load_error     = None
                         break
                     logger.warning(f"resolve_imports: '{resolved}' loaded but failed OSCAL validation.")
+                except ImportLoadError as exc:
+                    last_load_error = exc
+                    logger.warning(f"resolve_imports: load error for '{resolved}': {exc}")
+                    # Auth/unsupported errors won't improve by trying format variants
+                    if exc.code in (ImportFailureCode.REMOTE_AUTH_REQUIRED,
+                                    ImportFailureCode.REMOTE_UNSUPPORTED):
+                        break
                 except Exception as exc:
                     logger.warning(f"resolve_imports: could not load '{resolved}': {exc}")
 
             if entry["status"] != ImportState.READY:
                 entry["status"] = ImportState.INVALID
+                failure_code = last_load_error.code if last_load_error else ImportFailureCode.CONTENT_INVALID
+                failure_uri  = last_load_error.uri  if last_load_error else (rlinks_tried[-1] if rlinks_tried else "")
+                failure_msg  = str(last_load_error) if last_load_error else "All candidates failed OSCAL validation"
+
+                if raw_href.startswith("#"):
+                    entry["failure"] = ImportFailure(
+                        code=failure_code,
+                        href_original=raw_href,
+                        resource_uuid=entry.get("resource_uuid", ""),
+                        resource_title=entry.get("resource_title", ""),
+                        resource_description=entry.get("resource_description", ""),
+                        rlinks_tried=rlinks_tried,
+                        uri=failure_uri,
+                        message=failure_msg,
+                    )
+                else:
+                    entry["failure"] = ImportFailure(
+                        code=failure_code,
+                        href_original=raw_href,
+                        uri=failure_uri,
+                        message=failure_msg,
+                    )
+
                 logger.error(
                     f"resolve_imports: all candidates for '{raw_href}' failed. "
-                    f"Tried: {candidates}"
+                    f"Tried: {rlinks_tried}"
                 )
 
             self.import_list.append(entry)
@@ -1591,6 +1671,59 @@ class ImportState(str, Enum):
     EXPIRED      = "expired"      # The content is valid, but cached copy has expired
 
 # -------------------------------------------------------------------------
+class ImportFailureCode(str, Enum):
+    # Fragment / back-matter failures
+    FRAGMENT_INVALID_UUID      = "fragment-invalid-uuid"       # Fragment is not a valid UUID
+    RESOURCE_NOT_FOUND         = "resource-not-found"          # No back-matter resource with that UUID
+    RESOURCE_NO_VIABLE_CONTENT = "resource-no-viable-content"  # Resource has no rlinks or base64
+    # Full URI / file failures
+    LOCAL_NOT_FOUND            = "local-not-found"             # Local file not found
+    REMOTE_UNREACHABLE         = "remote-unreachable"          # Remote host not reachable
+    REMOTE_AUTH_REQUIRED       = "remote-auth-required"        # Remote resource requires authentication
+    REMOTE_UNSUPPORTED         = "remote-unsupported"          # URI scheme not supported
+    # Content failures (source responded, but content is unusable)
+    CONTENT_EMPTY              = "content-empty"               # Source returned no content
+    CONTENT_INVALID            = "content-invalid"             # Content is not valid OSCAL
+
+# -------------------------------------------------------------------------
+class ImportLoadError(Exception):
+    """Raised by load_source() to carry a typed import failure code to resolve_imports()."""
+    def __init__(self, code: ImportFailureCode, uri: str, message: str = ""):
+        self.code = code
+        self.uri  = uri
+        super().__init__(message or f"{code.value}: {uri}")
+
+# -------------------------------------------------------------------------
+@dataclass
+class ImportFailure:
+    """Structured record of a failed import, carrying enough context for a retry attempt.
+
+    Retry sources the calling module may supply:
+        - A URI fragment (#uuid) pointing to a back-matter resource
+        - A full URI identifying an alternate location for the content
+        - The content itself as an XML, JSON, or YAML string
+    """
+    code: ImportFailureCode
+    href_original: str              # Raw href from the import statement
+
+    # Fragment / back-matter context (populated when href starts with "#")
+    resource_uuid: str = ""
+    resource_title: str = ""
+    resource_description: str = ""
+    rlinks_tried: list = field(default_factory=list)  # hrefs attempted before giving up
+
+    # URI context (populated for full-URI failures)
+    uri: str = ""
+
+    # Human-readable detail
+    message: str = ""
+
+    @property
+    def is_fragment_ref(self) -> bool:
+        """True when the original import href is a back-matter fragment reference."""
+        return self.href_original.startswith("#")
+
+# -------------------------------------------------------------------------
 @dataclass
 class OscalRef:
     """A single resolved reference: an href with an optional media type."""
@@ -1636,33 +1769,47 @@ def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
 # Functions
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def load_content(source: str | dict | OscalRef | list, media_type: str = "", only_oscal: bool = False) -> str:
-    """Load content from one or more sources and return the first successful payload."""
+    """Load content from one or more sources and return the first successful payload.
+
+    Raises ImportLoadError when a source fails with a typed reason.
+    For multi-ref lists the last ImportLoadError is re-raised if all sources fail.
+    """
     logger.debug("Loading content from source")
     refs = _normalize_refs(source)
 
     for ref in refs:
         classify_source(ref, only_oscal=only_oscal)
 
-    # Try each ref in order and return the first successfully loaded content.
+    last_error: ImportLoadError | None = None
+
     for ref in refs:
         if not ref.source_supported:
             logger.warning(f"Skipping unsupported source: {ref.href} "
                            f"(type={ref.source_type}, scheme={ref.source_scheme})")
+            last_error = ImportLoadError(
+                ImportFailureCode.REMOTE_UNSUPPORTED, ref.href,
+                f"URI scheme '{ref.source_scheme}' is not supported"
+            )
             continue
 
-        content = load_source(ref)
-        if content:
-            return content
+        try:
+            content = load_source(ref)
+            if content:
+                return content
+        except ImportLoadError as exc:
+            last_error = exc
+            logger.warning(f"Failed to load content from source '{ref.href}': {exc}")
 
-        logger.warning(f"Failed to load content from source: {ref.href}")
-
+    if last_error:
+        raise last_error
     logger.error("No usable content could be loaded from provided sources")
     return ""
 
 def load_source(ref: OscalRef) -> str:
     """Fetch or read content from a classified OscalRef.
 
-    Returns the raw file content as a string, or empty string on failure.
+    Returns the raw content as a string on success.
+    Raises ImportLoadError with a typed ImportFailureCode on any load failure.
     """
     src = ref.href.strip()
     content = ""
@@ -1673,33 +1820,73 @@ def load_source(ref: OscalRef) -> str:
             parsed = urlparse(src)
             local_path = parsed.path
             if parsed.netloc:
-                # file://server/share/path -> //server/share/path
                 local_path = f"//{parsed.netloc}{parsed.path}"
             logger.info(f"Loading controls from file:// URI: {local_path}")
             content = getfile(local_path)
+            if not content:
+                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
+                                      f"File URI returned no content: {local_path}")
+
         elif ref.source_type == "uri" and ref.source_scheme in {"http", "https"}:
             logger.info(f"Loading controls from URL: {src}")
-            content = download_file(src, "oscal_remote_content")
+            try:
+                content = download_file(src, "oscal_remote_content")
+            except HTTPError as exc:
+                if exc.code in (401, 403):
+                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
+                                          f"HTTP {exc.code}: authentication required") from exc
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
+                                      f"HTTP {exc.code}: {exc.reason}") from exc
+            except (URLError, OSError, ConnectionError) as exc:
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+            except Exception as exc:
+                # download_file may raise implementation-specific types; inspect message for auth hints
+                msg = str(exc).lower()
+                if any(t in msg for t in ("401", "403", "unauthorized", "forbidden")):
+                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src, str(exc)) from exc
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+
         elif ref.source_type == "uri" and ref.source_scheme in {"ftp", "data"}:
-            # Keep this stdlib-only for simple, unauthenticated URI access.
             logger.info(f"Loading controls from URI via urllib: {src}")
-            with urlopen(src) as response:  # nosec B310 - intentional unauthenticated read
-                payload = response.read()
-            content = payload.decode("utf-8", errors="replace")
+            try:
+                with urlopen(src) as response:  # nosec B310 - intentional unauthenticated read
+                    payload = response.read()
+                content = payload.decode("utf-8", errors="replace")
+            except HTTPError as exc:
+                if exc.code in (401, 403):
+                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
+                                          f"HTTP {exc.code}: authentication required") from exc
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
+                                      f"HTTP {exc.code}: {exc.reason}") from exc
+            except (URLError, OSError, ConnectionError) as exc:
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+
         elif ref.source_type == "file":
             logger.info(f"Loading controls from file: {src}")
-            content = getfile(src)
+            try:
+                content = getfile(src)
+            except FileNotFoundError as exc:
+                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
+                                      f"File not found: {src}") from exc
+            except OSError as exc:
+                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src, str(exc)) from exc
+            if not content:
+                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
+                                      f"File returned no content: {src}")
+
         else:
-            logger.warning(f"No loader implemented for source: {src} "
-                            f"(type={ref.source_type}, scheme={ref.source_scheme})")
-            return ""
-    except Exception as e:
-        logger.error(f"Failed to load source '{src}': {e}")
-        return ""
+            raise ImportLoadError(ImportFailureCode.REMOTE_UNSUPPORTED, src,
+                                  f"No loader for source type={ref.source_type} scheme={ref.source_scheme}")
+
+    except ImportLoadError:
+        raise  # already typed — let it propagate
+    except Exception as exc:
+        logger.error(f"Unexpected error loading source '{src}': {exc}")
+        raise ImportLoadError(ImportFailureCode.CONTENT_EMPTY, src, str(exc)) from exc
 
     if not content:
-        logger.error(f"Source returned no content: {src}")
-        return ""
+        raise ImportLoadError(ImportFailureCode.CONTENT_EMPTY, src,
+                              f"Source returned no content: {src}")
 
     return content
 
@@ -1770,6 +1957,62 @@ def _oscal_format_variants(href: str) -> list[str]:
     if ext.lower() not in _OSCAL_EXTENSIONS:
         return []
     return [base + e for e in sorted(_OSCAL_EXTENSIONS) if e != ext.lower()]
+
+# -------------------------------------------------------------------------
+def _is_valid_uuid(value: str) -> bool:
+    """Return True if value is a well-formed UUID string."""
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+# -------------------------------------------------------------------------
+def _backmatter_resource(doc_obj, resource_uuid: str) -> dict | None:
+    """Return metadata and rlinks for a back-matter resource identified by UUID.
+
+    Returns a dict with keys: uuid, title, description, rlinks (list[str]), has_base64.
+    Returns None when no resource with the given UUID exists.
+    """
+    if doc_obj._tree is not None:
+        resource_nodes = doc_obj.xpath(
+            f"/*/back-matter/resource[@uuid='{resource_uuid}']"
+        )
+        if not resource_nodes:
+            return None
+        title_nodes       = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/title")
+        desc_nodes        = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/description")
+        rlink_nodes       = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/rlink")
+        base64_nodes      = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/base64")
+
+        # title is plain text; description uses markup-multiline (text may be in child <p> nodes)
+        title       = (title_nodes[0].text or "").strip() if title_nodes else ""
+        description = " ".join(desc_nodes[0].itertext()).strip() if desc_nodes else ""
+        rlinks      = [n.get("href", "").strip() for n in (rlink_nodes or []) if n.get("href", "").strip()]
+        has_base64  = bool(base64_nodes)
+
+    elif doc_obj._dict is not None:
+        root_obj  = doc_obj._dict.get(doc_obj.model, {})
+        resources = root_obj.get("back-matter", {}).get("resources", [])
+        for res in resources:
+            if res.get("uuid") == resource_uuid:
+                title       = res.get("title", "")
+                description = res.get("description", "")
+                rlinks      = [r.get("href", "").strip() for r in res.get("rlinks", []) if r.get("href", "").strip()]
+                has_base64  = bool(res.get("base64"))
+                break
+        else:
+            return None
+    else:
+        return None
+
+    return {
+        "uuid":        resource_uuid,
+        "title":       title,
+        "description": description,
+        "rlinks":      rlinks,
+        "has_base64":  has_base64,
+    }
 
 # -------------------------------------------------------------------------
 def _backmatter_rlinks(doc_obj, uuid: str) -> list[str]:
