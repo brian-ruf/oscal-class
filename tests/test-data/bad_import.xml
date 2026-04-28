@@ -7,8 +7,12 @@
         <oscal-version>1.2.1</oscal-version>
     </metadata>
 
-	<import href="#e9d6719d-c4a3-4d74-9227-907e227427bf">
+	<import href="#e9d6719d-c4a3-4d74-9227-907e227427bg">
 		<include-all />
+    </import>
+
+    <import href="#051a77c1-b61d-4995-8275-dacfe688d510">
+        <include-all />
     </import>
 
     <import href="#051a77c1-b61d-4995-8275-dacfe688d510">

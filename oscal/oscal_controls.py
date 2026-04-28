@@ -47,7 +47,7 @@ class Catalog(OSCAL):
         controls = self.xpath("//control")
         return len(controls) if controls else 0
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
         """
@@ -169,7 +169,7 @@ class Catalog(OSCAL):
         return control
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
         """
@@ -316,7 +316,7 @@ class Profile(OSCAL):
             return None
         return self.catalog.get_control_by_id(control_id)
     # -------------------------------------------------------------------------
-    # @requires(read_only=False)
+    # @requires(is_read_only=False)
     # @if_update_successful
     # def add_or_update_import(self, href: str, include_all: bool = False, include_ids=[], include_with_child=False, exclude_ids=[], exclude_with_child=False):
     #     """
@@ -394,7 +394,7 @@ class Profile(OSCAL):
     #     return True
 
     # # -------------------------------------------------------------------------
-    # @requires(read_only=False)
+    # @requires(is_read_only=False)
     # @if_update_successful
     # def append_with_id(self, href: str, control_ids: list = []) -> bool:
     #     """

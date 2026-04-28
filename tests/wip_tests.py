@@ -1,13 +1,19 @@
 import sys
+import os
 from loguru import logger
 
-from oscal import OSCAL, Catalog, Profile
 
-TEST_FILES_DIR = "tests/test-data"
+from oscal import OSCAL, Catalog
 
-TEST_DATA = f"{TEST_FILES_DIR}/json/FedRAMP_rev5_catalog_tailoring_profile.jso"
+TEST_FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-data")
 
-def test_load_save():
+TEST_DATA = [f"{TEST_FILES_DIR}/bad_test.xml", 
+             f"{TEST_FILES_DIR}/test.xml",
+             f"{TEST_FILES_DIR}/json/FedRAMP_rev5_catalog_tailoring_profile.json",
+             "https://raw.githubusercontent.com/OSCAL-Foundation/fedramp-resources/refs/heads/main/baselines/rev5/json/FedRAMP_rev5_LOW-baseline_profile.json"
+             ]
+
+def hold():
     oscal_catalog_obj = Catalog.new("Test Catalog", version="DRAFT-1.0", published="2026-03-02T00:00:00Z")
 
     oscal_catalog_obj.create_control_group("", "ac", "Access Control", 
@@ -46,25 +52,45 @@ def test_load_save():
 
     del oscal_catalog_obj
 
-def test_load_url():
-    url = "https://raw.githubusercontent.com/usnistgov/oscal-content/refs/heads/main/examples/ssp/json/oscal_leveraged-example_ssp-min.json"
-    url = [{"href": TEST_DATA, "media-type": "application/oscal+json"}, {"href": "https://raw.githubusercontent.com/usnistgov/oscal-content/refs/heads/main/examples/ssp/json/oscal_leveraged-example_ssp-min.json", "media-type": "application/oscal+json"}]
-    # url = [{"href": "./ssp.json", "media-type": "application/oscal+json"}]
-    # url = {"href": "./ssp.json", "media-type": "application/oscal+json"}
-    loaded_ssp = OSCAL.acquire(url)
-    # if loaded_ssp is not None:
-    #     print("=" * 25 + " LOADED SSP FROM URL " + "=" * 25)
-    #     print(loaded_ssp.dumps("xml", pretty_print=True))
-    #     print("=" * 50)
-    #     print(loaded_ssp.dumps("json", pretty_print=True))
-    #     print("=" * 50)
-    #     print(loaded_ssp.dumps("yaml", pretty_print=True))
-    #     print("=" * 50)
-    # else:
-    #     logger.error(f"Failed to load OSCAL Catalog from URL: {url}")
-    del loaded_ssp
+
+
+def test_load():
+    for test_file in TEST_DATA:
+        logger.info(f"Testing load() with file: {test_file}")
+        obj = OSCAL.open(test_file)
+        if obj:
+            logger.info(f"Successfully loaded {test_file}")
+        else:
+            logger.error(f"Failed to load {test_file}")
+
+        print("" + "=" * 25 + " LOAD RESULT " + "=" * 25)
+        print(obj)
+        # if obj.imports_resolved:
+        #     # print (f"Imports resolved: {len(obj.import_list)} import(s) found.")
+        #     # print (f"Import tree resolved: {obj.import_tree}")
+        #     # for entry in obj.import_list:
+        #     #     child = entry.get("object")
+        #     #     print(f"  Import [{entry['status']}]: {entry['href_original']}")
+        #     #     if child:
+        #     #         print(f"    → {child.model}: {child.title}")
+        # elif obj.is_valid:
+        #     print("No imports found.")
+        # elif obj.is_acquired and not obj.is_valid:
+        #     print("Content was acquired, but is not valid.") # not well formed, or not schema valid
+        # elif not obj.is_acquired:
+        #     print("Content was not successfully loaded.")
+
+
+        print("-" * 50)
+
+
+        # assert obj is not None, f"OSCAL.load() returned None for {test_file}"
+        # assert obj.is_valid is True, f"OSCAL.load() returned is_valid=False for {test_file}"
+        # assert obj.model != "", f"OSCAL.load() returned empty model string for {test_file}"
+        # print("=" * 50)
+        del obj
 
 if __name__ == "__main__":
     # Run the test function
     # test_load_save()
-    test_load_url()
+    test_load()

@@ -29,6 +29,7 @@ body:
       label: Acceptance Criteria
       description: The items below are general acceptance criteria for all User Stories. Please describe anything else that must be completed for this issue to be considered resolved.
       value: |
+        - [ ] All goals have been met or have been determined to be out of scope for this issue.
         - [ ] All documentation affected by the changes in this issue have been updated. Changes to the documentation can be made in the `./docs` directory of your branch.
         - [ ] A Pull Request (PR) is submitted that fully addresses the goals of this User Story. This issue is referenced in the PR.
         - [ ] The CI-CD build process runs without any reported errors on the PR. This can be confirmed by reviewing that all checks have passed in the PR.

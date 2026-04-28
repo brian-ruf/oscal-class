@@ -197,11 +197,12 @@ class TestAcquire:
         obj = OSCAL.acquire(sources)
         assert obj.model == "profile"
 
-    def test_acquire_nonexistent_file_returns_empty_model(self):
-        """acquire() on a missing file returns an object with no model."""
-        obj = OSCAL.acquire("/nonexistent/path/missing.json")
-        assert obj is not None
-        assert obj.model == ""
+    def test_acquire_nonexistent_file_raises(self):
+        """acquire() on a missing file raises ImportLoadError with LOCAL_NOT_FOUND."""
+        from oscal.oscal_content import ImportFailureCode, ImportLoadError
+        with pytest.raises(ImportLoadError) as exc_info:
+            OSCAL.acquire("/nonexistent/path/missing.json")
+        assert exc_info.value.code == ImportFailureCode.LOCAL_NOT_FOUND
 
     def test_origin_is_acquire(self):
         """_origin is set to 'acquire' after acquire()."""
@@ -232,7 +233,7 @@ class TestFromConstructors:
 
     def test_from_dict(self):
         data = json.loads(_read(_JSON_PROFILE))
-        obj = OSCAL.from_dict(data)
+        obj = OSCAL.loads(data)
         assert obj.model == "profile"
 
     def test_from_string(self):
@@ -241,11 +242,11 @@ class TestFromConstructors:
         assert obj.original_format == "xml"
 
     def test_from_file(self):
-        obj = OSCAL.from_file(_JSON_PROFILE)
+        obj = OSCAL.load(_JSON_PROFILE)
         assert obj.model == "profile"
 
     def test_from_uri(self):
-        obj = OSCAL.from_uri({"href": _JSON_PROFILE})
+        obj = OSCAL.acquire({"href": _JSON_PROFILE})
         assert obj.model == "profile"
 
 
@@ -288,7 +289,7 @@ class TestNew:
     def test_catalog_new_read_only_false(self):
         """A newly created catalog should not be read-only."""
         obj = Catalog.new("Editable Catalog")
-        assert obj.read_only is False
+        assert obj.is_read_only is False
 
     def test_profile_new_returns_profile(self):
         """Profile.new() returns an object with model == 'profile'."""

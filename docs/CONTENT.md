@@ -60,20 +60,81 @@ print(obj.model)           # catalog
 
 ## OSCAL Class States
 
-The OSCAL Class can have the following states. 
+There are three state types within the OSCAL Class:
+- **Content State**: The sate of the OSCAL content itself, which references validity.
+- **Origin**: The origin of the OSCAL content, including characteristics related to local caching.
+- **Synced**: The state of synchronization between OSCAL formats (XML/tree and JSON/YAML/dict)
 
-- valid or not valid (`.valid`): The OSCAL content is either OSCAL schema valid or it is not.
-- local or remote (`.remote`): The OSCAL content was acquired either locally (relative to the executing code) or remotely. 
-- read-write or read-only (`.read_only`): The OSCAL content may be altered, or must not be altered.
-  - Remote content is always treated as read-only.
+### Content State (.content_state)
+
+The content itself can have the following states in progression. Later items on the list cannot be satisfied if lower items on the list are not satisfied. 
+
+- **Acquired** (or failed to acquire) (`.is_acquired`): The content was acquired successfully.
+- **Well Formed** (or not well-formed) (`.is_well_formed`): The content is well-formed for its format (XML, JSON, or YAML).
+- **schema Valid** (or not schema valid) (`.is_valid`): The content is valid to the appropriate OSCAL version and schema. _This is the minumum state for viewing and editing._
+- **Imports Resolved** (or resolution errors) (`.imports_resolved`): All imports of other OSCAL content occurred successfully.
+- **Core Metaschema Valid** (or not core metaschema valid) [FUTURE]: All constraints are satisfied in the core OSCAL metaschema.
+- **Additional Metaschema Valid** (or not additional metaschema valid) [FUTURE]: All constraints are satisfied in any provided third-party metaschema.
+
+These are defined in `oscal_content.py` as follows:
+
+```python
+
+class ContentState(IntEnum):
+    NONE             = -1  # No content / uninitialized
+    NOT_AVAILABLE    = 0  # Unable to acquire content
+    ACQUIRED         = 1  # Content was acquired (non-empty string)
+    WELL_FORMED      = 2  # Content is well-formed XML, JSON, or YAML
+    VALID            = 3  # Content passes OSCAL schema validation (minimum for viewing/editing)
+    IMPORTS_RESOLVED = 4  # All imported OSCAL documents resolved successfully
+    # FUTURE: CORE_METASCHEMA_VALID = 5, ADDITIONAL_METASCHEMA_VALID = 6
+
+```
+
+#### Example Usage
+
+```python
+
+        obj = OSCAL.open(test_file)
+        if obj:
+            logger.info(f"Successfully loaded {test_file}")
+        else:
+            logger.error(f"Failed to load {test_file}")
+
+        print("" + "=" * 25 + " LOAD RESULT " + "=" * 25)
+        print(obj)
+        if obj.is_valid:
+            if obj.imports_resolved:
+                print(obj.import_list)
+                print(obj.import_tree)
+            else:
+                print("Imports not resolved.")
+        elif obj.is_acquired and not obj.is_valid:
+            print("Content was acquired, but is not valid.") # not well formed, or not schema valid
+        elif obj.is_acquired:
+            print("Content was not successfully loaded.")
+```
+
+### Origin State (`.`)
+
+The following are states relative to the content's origin  
+- **Local** (or remote) (`.is_local`): The OSCAL content was acquired either locally (relative to the executing code) or remotely. 
+- **Cached** (or not) (`.is_cached`): Is the remote content cached locally or not?
+  - This is only relevant for remote content. Ignored for local content.
+- **Fresh** (or stale) The cached content is either within its time to live (TTL) or has exceeded it's TTL. 
+  - As determined by adding:
+    - `.loaded` (date/time of last acquisition) to
+    - `.ttl` (time to live in seconds) and comparing to
+    - _now_. 
+
+### Additional States (`.`)
+
+The following state is relative to format conversion and native mutations:
+- **Read Only** (or read-write ) (`.is_read_only`): The OSCAL content may be altered, or must not be altered.
+  - Remote content is always read-only.
   - Local content may be either read-write or read-only.
-- cached or not (`.cached`): Is the remote content cached locally or not.
-  - This is only relevant to remote content.
-  - This is ignored for local content.
-- cache is either valid or expired 
-  - As determined by comparing `.loaded` (date/time of last acquisition) to `.ttl` (time to live in seconds) and the current date/time. 
-
-- Synced: `.tree` and `.dict` are synchronized. (`.synced`)
+- **Synced** (or not): `.tree` and `.dict` are synchronized. (`.is_synced`)
+- **Saved** (or not): The content has been mutated, but not saved. (`.is_saved`)
 
 NOTE: local caching of remote content is not yet implemented.
 
@@ -86,6 +147,7 @@ Each OSCAL object maints a `dict` of its imported files in the `.import_list` at
 ```python
 self.import_list = [
     {
+        "type": "import", # The statement type that generated the import (`import`, `source`, `target`, `control-implementation`)
         "href_original": "https://example.com/profile.xml", # href specifd in the content
         "href_valid"   : "https://example.com/root.xml",    # valid href (may be same as original or may be different if original could not be loaded)
         "href_local"   : "file://example.com/root.xml",     # local copy (cached copy if remote) 
@@ -101,4 +163,12 @@ self.import_list = [
     } 
 ] 
 ```
+For ease of processing any variation of syntax with `import` is assigned an `import` type. This includes:
+- `import` in profiles;
+- `import-component-definition` in cDefs;
+- `import-profile` in SSPs;
+- `import-ssp` in APs and POA&Ms; and
+- `import-assessment-plan` in ARs. 
+
+`source` and `target` are specific to the mapping model, and must be differentiated from each other. `control-implementation` is specific to the component definition model and must be differentiated from `import-component-definition`. 
 

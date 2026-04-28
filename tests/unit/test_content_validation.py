@@ -197,9 +197,9 @@ class TestSchemaInvalidContent:
         assert obj.is_valid is False
 
     def test_json_schema_valid_flag_is_false(self):
-        """Schema-invalid JSON sets schema_valid['_dict'] to False (not None)."""
+        """Schema-invalid JSON sets schema_valid['_tree'] to False (JSON is converted to XML before validation)."""
         obj = OSCAL.loads(_JSON_SCHEMA_INVALID)
-        assert obj.schema_valid["_dict"] is False
+        assert obj.schema_valid["_tree"] is False
 
     def test_yaml_schema_invalid_does_not_raise(self):
         """Well-formed OSCAL-shaped YAML that is schema-invalid must not raise."""
@@ -216,6 +216,6 @@ class TestSchemaInvalidContent:
         assert obj.is_valid is False
 
     def test_yaml_schema_valid_flag_is_false(self):
-        """Schema-invalid YAML sets schema_valid['_dict'] to False (not None)."""
+        """Schema-invalid YAML sets schema_valid['_tree'] to False (YAML is converted to XML before validation)."""
         obj = OSCAL.loads(_YAML_SCHEMA_INVALID)
-        assert obj.schema_valid["_dict"] is False
+        assert obj.schema_valid["_tree"] is False
