@@ -73,9 +73,9 @@ The sequencing of releases may change in response to client needs and other exte
 - [ ] Enable robust addressibility across project files
   - Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements
 
+---
 
 ### Farther Out
-
 
 - [ ] Robust URI and APIs Handling for Content Acquisition/Storage
     - Additional API Specifications

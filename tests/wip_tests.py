@@ -3,11 +3,12 @@ import os
 from loguru import logger
 
 
-from oscal import OSCAL, Catalog, ContentState
+from oscal import OSCAL, Catalog
 
 TEST_FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-data")
 
-TEST_DATA = [f"{TEST_FILES_DIR}/test.xml", 
+TEST_DATA = [f"{TEST_FILES_DIR}/bad_test.xml", 
+             f"{TEST_FILES_DIR}/test.xml",
              f"{TEST_FILES_DIR}/json/FedRAMP_rev5_catalog_tailoring_profile.json",
              "https://raw.githubusercontent.com/OSCAL-Foundation/fedramp-resources/refs/heads/main/baselines/rev5/json/FedRAMP_rev5_LOW-baseline_profile.json"
              ]
@@ -51,6 +52,8 @@ def hold():
 
     del oscal_catalog_obj
 
+
+
 def test_load():
     for test_file in TEST_DATA:
         logger.info(f"Testing load() with file: {test_file}")
@@ -62,16 +65,20 @@ def test_load():
 
         print("" + "=" * 25 + " LOAD RESULT " + "=" * 25)
         print(obj)
-        if obj.content_state >= ContentState.VALID:
-            if obj.content_state >= ContentState.IMPORTS_RESOLVED:
-                print(obj.import_list)
-                print(obj.import_tree)
-            else:
-                print("Imports not resolved.")
-        elif obj.content_state > ContentState.NOT_AVAILABLE and obj.content_state < ContentState.VALID:
-            print("Content was acquired, but is not valid.") # not well formed, or not schema valid
-        elif obj.content_state == ContentState.NOT_AVAILABLE:
-            print("Content was not successfully loaded.")
+        # if obj.imports_resolved:
+        #     # print (f"Imports resolved: {len(obj.import_list)} import(s) found.")
+        #     # print (f"Import tree resolved: {obj.import_tree}")
+        #     # for entry in obj.import_list:
+        #     #     child = entry.get("object")
+        #     #     print(f"  Import [{entry['status']}]: {entry['href_original']}")
+        #     #     if child:
+        #     #         print(f"    → {child.model}: {child.title}")
+        # elif obj.is_valid:
+        #     print("No imports found.")
+        # elif obj.is_acquired and not obj.is_valid:
+        #     print("Content was acquired, but is not valid.") # not well formed, or not schema valid
+        # elif not obj.is_acquired:
+        #     print("Content was not successfully loaded.")
 
 
         print("-" * 50)

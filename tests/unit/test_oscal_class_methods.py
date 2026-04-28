@@ -232,7 +232,7 @@ class TestFromConstructors:
 
     def test_from_dict(self):
         data = json.loads(_read(_JSON_PROFILE))
-        obj = OSCAL.from_dict(data)
+        obj = OSCAL.loads(data)
         assert obj.model == "profile"
 
     def test_from_string(self):

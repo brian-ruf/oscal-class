@@ -18,7 +18,7 @@ from typing             import Optional, Any
 from datetime           import datetime, timezone
 from functools          import wraps
 from enum               import Enum, IntEnum
-from urllib.parse       import urlparse
+from urllib.parse       import urlparse, urljoin
 from urllib.request     import urlopen
 from xml.etree          import ElementTree
 from dataclasses        import dataclass, field
@@ -257,8 +257,8 @@ class OSCAL(LoggableMixin):
 
         # Processing Objects
         self.is_synced   : bool = False # Boolean indicating whether the tree and dict are in sync
-        self.import_list: list = []    # An array of dictionaries
-        self.import_tree: dict = {}    # A dictionary representing the structure of imports for efficient access
+        self.import_list: list = []    # Flat list of direct imports (one level)
+        self._import_tree: list | None = None  # Cached recursive import tree (None = not yet built)
         self._dict: dict | None = None # JSON/YAML constructs
         self._tree = None              # XML constructs
 
@@ -282,20 +282,23 @@ class OSCAL(LoggableMixin):
         Always call super()._init_common() at the start of the override.
         """
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Content state properties (progressive — each implies all prior levels passed)
     @property
     def is_acquired(self) -> bool:
         return self.content_state >= ContentState.ACQUIRED
 
+    # -------------------------------------------------------------------------
     @property
     def is_well_formed(self) -> bool:
         return self.content_state >= ContentState.WELL_FORMED
 
+    # -------------------------------------------------------------------------
     @property
     def is_valid(self) -> bool:
         return self.content_state >= ContentState.VALID
 
+    # -------------------------------------------------------------------------
     @property
     def imports_resolved(self) -> bool:
         return self.content_state >= ContentState.IMPORTS_RESOLVED
@@ -380,8 +383,8 @@ class OSCAL(LoggableMixin):
         instance._origin       = "acquire"
         instance._refs = _normalize_refs(source)
 
-        content = load_content(instance._refs) 
-        
+        instance.href_original = instance._refs[0].href if instance._refs else ""
+        content = load_content(instance._refs)
         instance.initial_validation(content)
         return instance
 
@@ -391,11 +394,11 @@ class OSCAL(LoggableMixin):
         """Explicit constructor for in-memory OSCAL string content."""
         return cls.loads(content, href=href)
 
-    # -------------------------------------------------------------------------
-    @classmethod
-    def from_dict(cls, content: dict, *, href: str | None = None):
-        """Explicit constructor for in-memory OSCAL dictionary content."""
-        return cls.loads(content, href=href)
+    # # -------------------------------------------------------------------------
+    # @classmethod
+    # def from_dict(cls, content: dict, *, href: str | None = None):
+    #     """Explicit constructor for in-memory OSCAL dictionary content."""
+    #     return cls.loads(content, href=href)
 
     # -------------------------------------------------------------------------
     @classmethod
@@ -510,6 +513,7 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     def __repr__(self):
+        """A concise string representation showing key metadata and validation status."""
         ret_value = ""
         if self.original_format == "xml":
             ret_value += "✅" if self.schema_valid.get("_tree") else "⚠️"
@@ -522,10 +526,12 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     def __bool__(self) -> bool:
-        return self.is_valid
+        """Return True if the content is valid, False otherwise."""
+        return self.content_state >= ContentState.VALID
 
     # -------------------------------------------------------------------------
     def __str__(self):
+        """A more detailed string representation showing key metadata and validation status."""
         ret_value = ""
         ret_value += "✅" if self.content_state >= ContentState.VALID else "⚠️"
         ret_value += f" {self.model}:" if self.model else ""
@@ -537,6 +543,13 @@ class OSCAL(LoggableMixin):
             next_val = self.content_state.value + 1
             if next_val in ContentState._value2member_map_:
                 ret_value += f"\nFailed at: {ContentState(next_val).name}"
+        if self.content_state >= ContentState.IMPORTS_RESOLVED:
+            ret_value += f"\nImports Resolved: {len(self.import_list)} import(s) found."
+            for child in self.import_list:
+                if child.get("status") == "failed":
+                    ret_value += f"\n    → Error: {child.get('error', 'Unknown error')}"
+                else:
+                    ret_value += f"\n    → {child.get('object', '')}"
 
         return ret_value
 
@@ -632,13 +645,17 @@ class OSCAL(LoggableMixin):
             list[dict]: self.import_list, one entry per discovered reference.
         """
         self.import_list = []
+        self._import_tree = None  # invalidate cached tree whenever imports are re-resolved
 
         # --- resolve base directory for relative hrefs ---
         if not base_path:
             src = self.href or self.href_original
-            parsed_src = urlparse(src)
-            if src and not parsed_src.scheme:
-                base_path = os.path.dirname(os.path.abspath(src))
+            if src:
+                parsed_src = urlparse(src)
+                if parsed_src.scheme:
+                    base_path = src.rsplit("/", 1)[0] + "/"
+                else:
+                    base_path = os.path.dirname(os.path.abspath(src))
             else:
                 base_path = os.getcwd()
 
@@ -672,18 +689,15 @@ class OSCAL(LoggableMixin):
 
         if not raw_hrefs:
             logger.debug(f"resolve_imports: no import references found in '{self.model}'.")
+            if self.content_state >= ContentState.VALID:
+                self.content_state = ContentState.IMPORTS_RESOLVED
             return self.import_list
 
         # --- load each referenced document (shared for both branches) ---
         for raw_href in raw_hrefs:
-            parsed = urlparse(raw_href)
-            resolved_href = raw_href if parsed.scheme else os.path.normpath(
-                os.path.join(base_path, raw_href)
-            )
-
             entry: dict = {
                 "href_original": raw_href,
-                "href_valid":    resolved_href,
+                "href_valid":    "",
                 "status":        ImportState.NOT_LOADED,
                 "is_valid":      False,
                 "is_local":      None,
@@ -692,17 +706,50 @@ class OSCAL(LoggableMixin):
                 "object":        None,
             }
 
-            try:
-                child = OSCAL.acquire(resolved_href)
-                entry["object"]    = child
-                entry["is_valid"]  = child.is_valid
-                entry["is_local"]  = child.is_local
-                entry["is_remote"] = child.is_remote
-                entry["is_cached"] = child.is_cached
-                entry["status"]    = ImportState.READY if child.is_valid else ImportState.INVALID
-            except Exception as exc:
-                logger.error(f"Failed to load import '{resolved_href}': {exc}")
+            # Resolve candidate hrefs: fragment refs (#uuid) go through back-matter
+            if raw_href.startswith("#"):
+                uuid = raw_href[1:]
+                rlinks = _backmatter_rlinks(self, uuid)
+                # Expand each rlink with format-equivalent fallbacks (.xml/.json/.yaml)
+                candidates = []
+                for rl in rlinks:
+                    candidates.append(rl)
+                    candidates.extend(_oscal_format_variants(rl))
+                if not candidates:
+                    logger.error(
+                        f"resolve_imports: fragment '{raw_href}' has no matching "
+                        f"back-matter resource or resource has no rlinks."
+                    )
+                    entry["status"] = ImportState.INVALID
+                    self.import_list.append(entry)
+                    continue
+            else:
+                candidates = [_resolve_href(base_path, raw_href)]
+
+            # Try each candidate in order; use the first that loads as valid OSCAL
+            for candidate in candidates:
+                resolved = _resolve_href(base_path, candidate)
+                try:
+                    child = OSCAL.acquire(resolved)
+                    if child.is_valid:
+                        entry["href_valid"] = resolved
+                        entry["object"]     = child
+                        entry["is_valid"]   = True
+                        entry["is_local"]   = child.is_local
+                        entry["is_remote"]  = child.is_remote
+                        entry["is_cached"]  = child.is_cached
+                        entry["status"]     = ImportState.READY
+                        break
+                    logger.warning(f"resolve_imports: '{resolved}' loaded but failed OSCAL validation.")
+                except Exception as exc:
+                    logger.warning(f"resolve_imports: could not load '{resolved}': {exc}")
+
+            if entry["status"] != ImportState.READY:
                 entry["status"] = ImportState.INVALID
+                logger.error(
+                    f"resolve_imports: all candidates for '{raw_href}' failed. "
+                    f"Tried: {candidates}"
+                )
 
             self.import_list.append(entry)
 
@@ -715,6 +762,55 @@ class OSCAL(LoggableMixin):
             self.content_state = ContentState.IMPORTS_RESOLVED
 
         return self.import_list
+
+    # -------------------------------------------------------------------------
+    def _build_import_tree_recursive(self, _path: frozenset | None = None) -> list:
+        """Walk import_list recursively and return a nested tree of import entries.
+
+        Each entry is a copy of the flat import_list dict with an added 'imports'
+        key containing the same structure for that child's own imports.
+        Path-based cycle detection prevents infinite recursion on circular refs.
+        """
+        if _path is None:
+            _path = frozenset()
+
+        result = []
+        for entry in self.import_list:
+            node = {k: v for k, v in entry.items()}
+            child: OSCAL | None = entry.get("object")
+            child_href: str = entry.get("href_valid") or entry.get("href_original", "")
+
+            if child is not None and child_href and child_href not in _path:
+                node["imports"] = child._build_import_tree_recursive(_path | {child_href})
+            else:
+                if child_href in _path:
+                    logger.warning(f"import_tree: circular reference detected at '{child_href}' — stopping recursion.")
+                node["imports"] = []
+
+            result.append(node)
+        return result
+
+    # -------------------------------------------------------------------------
+    @property
+    def import_tree(self) -> list:
+        """Recursive import tree built lazily on first access and cached.
+
+        Each entry mirrors the flat import_list dict plus an 'imports' key
+        containing the same structure for that document's own imports.
+        Use rebuild_import_tree() to force a fresh traversal.
+        """
+        if self._import_tree is None:
+            self._import_tree = self._build_import_tree_recursive()
+        return self._import_tree
+
+    # -------------------------------------------------------------------------
+    def rebuild_import_tree(self) -> list:
+        """Discard the cached import tree and rebuild it from the current import_list.
+
+        Returns the freshly built tree.
+        """
+        self._import_tree = None
+        return self.import_tree
 
     # -------------------------------------------------------------------------
     @property
@@ -739,11 +835,13 @@ class OSCAL(LoggableMixin):
             return OriginState.REMOTE_UNCACHED
         return OriginState.REMOTE_STALE if self.is_cache_expired else OriginState.REMOTE_FRESH
 
+    # -------------------------------------------------------------------------
     @property
     def is_fresh(self) -> bool:
         """True when content is local or cached and within its TTL."""
         return self.origin_state in (OriginState.LOCAL, OriginState.REMOTE_FRESH)
 
+    # -------------------------------------------------------------------------
     @property
     def is_stale(self) -> bool:
         """True when remote cached content has exceeded its TTL."""
@@ -776,6 +874,7 @@ class OSCAL(LoggableMixin):
         # --- Step: acquired ---
         if not content or not content.strip():
             logger.error("No content to validate — source may be empty or unreadable.")
+            self.content_state = ContentState.NOT_AVAILABLE
             return False
         self.content_state = ContentState.ACQUIRED
 
@@ -839,11 +938,12 @@ class OSCAL(LoggableMixin):
 
         if status:
             self.content_state = ContentState.WELL_FORMED
-            self.validate()
 
         # TEMPORARY: All content-manipulation methods operate on the XML tree only.
         # Until dict-based equivalents are added, force JSON/YAML content into XML
         # as the primary representation so those methods work regardless of load format.
+        # This block runs before validate() so that XML schema validation is used
+        # for JSON/YAML content (avoids spurious JSON-schema failures).
         # TO REVERSE: delete this block and the logger.debug line that follows it.
         if status and self.original_format in ("json", "yaml"):
             logger.debug(f"TEMPORARY: Converting {self.original_format.upper()} to XML primary representation.")
@@ -853,6 +953,9 @@ class OSCAL(LoggableMixin):
             else:
                 logger.warning("TEMPORARY: dict-to-XML conversion failed; content manipulation methods will not work.")
         # END TEMPORARY
+
+        if status:
+            self.validate()
 
         return status
 
@@ -935,6 +1038,9 @@ class OSCAL(LoggableMixin):
                 logger.error(f"JSON schema for {self.model} {self.oscal_version} could not be loaded.")
                 self.schema_valid["_dict"] = False
                 self.content_state = ContentState.WELL_FORMED
+
+        if self.is_valid and self.content_state < ContentState.IMPORTS_RESOLVED:
+            self.resolve_imports()
 
         return self.is_valid
 
@@ -1639,6 +1745,59 @@ def _hrefs_from_dict_spec(root_obj: dict, spec: dict) -> list[str]:
                 v = entry.get(key, "").strip()
                 if v:
                     hrefs.append(v)
+    return hrefs
+
+# -------------------------------------------------------------------------
+_OSCAL_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
+
+def _resolve_href(base: str, href: str) -> str:
+    """Resolve a (possibly relative) href against a base URL or filesystem path."""
+    parsed = urlparse(href)
+    if parsed.scheme:
+        return href  # already absolute
+    if base and urlparse(base).scheme:
+        return urljoin(base, href)  # URL-relative join
+    return os.path.normpath(os.path.join(base, href)) if base else os.path.abspath(href)
+
+def _oscal_format_variants(href: str) -> list[str]:
+    """Return the same href with each other OSCAL format extension substituted.
+
+    Used as additional fallback candidates when a back-matter rlink can't be
+    loaded — e.g. a profile in json/ directory whose rlink points to file.xml
+    that exists only as file.json in that same directory.
+    """
+    base, ext = os.path.splitext(href)
+    if ext.lower() not in _OSCAL_EXTENSIONS:
+        return []
+    return [base + e for e in sorted(_OSCAL_EXTENSIONS) if e != ext.lower()]
+
+# -------------------------------------------------------------------------
+def _backmatter_rlinks(doc_obj, uuid: str) -> list[str]:
+    """Return ordered rlink hrefs for a back-matter resource identified by UUID.
+
+    Searches the XML tree first (primary representation after load), then the
+    dict.  Returns an empty list if the resource is not found.
+    """
+    hrefs: list[str] = []
+
+    if doc_obj._tree is not None:
+        nodes = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{uuid}']/rlink")
+        if nodes:
+            for rlink in nodes:
+                href = rlink.get("href", "").strip()
+                if href:
+                    hrefs.append(href)
+    elif doc_obj._dict is not None:
+        root_obj = doc_obj._dict.get(doc_obj.model, {})
+        resources = root_obj.get("back-matter", {}).get("resources", [])
+        for resource in resources:
+            if resource.get("uuid") == uuid:
+                for rlink in resource.get("rlinks", []):
+                    href = rlink.get("href", "").strip()
+                    if href:
+                        hrefs.append(href)
+                break
+
     return hrefs
 
 # -------------------------------------------------------------------------

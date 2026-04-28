@@ -103,15 +103,15 @@ class ContentState(IntEnum):
 
         print("" + "=" * 25 + " LOAD RESULT " + "=" * 25)
         print(obj)
-        if obj.content_state >= ContentState.VALID:
-            if obj.content_state >= ContentState.IMPORTS_RESOLVED:
+        if obj.is_valid:
+            if obj.imports_resolved:
                 print(obj.import_list)
                 print(obj.import_tree)
             else:
                 print("Imports not resolved.")
-        elif obj.content_state > ContentState.NOT_AVAILABLE and obj.content_state < ContentState.VALID:
+        elif obj.is_acquired and not obj.is_valid:
             print("Content was acquired, but is not valid.") # not well formed, or not schema valid
-        elif obj.content_state == ContentState.NOT_AVAILABLE:
+        elif obj.is_acquired:
             print("Content was not successfully loaded.")
 ```
 
