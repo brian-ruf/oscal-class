@@ -1,8 +1,9 @@
 """
-Unit tests for OSCAL class state flags and compatibility aliases.
+Unit tests for OSCAL class state flags.
 """
 
 from oscal import Catalog
+from oscal.oscal_content import ContentState
 
 
 class TestOscalStateFlags:
@@ -15,30 +16,30 @@ class TestOscalStateFlags:
         assert hasattr(obj, "is_synced")
         assert hasattr(obj, "is_unsaved")
 
-    def test_read_only_alias_round_trip(self):
-        obj = Catalog.new("Read Only Alias")
+    def test_read_only_is_settable(self):
+        obj = Catalog.new("Read Only Test")
         obj.is_read_only = False
-        assert obj.read_only is False
+        assert obj.is_read_only is False
 
-        obj.read_only = True
+        obj.is_read_only = True
         assert obj.is_read_only is True
 
-    def test_local_remote_inverse_aliases(self):
-        obj = Catalog.new("Local Remote Alias")
+    def test_local_remote_inverse(self):
+        obj = Catalog.new("Local Remote Test")
 
         obj.is_local = True
         assert obj.is_remote is False
-        assert obj.local is True
 
-        obj.remote = True
+        obj.is_local = False
         assert obj.is_remote is True
-        assert obj.is_local is False
-        assert obj.local is False
 
-    def test_valid_alias_round_trip(self):
-        obj = Catalog.new("Valid Alias")
-        obj.is_valid = True
-        assert obj.valid is True
+    def test_is_valid_reflects_content_state(self):
+        obj = Catalog.new("Content State Test")
+        assert obj.is_valid is True
+        assert obj.content_state >= ContentState.VALID
 
-        obj.valid = False
+        obj.content_state = ContentState.WELL_FORMED
         assert obj.is_valid is False
+
+        obj.content_state = ContentState.VALID
+        assert obj.is_valid is True

@@ -241,11 +241,11 @@ class TestFromConstructors:
         assert obj.original_format == "xml"
 
     def test_from_file(self):
-        obj = OSCAL.from_file(_JSON_PROFILE)
+        obj = OSCAL.load(_JSON_PROFILE)
         assert obj.model == "profile"
 
     def test_from_uri(self):
-        obj = OSCAL.from_uri({"href": _JSON_PROFILE})
+        obj = OSCAL.acquire({"href": _JSON_PROFILE})
         assert obj.model == "profile"
 
 
@@ -288,7 +288,7 @@ class TestNew:
     def test_catalog_new_read_only_false(self):
         """A newly created catalog should not be read-only."""
         obj = Catalog.new("Editable Catalog")
-        assert obj.read_only is False
+        assert obj.is_read_only is False
 
     def test_profile_new_returns_profile(self):
         """Profile.new() returns an object with model == 'profile'."""

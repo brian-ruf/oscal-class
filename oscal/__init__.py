@@ -27,7 +27,7 @@ from .oscal_implementation import ComponentDefinition, SSP  # noqa: E402
 from .oscal_assessment import AssessmentPlan, AssessmentResults, POAM  # noqa: E402
 
 # Import factory dependencies
-from .oscal_content import OSCAL  # noqa: E402
+from .oscal_content import OSCAL, ContentState  # noqa: E402
 from .oscal_datatypes import oscal_date_time_with_timezone  # noqa: E402
 __all__ = [
     "oscal_support",
@@ -47,5 +47,6 @@ __all__ = [
     "OSCAL",
     "oscal_date_time_with_timezone",
     "OSCAL_FORMATS",
-    "OSCAL_DEFAULT_XML_NAMESPACE"
+    "OSCAL_DEFAULT_XML_NAMESPACE",
+    "ContentState"
 ]

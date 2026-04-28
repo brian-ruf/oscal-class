@@ -2,7 +2,9 @@
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## Past (Version 1.x)
+## Past: 
+
+### Version 1.x
 
 - Support Module: Acquire and manage NIST-pubished support files
     - Support files in local SQLite database
@@ -16,15 +18,18 @@ The sequencing of releases may change in response to client needs and other exte
     - Convert and save in any OSCAL format (XML, JSON, YAML)
         - Currently relies on SaxonC-HE and NIST XSLT 3.x Convertion files
 
-## Version 2.0.x: Refactoring, XML/JSON Parity
+## Current: 
 
-- [x] Separate class for each model
-- [x] Refactor class attributes, methods (names, organization)
-- [x] Efficiency and maintainability improvements
-- [x] Robust Loading from local and 
-- [x] Selection/adoption of xpath-like capability for JSON
+### Version 2.0.x: Refactoring, XML/JSON Parity
 
-## Version 2.1.x: Importing Dependency Chain
+- Separate class for each model
+- Refactor class attributes, methods (names, organization)
+- Efficiency and maintainability improvements
+- Robust Loading from local file system and remote URLs
+
+## Next
+
+### Importing Dependency Chain
 
 - [ ] Top level imports 
     - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
@@ -33,20 +38,20 @@ The sequencing of releases may change in response to client needs and other exte
 - [ ] Failed import handling
 - [ ] Basic addressibility across imported files
 
-## Version 2.2.x: Profile Resolution
+### Profile Resolution
 
 - [ ] Control Tree Generation/Caching
 - [ ] By-Control Tailoring
 - [ ] Saving Resolved Profile Catalogs
 
-## Version 2.3.x: Local Caching
+### Local Caching
 
 - [ ] Cache remotely acquired files locally
 - [ ] Automatic cache refresh based on TTL
 - [ ] Manually triggered refresh
 - [ ] Fallback to cache after expiration when remote content is not available.
 
-## Version 2.4.x: Project Approach
+### Project Approach
 
 - [ ] Project-based Storage
     - Save cluster of related files together
@@ -60,7 +65,7 @@ The sequencing of releases may change in response to client needs and other exte
     - In SQLite project file
     - As external files relative to SQLite project file
 
-## Version 2.4.x: Indexes and Robust Addressibility
+### Indexes and Robust Addressibility
 
 - [ ] Generate and maintain metaschema-defined indexes
 - [ ] Generate and maintain extra-metaschema indexes 
@@ -69,7 +74,7 @@ The sequencing of releases may change in response to client needs and other exte
   - Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements
 
 
-## Future
+### Farther Out
 
 
 - [ ] Robust URI and APIs Handling for Content Acquisition/Storage

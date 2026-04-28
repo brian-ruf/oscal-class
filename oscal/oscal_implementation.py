@@ -24,7 +24,7 @@ class SSP(OSCAL):
 
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def append_component(self, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = "", props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
         """
@@ -62,7 +62,7 @@ class SSP(OSCAL):
         return component_obj
 
     # -------------------------------------------------------------------------
-    @requires(read_only=False)
+    @requires(is_read_only=False)
     @if_update_successful
     def append_impl_requirement(self, control_id: str, props: list = [], links: list = [], remarks: str = "") -> (ElementTree.Element | None):
         """
