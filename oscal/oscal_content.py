@@ -259,7 +259,7 @@ class OSCAL(LoggableMixin):
         # Processing Objects
         self.is_synced   : bool = False # Boolean indicating whether the tree and dict are in sync
         self.import_list: list = []    # Flat list of direct imports (one level)
-        self._import_tree: list | None = None  # Cached recursive import tree (None = not yet built)
+        self._import_tree: dict | None = None  # Cached recursive import tree (None = not yet built)
         self._dict: dict | None = None # JSON/YAML constructs
         self._tree = None              # XML constructs
 
@@ -659,7 +659,8 @@ class OSCAL(LoggableMixin):
             src = self.href or self.href_original
             if src:
                 parsed_src = urlparse(src)
-                if parsed_src.scheme:
+                if parsed_src.scheme and len(parsed_src.scheme) > 1:
+                    # Real URL (not a Windows drive letter like 'C')
                     base_path = src.rsplit("/", 1)[0] + "/"
                 else:
                     base_path = os.path.dirname(os.path.abspath(src))
@@ -872,19 +873,31 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @property
-    def import_tree(self) -> list:
+    def import_tree(self) -> dict:
         """Recursive import tree built lazily on first access and cached.
 
-        Each entry mirrors the flat import_list dict plus an 'imports' key
-        containing the same structure for that document's own imports.
+        Returns a root node dict representing this document, with an 'imports'
+        key holding the first-level imports (each following the same structure
+        recursively).  The root node fields mirror those of an import_list entry.
         Use rebuild_import_tree() to force a fresh traversal.
         """
         if self._import_tree is None:
-            self._import_tree = self._build_import_tree_recursive()
+            self._import_tree = {
+                "href_original": self.href_original,
+                "href_valid":    self.href_original,
+                "status":        ImportState.READY if self.is_valid else ImportState.INVALID,
+                "is_valid":      self.is_valid,
+                "is_local":      self.is_local,
+                "is_remote":     self.is_remote,
+                "is_cached":     self.is_cached,
+                "object":        self,
+                "failure":       None,
+                "imports":       self._build_import_tree_recursive(),
+            }
         return self._import_tree
 
     # -------------------------------------------------------------------------
-    def rebuild_import_tree(self) -> list:
+    def rebuild_import_tree(self) -> dict:
         """Discard the cached import tree and rebuild it from the current import_list.
 
         Returns the freshly built tree.
@@ -1938,13 +1951,21 @@ def _hrefs_from_dict_spec(root_obj: dict, spec: dict) -> list[str]:
 _OSCAL_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
 
 def _resolve_href(base: str, href: str) -> str:
-    """Resolve a (possibly relative) href against a base URL or filesystem path."""
+    """Resolve a (possibly relative) href against a base URL or filesystem path.
+
+    Single-character "schemes" like 'c' are Windows drive letters, not URLs —
+    they are treated as local filesystem paths so os.path operations are used
+    instead of urljoin, which does not understand backslash separators.
+    """
     parsed = urlparse(href)
-    if parsed.scheme:
-        return href  # already absolute
-    if base and urlparse(base).scheme:
-        return urljoin(base, href)  # URL-relative join
-    return os.path.normpath(os.path.join(base, href)) if base else os.path.abspath(href)
+    if parsed.scheme and len(parsed.scheme) > 1:
+        return href  # already an absolute URL
+    if base:
+        base_parsed = urlparse(base)
+        if base_parsed.scheme and len(base_parsed.scheme) > 1:
+            return urljoin(base, href)  # base is a real URL
+        return os.path.normpath(os.path.join(base, href))
+    return os.path.abspath(href)
 
 def _oscal_format_variants(href: str) -> list[str]:
     """Return the same href with each other OSCAL format extension substituted.
