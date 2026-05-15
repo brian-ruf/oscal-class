@@ -14,11 +14,10 @@ import json
 # from html import escape
 # import html
 # from urllib.parse import urljoin
+from typing import cast
 from loguru import logger
-from oscal_support import *
-from xml.etree import ElementTree
-import xml.etree.ElementTree as ET
-from xml.etree.ElementTree import tostring
+from .oscal_support import get_support
+from xml.etree import ElementTree as ET
 from ruf_common.helper import iif, has_repeated_ending, compare_semver
 from ruf_common.data import deserialize_xml, xpath, xpath_atomic, get_markup_content
 
@@ -125,7 +124,7 @@ def parse_metaschema(support=None, oscal_version=None) -> int:
     return ret_value
 
 # --------------------------------------------------------------------------
-async def parse_metaschema_specific(support, oscal_version):
+def parse_metaschema_specific(support, oscal_version):
     """
     Parse a specific metaschema model for a given OSCAL version.
     This function is used to parse a specific metaschema model
@@ -145,19 +144,19 @@ async def parse_metaschema_specific(support, oscal_version):
     metaschema_tree["oscal_version"] = oscal_version
     metaschema_tree["oscal_models"] = {}
 
-    models = await support.enumerate_models(oscal_version)
+    models = support.enumerate_models(oscal_version)
 
     for model in models:
         if model != "complete":
             global_counter = 0
             # Fetch the XML content
             logger.info(f"Parsing {model} metaschema.")    
-            model_metaschema = await support.asset(oscal_version, model, "metaschema")
+            model_metaschema = support.asset(oscal_version, model, "metaschema")
             if model_metaschema:
                 if status:
                     # **** Commented out for testing. Uncomment when ready to use.
-                    parser = await MetaschemaParser.create(model_metaschema, support)
-                    status = await parser.top_pass()
+                    parser = MetaschemaParser.create(model_metaschema, support)
+                    status = parser.top_pass()
                     metaschema_tree["oscal_models"][model] = parser.build_metaschema_tree()
                     if metaschema_tree["oscal_models"][model] is not None and metaschema_tree["oscal_models"][model] != {}:
                         logger.debug(f"Successfully parsed {model} metaschema.") 
@@ -173,7 +172,7 @@ async def parse_metaschema_specific(support, oscal_version):
 
     if status:
         logger.info(f"{GREEN}Successfully parsed all {oscal_version} metaschema models. Adding to support module.{RESET}")
-        status = await support.add_asset(oscal_version, "complete", "processed", json.dumps(metaschema_tree, indent=2), filename=f"OSCAL_{oscal_version}_metaschema.json")
+        status = support.add_asset(oscal_version, "complete", "processed", json.dumps(metaschema_tree, indent=2), filename=f"OSCAL_{oscal_version}_metaschema.json")
 
         # # save to a JSON file
         output_file = f"{oscal_version}_complete_metaschema.json"
@@ -215,7 +214,7 @@ def clean_none_values_recursive(dictionary):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class MetaschemaParser:
     def __init__(self, metaschema, support, import_inventory=[], oscal_version=""):
-        logger.debug(f"Initializing MetaschemaParser")
+        logger.debug("Initializing MetaschemaParser")
         self.content = metaschema
         self.valid_xml = False
         self.top_level = False
@@ -233,8 +232,8 @@ class MetaschemaParser:
 
     # -------------------------------------------------------------------------
     @classmethod
-    async def create(cls, metaschema, support, import_inventory=[], oscal_version=""):
-        logger.debug(f"Creating MetaschemaParser")
+    def create(cls, metaschema, support, import_inventory=[], oscal_version=""):
+        logger.debug("Creating MetaschemaParser")
         ret_value = None
         ret_value = cls(metaschema, support, import_inventory, oscal_version)
         return ret_value
@@ -247,68 +246,68 @@ class MetaschemaParser:
         ret_value += f"Model: {self.oscal_model}\n"
         ret_value += f"Version: {self.oscal_version}\n"
         ret_value += f"XML Namespace: {self.nsmap}\n"
-        ret_value += f"Valid XML: {iif(self.valid_xml, "Yes", "No")}\n"
+        ret_value += f"Valid XML: {iif(self.valid_xml, 'Yes', 'No')}\n"
         return ret_value
     
     # -------------------------------------------------------------------------
     def str_node(self, node):
         """String representation of the MetaschemaParser."""
         ret_value = ""
-        ret_value += f"{node["formal-name"]}: {node["use-name"]}"
+        ret_value += f"{node['formal-name']}: {node['use-name']}"
         if node["name"] != node["use-name"]:
-            ret_value += f" ({node["name"]})"
+            ret_value += f" ({node['name']})"
         if node["deprecated"] is True:
-            ret_value += f" ** Deprecated**"
+            ret_value += " ** Deprecated**"
         if node["sunsetting"] is not None:
-            ret_value += f" Sunsetting: {node["sunsetting"]}"
+            ret_value += f" Sunsetting: {node['sunsetting']}"
         ret_value += "\n"
 
         if node["min-occurs"] == "0":
             if node["max-occurs"] == "1":
-                ret_value += f"[0 or 1]"
+                ret_value += "[0 or 1]"
             elif node["max-occurs"] == "unbounded":
-                ret_value += f"[0 or more]"
+                ret_value += "[0 or more]"
             elif node["max-occurs"] is not None:
-                ret_value += f"[0 to {node["max-occurs"]}]"
+                ret_value += f"[0 to {node['max-occurs']}]"
         elif node["min-occurs"] == "1":
             if node["max-occurs"] == "1":
-                ret_value += f"[exactly 1]"
+                ret_value += "[exactly 1]"
             elif node["max-occurs"] == "unbounded":
-                ret_value += f"[1 or more]"
+                ret_value += "[1 or more]"
             elif node["max-occurs"] is not None:
-                ret_value += f"[{node["min-occurs"]} to {node["max-occurs"]}]"
+                ret_value += f"[{node['min-occurs']} to {node['max-occurs']}]"
         else:
             if node["min-occurs"] is not None and node["max-occurs"] is not None:
-                ret_value += f"[{node["min-occurs"]} to {node["max-occurs"]}]"
+                ret_value += f"[{node['min-occurs']} to {node['max-occurs']}]"
             else:
-                ret_value += f"[Cardinality not specified]"
-        ret_value += f" {node["structure-type"]} "
-        ret_value += f" [{node["datatype"]}]"
-        ret_value += f"Path: {node["path"]}\n"
+                ret_value += "[Cardinality not specified]"
+        ret_value += f" {node['structure-type']} "
+        ret_value += f" [{node['datatype']}]"
+        ret_value += f"Path: {node['path']}\n"
 
         if node["default"] is not None:
-            ret_value += f"Default: {node["default"]}\n"
+            ret_value += f"Default: {node['default']}\n"
         if node["description"] is not None:
-            ret_value += f"Description: {node["description"]}\n"
+            ret_value += f"Description: {node['description']}\n"
         if node["remarks"] is not None:
-            ret_value += f"Remarks: {node["remarks"]}\n"
+            ret_value += f"Remarks: {node['remarks']}\n"
         if node["example"] is not None:
-            ret_value += f"Example: {node["example"]}\n"
+            ret_value += f"Example: {node['example']}\n"
         if node["flags"] is not None:
-            ret_value += f"Flags: {len(node["flags"])}\n"
+            ret_value += f"Flags: {len(node['flags'])}\n"
         if node["source"] is not None:
-            ret_value += f"Source: {', '.join(node["source"])}\n"
+            ret_value += f"Source: {', '.join(node['source'])}\n"
         if node["children"] is not None:
-            ret_value += f"Children: {len(node["children"])}\n"
+            ret_value += f"Children: {len(node['children'])}\n"
         if node["props"] is not None:
-            ret_value += f"Props: {', '.join(node["props"])}\n"
+            ret_value += f"Props: {', '.join(node['props'])}\n"
 
         if node["group-as"] is not None:
-            ret_value += f"Group As: "
+            ret_value += "Group As: "
             if node["group-as-in-json"] is not None:
-                ret_value += f" JSON: {node["group-as-in-json"]}"  
+                ret_value += f" JSON: {node['group-as-in-json']}"
             if node["group-as-in-xml"] is not None:
-                ret_value += f" XML: {node["group-as-in-xml"]}"
+                ret_value += f" XML: {node['group-as-in-xml']}"
             ret_value += "\n"
 
         # if node["json-array-name"]:
@@ -321,16 +320,16 @@ class MetaschemaParser:
 
         if node["wrapped-in-xml"] is not None:
             if node["wrapped-in-xml"]:
-                ret_value += f"In XML: WRAPPED\n"
+                ret_value += "In XML: WRAPPED\n"
             else:
-                ret_value += f"In XML: UNWRAPPED\n"
+                ret_value += "In XML: UNWRAPPED\n"
             ret_value += "\n"
         if node["rules"] is not None:
-            ret_value += f"Rules: {len(node["rules"])}\n"
+            ret_value += f"Rules: {len(node['rules'])}\n"
         return ret_value
 
     # -------------------------------------------------------------------------
-    async def top_pass(self):
+    def top_pass(self):
         """Perform the first pass of parsing."""
         logger.debug("Performing top pass")
 
@@ -338,7 +337,7 @@ class MetaschemaParser:
             self.tree = deserialize_xml(self.content, METASCHEMA_DEFAULT_NAMESPACE)
             self.valid_xml = True
             logger.debug(f"XML Valid! Content length: {len(self.content)}")
-        except ElementTree.ParseError as e:
+        except ET.ParseError as e:
             logger.error(f"XML parsing error: {e}")
             self.valid_xml = False
 
@@ -352,21 +351,21 @@ class MetaschemaParser:
                     self.oscal_model = "unnamed-imported-metaschema"
             self.schema_name = self.xpath_atomic("/METASCHEMA/schema-name/text()")
             if self.oscal_version == "":
-                self.oscal_version = f"v{self.xpath_atomic("/METASCHEMA/schema-version/text()")}"
+                self.oscal_version = f"v{self.xpath_atomic('/METASCHEMA/schema-version/text()')}"
                 logger.info(f"DEBUG: Setting version to {self.oscal_version} for {self.oscal_model}")
 
             self.oscal_namespace = self.xpath_atomic("/METASCHEMA/namespace/text()")
             self.json_base_uri = self.xpath_atomic("/METASCHEMA/json-base/text()")
 
-            await self.setup_imports()
-            # await self.handle_imports()
+            self.setup_imports()
+            # self.handle_imports()
         else:        
             logger.error("Invalid XML content.")
 
         return self.valid_xml
 
     # -------------------------------------------------------------------------
-    async def setup_imports(self):
+    def setup_imports(self):
         """Identify import elements and set them up as import objects."""
         logger.debug(f"Setting up imports for {self.oscal_model}")
         import_directives = xpath(self.tree, self.nsmap, '/./METASCHEMA/import/@href')
@@ -386,23 +385,23 @@ class MetaschemaParser:
                     else:
                         logger.debug(f"Processing {imp_file}  ...")
                         self.import_inventory.append(imp_file)
-                        model_name = imp_file
+                        model_name = str(imp_file)
                         if model_name.startswith("oscal_"):
                             model_name = model_name[len("oscal_"):]
                         if model_name.endswith("_metaschema_RESOLVED.xml"):
                             model_name = model_name[:-len("_metaschema_RESOLVED.xml")]
 
                         logger.debug(f"Model name: {model_name}")
-                        import_content = await self.support.asset(self.oscal_version, model_name, "metaschema")
+                        import_content = self.support.asset(self.oscal_version, model_name, "metaschema")
                         if import_content:
                             logger.debug(f"Version: {self.oscal_version} Model: {model_name} Content length: {len(import_content)}")
-                            import_obj = await MetaschemaParser.create(import_content, self.support, self.import_inventory, self.oscal_version)
-                            status = await import_obj.top_pass()
+                            import_obj = MetaschemaParser.create(import_content, self.support, self.import_inventory, self.oscal_version)
+                            status = import_obj.top_pass()
                             logger.debug(f"Import status: {status}")
                             if status:
                                 self.imports[model_name] = import_obj
                                 # self.imports.append({imp_file: import_obj})
-                                logger.debug(f"Imports[0] for {imp_file}: {iif(import_obj.top_level, "TOP", "NOT TOP")}")
+                                logger.debug(f"Imports[0] for {imp_file}: {iif(import_obj.top_level, 'TOP', 'NOT TOP')}")
                             else:
                                 logger.error(f"Invalid Import file: {imp_file}")
         # logger.info(f"IMPORTS FOR {self.oscal_model}: {self.imports}")
@@ -427,7 +426,7 @@ class MetaschemaParser:
         return xpath_atomic(self.tree, self.nsmap, xExpr, context)
 
     # -------------------------------------------------------------------------
-    def xpath(self, xExpr, context=None):
+    def xpath(self, xExpr, context=None) -> ET.Element | list[ET.Element] | None:
         """
         Performs an xpath query either on the entire XML document 
         or on a context within the document.
@@ -446,7 +445,7 @@ class MetaschemaParser:
         """
         
 
-        return xpath(self.tree, self.nsmap, xExpr, context)
+        return cast(ET.Element | list[ET.Element] | None, xpath(self.tree, self.nsmap, xExpr, context))
 
     # -------------------------------------------------------------------------
     def get_markup_content(self, xExpr, context=None):
@@ -467,7 +466,6 @@ class MetaschemaParser:
 
         try:
             context = self.xpath("/METASCHEMA")
-            metschema_tree = {}
             metaschema_tree = {}
             metaschema_tree["oscal_model"] = self.oscal_model
             metaschema_tree["oscal_version"] = self.oscal_version
@@ -487,10 +485,6 @@ class MetaschemaParser:
                 if PRUNE_JSON:
                     # Clean up the metaschema tree by removing None values and empty arrays
                     metaschema_tree["nodes"] = clean_none_values_recursive(metaschema_tree["nodes"])
-
-                prefix = f"OSCAL_{self.oscal_version}_{self.oscal_model}"
-
-
 
                 # output_file = f"{prefix}_unhandled_report.json"
                 # with open(output_file, 'w', encoding='utf-8') as f:
@@ -571,12 +565,6 @@ class MetaschemaParser:
         metaschema_rule["test"] = None
         metaschema_rule["message"] = None
         metaschema_rule["help-url"] = None
-        metaschema_rule[""] = None
-        metaschema_rule[""] = None
-        metaschema_rule[""] = None
-        metaschema_rule[""] = None
-        metaschema_rule[""] = None
-
 
         metaschema_rule["min-occurs"] = None
         metaschema_rule["max-occurs"] = None
@@ -592,7 +580,6 @@ class MetaschemaParser:
         metaschema_rule["remarks"] = []
 
         metaschema_rule["example"] = []
-        metaschema_rule[""] = []
 
         return metaschema_rule
 
@@ -619,9 +606,9 @@ class MetaschemaParser:
         metaschema_index["pattern"] = None
         metaschema_index["description"] = []
         metaschema_index["remarks"] = []
+        return metaschema_index
 
-
-    # ------------------------------------------------------------------------- 
+    # -------------------------------------------------------------------------
     def recurse_metaschema(self, name, structure_type="define-assembly", parent="", ignore_local=False, already_searched=[], context=None, skip_children=False, use_name=None):
         """
         Recursively build the metaschema tree.
@@ -650,12 +637,12 @@ class MetaschemaParser:
 
         # ===== REASONS TO STOP PROCESSING BEFORE COMPLETION ==========================
         if global_counter > RUNAWAY_LIMIT:
-            logger.error(f"Recursion limit reached. Exiting.")
+            logger.error("Recursion limit reached. Exiting.")
             global_stop_here = True
             return metaschema_node
 
         if global_stop_here:
-            logger.info(f"DEBUG: Stopping Early.")
+            logger.info("DEBUG: Stopping Early.")
             return None
 
         # .............................................................................
@@ -677,7 +664,7 @@ class MetaschemaParser:
         # xpath_query = f"{iif(context, ".", "/METASCHEMA")}/{structure_type}"
         xpath_query = f"./{structure_type}"
         no_local = iif(ignore_local, " and not(@scope='local')", "")
-        xpath_query += f"[@{iif(structure_type in ["field", "flag", "assembly"], "ref", "name")}='{name}'{no_local}]"
+        xpath_query += f"[@{iif(structure_type in ['field', 'flag', 'assembly'], 'ref', 'name')}='{name}'{no_local}]"
         if use_name is not None:
             xpath_query += f"[./use-name='{use_name}']"
         if DEBUG_OBJECT == name:
@@ -714,9 +701,9 @@ class MetaschemaParser:
                 metaschema_node["use-name"] = metaschema_node["name"]
             if metaschema_node["path"] is None or metaschema_node["path"] == "":
                 if structure_type in ["define-assembly", "assembly", "define-field", "field"]:
-                   metaschema_node["path"] = f"{parent}/{metaschema_node["use-name"]}"
+                   metaschema_node["path"] = f"{parent}/{metaschema_node['use-name']}"
                 elif structure_type in ["define-flag", "flag"]:
-                    metaschema_node["path"] = f"{parent}/@{metaschema_node["use-name"]}"
+                    metaschema_node["path"] = f"{parent}/@{metaschema_node['use-name']}"
 
             metaschema_node["formal-name"]         = self.graceful_override(metaschema_node["formal-name"],         "./formal-name/text()", definition_obj)
             # metaschema_node["json-key"]            = self.graceful_override(metaschema_node["json-key"],            "./json-key/text()", definition_obj)
@@ -758,14 +745,14 @@ class MetaschemaParser:
             else:
                 metaschema_node["source"] = [self.oscal_model]  
 
-            if not has_repeated_ending(metaschema_node["path"], f"/{metaschema_node["use-name"]}", frequency=2):
+            if not has_repeated_ending(metaschema_node["path"], f"/{metaschema_node['use-name']}", frequency=2):
                 metaschema_node["flags"]    = self.handle_flags(metaschema_node, definition_obj, structure_type, name, parent)
                 logger.debug(f"Back from handle flags in {self.oscal_model} for {structure_type} / {name} in {parent}")
                 metaschema_node["children"] = self.handle_children(name, structure_type, metaschema_node, definition_obj)
-                logger.debug(f"Back from handle model")
+                logger.debug("Back from handle model")
             else:
                 # It is one of several known circular references that needs to be handled.
-                logger.debug(f"Circular Reference protection: {name} is the same as the parent at {metaschema_node["path"]}")
+                logger.debug(f"Circular Reference protection: {name} is the same as the parent at {metaschema_node['path']}")
                 metaschema_node["structure-type"] = "recursive"
                 metaschema_node["description"] = "<b>Recursive: See parent</b>"
                 metaschema_node["children"] = []
@@ -777,13 +764,13 @@ class MetaschemaParser:
             logger.debug(f"Did not find {structure_type} / {name} in {self.oscal_model} or any imports.")
         else:
             if DEBUG_OBJECT == name:
-                logger.info(f"****: Found {structure_type} / {name} in {self.oscal_model} with path: {metaschema_node["path"]}")
+                logger.info(f"****: Found {structure_type} / {name} in {self.oscal_model} with path: {metaschema_node['path']}")
                 logger.info(f"****: metaschema_node: {self.str_node(metaschema_node)}")
 
         return metaschema_node
 
     # -------------------------------------------------------------------------
-    def handle_group_as(self, metaschema_node, definition_obj, structure_type, name, parent):
+    def handle_group_as(self, metaschema_node, definition_obj: ET.Element, structure_type, name, parent):
         """
         Handle the group-as element for the metaschema tree.
         This function processes the group-as element and its attributes,
@@ -791,18 +778,19 @@ class MetaschemaParser:
         """
         logger.debug(f"Handling group-as for {structure_type} {name}")
 
-        temp_group_as = self.xpath(f"./group-as", definition_obj)
+        temp_group_as = self.xpath("./group-as", definition_obj)
         if temp_group_as is not None:
             if structure_type in ["define-assembly", "assembly", "define-field", "field"]:
                 logger.debug(f"Found group-as for {structure_type} {name}")
+                assert isinstance(temp_group_as, ET.Element)
                 if temp_group_as.attrib:
-                    logger.debug(f"Has attributes.")
+                    logger.debug("Has attributes.")
                     metaschema_node["group-as"] = temp_group_as.attrib.get("name", "")
                     if "in-xml" in temp_group_as.attrib:
                         logger.debug(f"Found in-xml attribute: {temp_group_as.attrib.get('in-xml')}")
                         if temp_group_as.attrib.get("in-xml") in ["GROUPED"]:
                             metaschema_node["wrapped-in-xml"] = temp_group_as.attrib.get("name", "")
-                            metaschema_node["path"] = f"{parent}/{temp_group_as.attrib.get("name", "")}/{metaschema_node["use-name"]}"
+                            metaschema_node["path"] = f"{parent}/{temp_group_as.attrib.get('name', '')}/{metaschema_node['use-name']}"
                         elif temp_group_as.attrib.get("in-xml") in ["UNGROUPED"]:
                             pass
                         else:
@@ -925,10 +913,10 @@ class MetaschemaParser:
         
         hold_flags = metaschema_node.get("flags", [])
 
-        temp_flags = self.xpath(f"./(define-flag | flag)", definition_obj)
+        temp_flags = self.xpath("./(define-flag | flag)", definition_obj)
         if temp_flags is not None:
             logger.debug(f"Found {len(temp_flags)} flags in {structure_type} {name}")
-            if not structure_type in ["define-assembly", "assembly", "define-field", "field"]:
+            if structure_type not in ["define-assembly", "assembly", "define-field", "field"]:
                 logger.warning(f"Flags are only allowed in define-assembly, assembly, define-field, field. Not in {structure_type} {name}")
 
             if not isinstance(temp_flags, list): # more than one
@@ -955,7 +943,7 @@ class MetaschemaParser:
         return hold_flags
 
     # -------------------------------------------------------------------------
-    def handle_attributes(self, metaschema_node, definition_obj, structure_type, name, parent):
+    def handle_attributes(self, metaschema_node, definition_obj: ET.Element, structure_type, name, parent):
         """
         Handle attributes for the metaschema tree.
         This function processes the attributes of the given XML element and
@@ -966,50 +954,49 @@ class MetaschemaParser:
         if definition_obj.attrib:
             for attr_name, attr_value in definition_obj.attrib.items():
                 logger.debug(f"{structure_type} ({name}) Attribute: {attr_name} = {attr_value}")
-                match attr_name:
-                    case "name" | "ref" | "scope":
-                        pass # Already captured: name, ref. Ignoring: scope
-                    case "as-type": # for fields and flags
-                        metaschema_node["datatype"] = attr_value or metaschema_node["datatype"]
-                    case "required": # For flags
-                        if attr_value == "yes":
-                            metaschema_node["min-occurs"] = "1"
-                            metaschema_node["max-occurs"] = "1"
-                        elif attr_value == "no":
-                            metaschema_node["min-occurs"] = "0" 
-                            metaschema_node["max-occurs"] = "1" 
-                    case "min-occurs": # For fields and assemblies
-                        metaschema_node["min-occurs"] = attr_value or metaschema_node["min-occurs"]
-                    case "max-occurs": # For fields and assemblies
-                        metaschema_node["max-occurs"] = attr_value or metaschema_node["max-occurs"]
-                    case "collapsible": # For fields
-                        if attr_value == "yes":
-                            metaschema_node["is-collapsible"] = True
-                        elif attr_value == "no": # default is "no"
-                            metaschema_node["is-collapsible"] = False
-                        logger.debug(f"Collapsible: {metaschema_node['is-collapsible']}")
-                        unhandled = {"path": metaschema_node["path"], "structure": metaschema_node["structure-type"], attr_name: attr_value}
-                        global_unhandled_report.append(unhandled)
-                    case "deprecated":
-                        if compare_semver(attr_value, self.oscal_version) <= 0:
-                            metaschema_node["deprecated"] = True
+                if attr_name in ("name", "ref", "scope"):
+                    pass  # Already captured: name, ref. Ignoring: scope
+                elif attr_name == "as-type":  # for fields and flags
+                    metaschema_node["datatype"] = attr_value or metaschema_node["datatype"]
+                elif attr_name == "required":  # For flags
+                    if attr_value == "yes":
+                        metaschema_node["min-occurs"] = "1"
+                        metaschema_node["max-occurs"] = "1"
+                    elif attr_value == "no":
+                        metaschema_node["min-occurs"] = "0"
+                        metaschema_node["max-occurs"] = "1"
+                elif attr_name == "min-occurs":  # For fields and assemblies
+                    metaschema_node["min-occurs"] = attr_value or metaschema_node["min-occurs"]
+                elif attr_name == "max-occurs":  # For fields and assemblies
+                    metaschema_node["max-occurs"] = attr_value or metaschema_node["max-occurs"]
+                elif attr_name == "collapsible":  # For fields
+                    if attr_value == "yes":
+                        metaschema_node["is-collapsible"] = True
+                    elif attr_value == "no":  # default is "no"
+                        metaschema_node["is-collapsible"] = False
+                    logger.debug(f"Collapsible: {metaschema_node['is-collapsible']}")
+                    unhandled = {"path": metaschema_node["path"], "structure": metaschema_node["structure-type"], attr_name: attr_value}
+                    global_unhandled_report.append(unhandled)
+                elif attr_name == "deprecated":
+                    if compare_semver(attr_value, self.oscal_version) <= 0:
+                        metaschema_node["deprecated"] = True
+                    else:
+                        metaschema_node["sunsetting"] = attr_value
+                elif attr_name == "default":
+                    if structure_type in ["define-field", "define-flag"]:
+                        metaschema_node["default"] = attr_value
+                    else:
+                        logger.warning(f"Unexpected attribute: <define-{structure_type} name='{name}' {attr_name}='{attr_value}'")
+                elif attr_name == "in-xml":
+                    if structure_type in ["define-field", "field", "define-assembly", "assembly"]:
+                        if attr_value in ["WRAPPED", "WITH_WRAPPER"]:
+                            metaschema_node["wrapped-in-xml"] = True
                         else:
-                            metaschema_node["sunsetting"] = attr_value
-                    case "default":
-                        if structure_type in ["define-field", "define-flag"]:
-                            metaschema_node["default"] = attr_value
-                        else:
-                            logger.warning(f"Unexpected attribute: <define-{structure_type} name='{name}' {attr_name}='{attr_value}'")
-                    case "in-xml":
-                        if structure_type in ["define-field", "field", "define-assembly", "assembly"]:
-                            if attr_value in ["WRAPPED", "WITH_WRAPPER"]:
-                                metaschema_node["wrapped-in-xml"] = True
-                            else:
-                                metaschema_node["wrapped-in-xml"] = False
-                        else:
-                            logger.warning(f"Unexpected attribute: <define-{structure_type} name='{name}' {attr_name}='{attr_value}'")
-                    case _:
-                        logger.warning(f"Unexpected attribute: <{structure_type} ({name}) {attr_name}='{attr_value}'")
+                            metaschema_node["wrapped-in-xml"] = False
+                    else:
+                        logger.warning(f"Unexpected attribute: <define-{structure_type} name='{name}' {attr_name}='{attr_value}'")
+                else:
+                    logger.warning(f"Unexpected attribute: <{structure_type} ({name}) {attr_name}='{attr_value}'")
 
         return metaschema_node
 
@@ -1063,13 +1050,13 @@ class MetaschemaParser:
         child_name = None
 
         if structure_type == "define-assembly":
-            xExpr = f"./model"
+            xExpr = "./model"
         elif structure_type == "choice":
             logger.debug(f"Handling choice {handle_choice} for {metaschema_node['path']}")
             xExpr = f"(./model/choice)[{handle_choice}]"
             # logger.debug(f"{xExpr} for {structure_type} {name} in {metaschema_node["path"]}")
         else:
-            xExpr = f""
+            xExpr = ""
 
         if xExpr != "":
             children = self.xpath(xExpr, context)
@@ -1083,11 +1070,11 @@ class MetaschemaParser:
                             child_name = child.attrib.get("ref", "")
                             child_use_name = self.graceful_override(child_use_name, "./use-name/text()", child)
                         elif child_structure_type in ["choice", "any"]:
-                            logger.debug(f"FOUND {child_structure_type} in {metaschema_node["path"]}")
+                            logger.debug(f"FOUND {child_structure_type} in {metaschema_node['path']}")
                             child_name = f"{child_structure_type.upper()}"
 
                         # print(f"\r[{global_counter}] {ORANGE}Building: {metaschema_node["path"]}/{child_name} [{child.attrib}]", end="", flush=True)
-                        print(f"{ORANGE}[{global_counter}] Building: {metaschema_node["path"]}/{child_name} ") # , end="", flush=True)
+                        print(f"{ORANGE}[{global_counter}] Building: {metaschema_node['path']}/{child_name} ")  # , end="", flush=True)
 
                         if child_structure_type in ["define-field", "define-assembly", "field", "assembly"]:
 
@@ -1095,14 +1082,14 @@ class MetaschemaParser:
                             if meta_object is not None and meta_object != {}:
                                 hold_children.append(meta_object)
                             else:
-                                logger.warning(f"Unexpected empty return at {metaschema_node["path"]} for child: {child_structure_type} {child_name}")
+                                logger.warning(f"Unexpected empty return at {metaschema_node['path']} for child: {child_structure_type} {child_name}")
 
 
                         elif child_structure_type == "choice":
                             choice_count += 1
-                            logger.debug(f"Handling choice {choice_count} for {metaschema_node["path"]}")
+                            logger.debug(f"Handling choice {choice_count} for {metaschema_node['path']}")
                             temp_object = {}
-                            temp_object["name"] = f"CHOICE"
+                            temp_object["name"] = "CHOICE"
                             temp_object["structure-type"] = "choice"
                             temp_object["path"] = metaschema_node["path"] 
                             temp_object["source"] = metaschema_node["source"]
@@ -1112,9 +1099,9 @@ class MetaschemaParser:
 
                         elif child_structure_type == "any":
                             temp_object = {}
-                            temp_object["name"] = f"ANY"
+                            temp_object["name"] = "ANY"
                             temp_object["structure-type"] = "any"
-                            temp_object["path"] = metaschema_node["path"] + f"/*"
+                            temp_object["path"] = metaschema_node["path"] + "/*"
                             temp_object["source"] = metaschema_node["source"]
                             hold_children.append(temp_object)
                             global_unhandled_report.append({"path": metaschema_node["path"], "structure": metaschema_node["structure-type"], "child": child_structure_type})

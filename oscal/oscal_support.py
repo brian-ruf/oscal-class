@@ -722,7 +722,7 @@ class OSCALSupport:
             total_releases = len(repo_releases)
 
             self.__status_messages(f"Found {total_releases} releases in the OSCAL GitHub repository.")
-            for idx, entry in enumerate(repo_releases, 1):
+            for idx, entry in enumerate(reversed(repo_releases), 1):
                 self.__status_messages(f"Inspecting release {idx} of {total_releases}...")
                 # Progress indicator (no need for asyncio.sleep in sync mode)
 

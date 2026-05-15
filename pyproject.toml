@@ -35,7 +35,7 @@ dependencies = [
     "PyYAML          >= 6.0",
     "markdown        >= 3.0.0",
     # "ruf_common @ file://../common/ruf_common"
-    "ruf-common      >= 2.2.0",
+    "ruf-common      >= 2.1.0",
 ]
 
 [project.urls]

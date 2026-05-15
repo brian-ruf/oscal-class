@@ -17,6 +17,7 @@ from . import oscal_datatypes # noqa: E402
 from . import oscal_controls # noqa: E402
 from . import oscal_assessment # noqa: E402
 from . import oscal_implementation # noqa: E402
+from . import metaschema_parser # noqa: E402
 
 # Import commonly used constants
 from .oscal_support import OSCAL_FORMATS, OSCAL_DEFAULT_XML_NAMESPACE # noqa: E402
@@ -36,6 +37,7 @@ __all__ = [
     "oscal_controls",
     "oscal_implementation",
     "oscal_assessment",
+    "metaschema_parser",
     "Catalog",
     "Profile",
     "Mapping",

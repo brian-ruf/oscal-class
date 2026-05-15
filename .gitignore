@@ -19,3 +19,4 @@ dist/
 build/
 .claude/
 vendor/
+*_metaschema.json
