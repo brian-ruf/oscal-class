@@ -124,7 +124,7 @@ Claude/Claude Code and GitHub Co-pilot have been used in a manner similar to pai
 - improving alignment with "pythonic" best practices
 - targeted code reviews
 - resolving linter issues
-- aid in debugging and testing
+- aiding in debugging and testing
 - drafting individual functions/methods that I refine and test 
 - drafting portions of documentation
 - drafting/creating unit tests

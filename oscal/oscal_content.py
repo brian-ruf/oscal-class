@@ -14,7 +14,7 @@ import yaml
 import uuid
 import elementpath
 from loguru             import logger
-from typing             import Optional, Any
+from typing             import Optional, Any, Protocol, runtime_checkable
 from datetime           import datetime, timezone
 from functools          import wraps
 from enum               import Enum, IntEnum
@@ -120,6 +120,14 @@ class ContentState(IntEnum):
     VALID            = 3  # Content passes OSCAL schema validation (minimum for viewing/editing)
     IMPORTS_RESOLVED = 4  # All imported OSCAL documents resolved successfully
     # FUTURE: CORE_METASCHEMA_VALID = 5, ADDITIONAL_METASCHEMA_VALID = 6
+
+
+@runtime_checkable
+class _ReadableSource(Protocol):
+    """Protocol for file-like objects that provide read()."""
+
+    def read(self, size: int = -1) -> Any:
+        ...
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Factory Methods and Initializers
@@ -326,7 +334,7 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @classmethod
-    def load(cls, source: str | os.PathLike | Any, *, href: str | None = None):
+    def load(cls, source: str | os.PathLike | _ReadableSource, *, href: str | None = None):
         """Initialize from a local file path or file-like object.
 
         This aligns with Python's conventional `load(...)` behavior.
@@ -340,7 +348,7 @@ class OSCAL(LoggableMixin):
         content = ""
         resolved_href = href if href else ""
 
-        if hasattr(source, "read"):
+        if isinstance(source, _ReadableSource):
             payload = source.read()
             if isinstance(payload, (bytes, bytearray)):
                 content = payload.decode("utf-8", errors="replace")
@@ -403,7 +411,7 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @classmethod
-    def open(cls, source: str | os.PathLike | dict | OscalRef | list | Any,
+    def open(cls, source: str | os.PathLike | dict | OscalRef | list | _ReadableSource,
              *, href: str | None = None):
         """Universal constructor — inspects the source type and delegates to
         the appropriate loader.
@@ -418,7 +426,7 @@ class OSCAL(LoggableMixin):
             source: Any supported OSCAL source.
             href:   Optional URI label passed through to load() when applicable.
         """
-        if hasattr(source, "read") or isinstance(source, os.PathLike):
+        if isinstance(source, _ReadableSource) or isinstance(source, os.PathLike):
             return cls.load(source, href=href)
         if isinstance(source, str):
             parsed = urlparse(source)
@@ -447,13 +455,18 @@ class OSCAL(LoggableMixin):
                 "OSCAL.new() requires a specific model class. "
                 "Use Catalog.new(), Profile.new(), etc."
             )
-        instance = cls.__new__(cls)
-        instance.__init_common__()
-        instance._origin     = "new"
-        instance.model       = cls.__name__.lower()  # e.g. "catalog", "profile"
-        content     = create_new_oscal_content(instance.model, title, version, published)
-        if instance.initial_validation(content):
-            instance.is_read_only = False
+        model    = cls.__name__.lower()
+        instance = create_new_oscal_content(model, title, version, published)
+        if instance is None:
+            instance = cls.__new__(cls)
+            instance.__init_common__()
+            instance._origin = "new"
+            instance.model   = model
+            return instance
+        instance.__class__ = cls
+        instance._init_common()
+        instance._origin      = "new"
+        instance.is_read_only = False
         return instance
 
     # -------------------------------------------------------------------------
@@ -557,48 +570,55 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     def _build_import_tree(self, new_href: str = "") -> bool:
         """
-        Internal method to build the structure of imports for efficient access.
-        """
-        status = False
-        tree_obj = {
-            "href_original": self.source,
-            "href": self.source,
-            "type": "",
-            "status": "",
-            "error": "",
-            "children": [],
-            "object": None
-        }
-        # classify and load the source
-        if self.source != "":
-            logger.debug(f"Building Import Tree for {self.source}")
-            classify_source() 
-            if self.source_supported:
-                logger.debug(f"Source classified as type '{self.source_type}' with scheme '{self.source_scheme}'. Attempting to load content.")
-                content = load_source() 
-                if content:
-                    oscal_file = OSCAL(content=content)
-                    if oscal_file.is_valid():
-                        tree_obj["object"] = oscal_file
-                        tree_obj["type"] = oscal_file.content_type
-                        tree_obj["status"] = "loaded"
-                        logger.debug(f"Successfully loaded content for '{self.source}'. Detected type: {tree_obj['type']}")
-                        status = True
-                    else:
-                        tree_obj["status"] = "invalid"
-                        tree_obj["error"] = "Content loaded but failed OSCAL validation"
-                        logger.error(f"Loaded content from '{self.source}' is not valid OSCAL: {oscal_file.validation_errors}")
-                else:
-                    tree_obj["status"] = "failed"
-                    tree_obj["error"] = "Failed to load content from source"
-                    logger.error(f"Failed to load content from '{self.source}'. No content returned.")
-            else:
-                tree_obj["status"] = "unsupported"
-                tree_obj["error"] = "Source type or scheme is not supported for loading"
-                logger.warning(f"Unsupported source — cannot load: {self.source} "
-                               f"(type={self.source_type}, scheme={self.source_scheme})")
+        Internal method to build a recursive import tree.
 
-        return status
+        The resulting cached tree is rooted at this OSCAL object and contains
+        one child node per imported OSCAL document, recursively.
+        """
+        root_href = (new_href or self.href or self.href_original).strip()
+        if new_href:
+            self.href = root_href
+
+        def _node_for(doc: "OSCAL", seen: set[str]) -> dict:
+            node_href = (doc.href or doc.href_original).strip()
+            node = {
+                "href_original": doc.href_original,
+                "href_valid":    node_href,
+                "status":        ImportState.READY if doc.is_valid else ImportState.INVALID,
+                "is_valid":      doc.is_valid,
+                "is_local":      doc.is_local,
+                "is_remote":     doc.is_remote,
+                "is_cached":     doc.is_cached,
+                "object":        doc,
+                "children":      [],
+            }
+
+            # Keep backward compatibility with existing consumers that expect
+            # an 'imports' key for child nodes.
+            node["imports"] = node["children"]
+
+            node_key = node_href or doc.href_original
+            if node_key and node_key in seen:
+                logger.warning(f"import_tree: circular reference detected at '{node_key}' — stopping recursion.")
+                return node
+
+            next_seen = seen | ({node_key} if node_key else set())
+            doc.resolve_imports()
+
+            for entry in doc.import_list:
+                child_obj: OSCAL | None = entry.get("object")
+                if child_obj is None:
+                    continue
+                child_node = _node_for(child_obj, next_seen)
+                node["children"].append(child_node)
+
+            return node
+
+        if not root_href and not self.href_original:
+            logger.warning("_build_import_tree called without an available href.")
+
+        self._import_tree = _node_for(self, set())
+        return True
 
     # -------------------------------------------------------------------------
     @property
@@ -1525,7 +1545,7 @@ class OSCAL(LoggableMixin):
 
             node["imports"].append(child_node)
 
-        self.import_tree = node
+        self._import_tree = node
         return node
 
     # -------------------------------------------------------------------------
@@ -1789,6 +1809,7 @@ def load_content(source: str | dict | OscalRef | list, media_type: str = "", onl
     """
     logger.debug("Loading content from source")
     refs = _normalize_refs(source)
+    content = ""
 
     for ref in refs:
         classify_source(ref, only_oscal=only_oscal)
@@ -1825,7 +1846,7 @@ def load_source(ref: OscalRef) -> str:
     Raises ImportLoadError with a typed ImportFailureCode on any load failure.
     """
     src = ref.href.strip()
-    content = ""
+    content: str = ""
 
     try:
         if ref.source_type == "uri" and ref.source_scheme == "file":
@@ -1843,7 +1864,7 @@ def load_source(ref: OscalRef) -> str:
         elif ref.source_type == "uri" and ref.source_scheme in {"http", "https"}:
             logger.info(f"Loading controls from URL: {src}")
             try:
-                content = download_file(src, "oscal_remote_content")
+                content = normalize_content(download_file(src, "oscal_remote_content")) 
             except HTTPError as exc:
                 if exc.code in (401, 403):
                     raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
@@ -2063,14 +2084,6 @@ def _backmatter_rlinks(doc_obj, uuid: str) -> list[str]:
                 break
 
     return hrefs
-
-# -------------------------------------------------------------------------
-def load_uri(cls, uri: str, media_type: str = "") -> dict:
-    """Load content from a URI.
-        
-    Args:
-        uri: URI or list of URIs identifying content to load.
-    """
 
 # -------------------------------------------------------------------------
 def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
@@ -2343,10 +2356,13 @@ def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", descripti
 # -----------------------------------------------------------------------------
 def create_new_oscal_content(model_name: str, title: str, version: str = "", published: str = "", format: str = "xml" ) -> Optional[OSCAL]:
     """
-    Returns minimally valid OSCAL content as the
-    appropriate model-specific subclass (e.g., Catalog, Profile, SSP).
+    Returns a validated base OSCAL instance loaded from a template.
     Currently this is based on loading a template file from package data.
     In the future, this should be generated based on the latest metaschema definition.
+
+    The returned instance is always a base OSCAL object. Callers that need a
+    specific model subclass (e.g. Catalog, Profile) are responsible for
+    reassigning __class__ and calling _init_common() afterward.
 
     Args:
         model_name (str): The OSCAL model name (e.g., "catalog", "system-security-plan").
@@ -2356,21 +2372,26 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
         format (str): The desired format for the new content ("xml", "json", "yaml"). Defaults to "xml".
 
     Returns:
-        Optional[OSCAL]: The appropriate OSCAL subclass instance, or None on failure.
+        Optional[OSCAL]: A base OSCAL instance loaded from template, or None on failure.
     """
     support = get_support()
 
     if support.is_valid_model(model_name):
-        content = support.load_file(f"{model_name}.xml", as_bytes=False)
-        if content and isinstance(content, str):
-            return content
+        raw = support.load_file(f"{model_name}.xml", as_bytes=False)
+        if raw and isinstance(raw, str):
+            oscal = OSCAL.__new__(OSCAL)
+            oscal.__init_common__()
+            if oscal.initial_validation(raw):
+                return oscal
+            logger.error(f"Template content failed validation for model: {model_name}")
+            return None
         else:
             logger.error(f"Failed to load content for model: {model_name}")
-            return ""
+            return None
     else:
         logger.error(f"Unsupported OSCAL model for new content: {model_name}")
 
-    return ""
+    return None
 
 # -----------------------------------------------------------------------------
 def new_uuid() -> str:

@@ -2,10 +2,10 @@
 Unit tests for OSCAL recursive import tree.
 
 Covers:
-  - import_tree returns [] for documents with no imports
-  - import_tree node structure: mirrors import_list fields + 'imports' key
-  - Lazy caching: same list object returned on repeated access
-  - rebuild_import_tree() invalidates cache and returns a fresh list
+    - import_tree returns a root dict with 'imports' children
+    - import_tree child node structure: mirrors import_list fields + 'imports' key
+    - Lazy caching: same root dict object returned on repeated access
+    - rebuild_import_tree() invalidates cache and returns a fresh root dict
   - Multi-level nesting: profile → profile → catalog
   - Failed import nodes: status=INVALID, imports=[], failure populated
   - failed_imports property: returns only entries with failure set
@@ -90,11 +90,11 @@ def profile_missing(tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestImportTreeNoImports:
-    def test_returns_empty_list(self, catalog):
-        assert catalog.import_tree == []
+    def test_returns_root_dict(self, catalog):
+        assert isinstance(catalog.import_tree, dict)
 
-    def test_returns_list_type(self, catalog):
-        assert isinstance(catalog.import_tree, list)
+    def test_root_imports_is_empty_list(self, catalog):
+        assert catalog.import_tree["imports"] == []
 
     def test_stable_on_repeated_access(self, catalog):
         assert catalog.import_tree is catalog.import_tree
@@ -105,39 +105,39 @@ class TestImportTreeNoImports:
 # ---------------------------------------------------------------------------
 
 class TestImportTreeStructure:
-    def test_has_one_node(self, profile_direct):
-        assert len(profile_direct.import_tree) == 1
+    def test_has_one_child_node(self, profile_direct):
+        assert len(profile_direct.import_tree["imports"]) == 1
 
     def test_node_has_imports_key(self, profile_direct):
-        assert "imports" in profile_direct.import_tree[0]
+        assert "imports" in profile_direct.import_tree["imports"][0]
 
     def test_node_imports_is_list(self, profile_direct):
-        assert isinstance(profile_direct.import_tree[0]["imports"], list)
+        assert isinstance(profile_direct.import_tree["imports"][0]["imports"], list)
 
     def test_node_has_href_original(self, profile_direct):
-        assert "href_original" in profile_direct.import_tree[0]
+        assert "href_original" in profile_direct.import_tree["imports"][0]
 
     def test_node_has_status(self, profile_direct):
-        assert "status" in profile_direct.import_tree[0]
+        assert "status" in profile_direct.import_tree["imports"][0]
 
     def test_node_has_object(self, profile_direct):
-        assert "object" in profile_direct.import_tree[0]
+        assert "object" in profile_direct.import_tree["imports"][0]
 
     def test_node_has_failure(self, profile_direct):
-        assert "failure" in profile_direct.import_tree[0]
+        assert "failure" in profile_direct.import_tree["imports"][0]
 
     def test_ready_node_status(self, profile_direct):
-        assert profile_direct.import_tree[0]["status"] == ImportState.READY
+        assert profile_direct.import_tree["imports"][0]["status"] == ImportState.READY
 
     def test_catalog_child_has_no_imports(self, profile_direct):
         """A catalog child has no imports of its own."""
-        assert profile_direct.import_tree[0]["imports"] == []
+        assert profile_direct.import_tree["imports"][0]["imports"] == []
 
     def test_ready_node_failure_is_none(self, profile_direct):
-        assert profile_direct.import_tree[0]["failure"] is None
+        assert profile_direct.import_tree["imports"][0]["failure"] is None
 
     def test_href_original_matches_import_list(self, profile_direct):
-        tree_href = profile_direct.import_tree[0]["href_original"]
+        tree_href = profile_direct.import_tree["imports"][0]["href_original"]
         list_href = profile_direct.import_list[0]["href_original"]
         assert tree_href == list_href
 
@@ -156,8 +156,8 @@ class TestImportTreeCaching:
         _ = profile_direct.import_tree
         assert profile_direct._import_tree is not None
 
-    def test_rebuild_returns_list(self, profile_direct):
-        assert isinstance(profile_direct.rebuild_import_tree(), list)
+    def test_rebuild_returns_dict(self, profile_direct):
+        assert isinstance(profile_direct.rebuild_import_tree(), dict)
 
     def test_rebuild_returns_new_object(self, profile_direct):
         t1 = profile_direct.import_tree
@@ -167,9 +167,9 @@ class TestImportTreeCaching:
     def test_rebuild_produces_equivalent_content(self, profile_direct):
         t1 = profile_direct.import_tree
         t2 = profile_direct.rebuild_import_tree()
-        assert len(t1) == len(t2)
-        assert t1[0]["href_original"] == t2[0]["href_original"]
-        assert t1[0]["status"] == t2[0]["status"]
+        assert len(t1["imports"]) == len(t2["imports"])
+        assert t1["imports"][0]["href_original"] == t2["imports"][0]["href_original"]
+        assert t1["imports"][0]["status"] == t2["imports"][0]["status"]
 
     def test_resolve_imports_invalidates_cache(self, profile_direct):
         """resolve_imports() clears _import_tree so the next access rebuilds it."""
@@ -206,24 +206,24 @@ class TestImportTreeRecursive:
         return doc
 
     def test_top_level_has_one_node(self, three_level):
-        assert len(three_level.import_tree) == 1
+        assert len(three_level.import_tree["imports"]) == 1
 
     def test_top_level_node_is_ready(self, three_level):
-        assert three_level.import_tree[0]["status"] == ImportState.READY
+        assert three_level.import_tree["imports"][0]["status"] == ImportState.READY
 
     def test_second_level_has_one_node(self, three_level):
-        assert len(three_level.import_tree[0]["imports"]) == 1
+        assert len(three_level.import_tree["imports"][0]["imports"]) == 1
 
     def test_second_level_node_is_ready(self, three_level):
-        child = three_level.import_tree[0]["imports"][0]
+        child = three_level.import_tree["imports"][0]["imports"][0]
         assert child["status"] == ImportState.READY
 
     def test_leaf_catalog_has_no_imports(self, three_level):
-        leaf = three_level.import_tree[0]["imports"][0]
+        leaf = three_level.import_tree["imports"][0]["imports"][0]
         assert leaf["imports"] == []
 
     def test_leaf_object_model_is_catalog(self, three_level):
-        leaf = three_level.import_tree[0]["imports"][0]
+        leaf = three_level.import_tree["imports"][0]["imports"][0]
         assert leaf["object"].model == "catalog"
 
 
@@ -232,21 +232,21 @@ class TestImportTreeRecursive:
 # ---------------------------------------------------------------------------
 
 class TestImportTreeFailedImport:
-    def test_tree_has_one_node(self, profile_missing):
-        assert len(profile_missing.import_tree) == 1
+    def test_tree_has_one_child_node(self, profile_missing):
+        assert len(profile_missing.import_tree["imports"]) == 1
 
     def test_failed_node_status_is_invalid(self, profile_missing):
-        assert profile_missing.import_tree[0]["status"] == ImportState.INVALID
+        assert profile_missing.import_tree["imports"][0]["status"] == ImportState.INVALID
 
     def test_failed_node_imports_is_empty(self, profile_missing):
         """Cannot recurse into a document that failed to load."""
-        assert profile_missing.import_tree[0]["imports"] == []
+        assert profile_missing.import_tree["imports"][0]["imports"] == []
 
     def test_failed_node_failure_is_populated(self, profile_missing):
-        assert profile_missing.import_tree[0]["failure"] is not None
+        assert profile_missing.import_tree["imports"][0]["failure"] is not None
 
     def test_failed_node_object_is_none(self, profile_missing):
-        assert profile_missing.import_tree[0]["object"] is None
+        assert profile_missing.import_tree["imports"][0]["object"] is None
 
 
 # ---------------------------------------------------------------------------
