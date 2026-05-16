@@ -41,8 +41,12 @@ import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, SubElement
 from loguru import logger
 
+import markdown
+from markdown.extensions import Extension
+from markdown.inlinepatterns import InlineProcessor
+from markdown.treeprocessors import Treeprocessor
+
 from .oscal_support import get_support, METASCHEMA_MIN_VERSION
-from .oscal_converters import oscal_html_to_markdown, oscal_markdown_to_html
 from ruf_common.helper import compare_semver
 
 OSCAL_XML_NAMESPACE = "http://csrc.nist.gov/ns/oscal/1.0"
@@ -155,6 +159,222 @@ def _html_to_et(html_str: str, namespace: str) -> Element:
     parser.feed(html_str)
     parser.close()
     return parser.get_root()
+
+
+# ---------------------------------------------------------------------------
+# OSCAL markdown ↔ HTML conversion
+# ---------------------------------------------------------------------------
+
+class _ParameterInsertionProcessor(InlineProcessor):
+    """Handles OSCAL ``{{ insert: param, id }}`` syntax → ``<insert>`` element."""
+
+    def handleMatch(self, m, data):
+        parts = [p.strip() for p in m.group(1).strip().split(",")]
+        if len(parts) != 2:
+            return None, None, None
+        el = Element("insert")
+        el.set("type", parts[0])
+        el.set("id-ref", parts[1])
+        return el, m.start(0), m.end(0)
+
+
+class _SubscriptProcessor(InlineProcessor):
+    """Handles ``~text~`` → ``<sub>text</sub>``."""
+
+    def handleMatch(self, m, data):
+        el = Element("sub")
+        el.text = m.group(1)
+        return el, m.start(0), m.end(0)
+
+
+class _SuperscriptProcessor(InlineProcessor):
+    """Handles ``^text^`` → ``<sup>text</sup>``."""
+
+    def handleMatch(self, m, data):
+        el = Element("sup")
+        el.text = m.group(1)
+        return el, m.start(0), m.end(0)
+
+
+class _OscalTableTreeprocessor(Treeprocessor):
+    """
+    Removes non-OSCAL table wrapper elements (thead, tbody, tfoot, etc.)
+    so the table only contains ``<tr>`` children directly.
+    """
+
+    def run(self, root):
+        for table in root.iter("table"):
+            self._flatten(table)
+
+    def _flatten(self, table):
+        rows = []
+        for child in list(table):
+            if child.tag in ("thead", "tbody"):
+                rows.extend(child)
+                table.remove(child)
+            elif child.tag == "tr":
+                rows.append(child)
+            elif child.tag in ("tfoot", "col", "colgroup", "caption"):
+                table.remove(child)
+        table.clear()
+        for row in rows:
+            table.append(row)
+
+
+class _OscalParameterExtension(Extension):
+    """Markdown extension wiring up all OSCAL inline/tree processors."""
+
+    def extendMarkdown(self, md):
+        md.inlinePatterns.register(
+            _ParameterInsertionProcessor(r"\{\{\s*insert:\s*([^}]+)\}\}", md),
+            "oscal_param_insert", 175,
+        )
+        md.inlinePatterns.register(
+            _SubscriptProcessor(r"~([^~]+)~", md),
+            "oscal_subscript", 174,
+        )
+        md.inlinePatterns.register(
+            _SuperscriptProcessor(r"\^([^^]+)\^", md),
+            "oscal_superscript", 173,
+        )
+        md.treeprocessors.register(
+            _OscalTableTreeprocessor(md), "oscal_table_compliance", 0
+        )
+
+
+def oscal_markdown_to_html(markdown_text: str, multiline: bool = False) -> str:
+    """
+    Convert OSCAL CommonMark to an HTML fragment.
+
+    ``multiline=True``  → markup-multiline: block elements preserved, ``<p>`` wrap applied.
+    ``multiline=False`` → markup-line: inline only, outer ``<p>`` stripped.
+    """
+    if not markdown_text:
+        return ""
+
+    # OSCAL markdown does not allow raw HTML.  Escape any angle bracket that
+    # looks like the start of an HTML/XML tag so the markdown library treats it
+    # as literal text rather than inline HTML.  This preserves original case
+    # (e.g. <BREAK> → &lt;BREAK&gt;) and ensures known element names written
+    # literally are not mis-parsed.  The OscalParameterExtension generates
+    # <insert .../> in its *output*, not in the source, so it is unaffected.
+    markdown_text = re.sub(r"<(?=[a-zA-Z/!])", r"&lt;", markdown_text)
+
+    md = markdown.Markdown(
+        extensions=["extra", "sane_lists", _OscalParameterExtension()],
+        extension_configs={
+            "extra": {
+                "markdown.extensions.fenced_code": {},
+                "markdown.extensions.tables": {},
+            }
+        },
+    )
+    html = md.convert(markdown_text)
+
+    if not multiline:
+        if html.startswith("<p>") and html.endswith("</p>"):
+            html = html[3:-4]
+        html = html.replace("\n", " ").strip()
+    else:
+        has_block = any(
+            tag in html
+            for tag in ("<p>", "<h1>", "<h2>", "<h3>", "<h4>", "<h5>", "<h6>",
+                        "<ul>", "<ol>", "<blockquote>", "<table>")
+        )
+        if not has_block and html.strip():
+            html = f"<p>{html}</p>"
+
+    return html
+
+
+def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
+    """
+    Convert an HTML fragment to OSCAL CommonMark.
+
+    ``multiline=True``  → markup-multiline (block elements converted).
+    ``multiline=False`` → markup-line (inline elements only).
+    """
+    if not html_text:
+        return ""
+
+    md = html_text.strip()
+
+    # OSCAL insert tags → {{ insert: type, id-ref }}
+    def _replace_insert(match):
+        attrs = match.group(1) or ""
+        type_m = re.search(r'\btype\s*=\s*(["\'])(.*?)\1', attrs, flags=re.IGNORECASE)
+        id_m   = re.search(r'\bid-ref\s*=\s*(["\'])(.*?)\1', attrs, flags=re.IGNORECASE)
+        if not type_m or not id_m:
+            return match.group(0)
+        return f"{{{{ insert: {type_m.group(2).strip()}, {id_m.group(2).strip()} }}}}"
+
+    md = re.sub(
+        r"<insert\b([^>]*)\s*(?:/\s*>|>\s*</insert\s*>)",
+        _replace_insert, md, flags=re.IGNORECASE,
+    )
+
+    if multiline:
+        for level in range(1, 7):
+            md = re.sub(f"<h{level}>([^<]+)</h{level}>", f'{"#" * level} \\1\n\n', md)
+
+        def _code_block(m):
+            return f"\n\n```\n{m.group(1)}\n```\n\n"
+        md = re.sub(r"<pre>([^<]*)</pre>", _code_block, md, flags=re.DOTALL)
+
+        def _table(m):
+            t = m.group(0)
+            hdr = re.search(r"<tr>((?:<th[^>]*>[^<]*</th>)+)</tr>", t)
+            if not hdr:
+                return t
+            cols = re.findall(r"<th[^>]*>([^<]*)</th>", hdr.group(1))
+            aligns = [a for a in re.findall(r'<th[^>]*align="([^"]*)"', hdr.group(1))]
+            rows = []
+            for rm in re.finditer(r"<tr>((?:<td[^>]*>.*?</td>)+)</tr>", t, flags=re.DOTALL):
+                rows.append(re.findall(r"<td[^>]*>(.*?)</td>", rm.group(1), flags=re.DOTALL))
+            if not cols or not rows:
+                return t
+            lines = ["| " + " | ".join(cols) + " |"]
+            seps = []
+            for i in range(len(cols)):
+                a = aligns[i] if i < len(aligns) else "left"
+                seps.append(":---:" if a == "center" else "---:" if a == "right" else "---")
+            lines.append("| " + " | ".join(seps) + " |")
+            for row in rows:
+                row = (row + [""] * len(cols))[: len(cols)]
+                lines.append("| " + " | ".join(row) + " |")
+            return "\n\n" + "\n".join(lines) + "\n\n"
+
+        md = re.sub(r"<table>.*?</table>", _table, md, flags=re.DOTALL)
+        md = re.sub(r"<blockquote>([^<]+)</blockquote>", r"\n\n> \1\n\n", md)
+        md = re.sub(r"<ul><li>([^<]+)</li></ul>", r"\n\n- \1\n", md)
+        md = re.sub(r"<ol><li>([^<]+)</li></ol>", r"\n\n1. \1\n", md)
+        md = re.sub(r"<p>([^<]+)</p>", r"\1\n\n", md)
+
+    # Inline formatting
+    md = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>', r'![\1](\2 "\3")', md)
+    md = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s*/>', r"![\1](\2)", md)
+    md = re.sub(r'<a\s+href="([^"]+)"\s+title="([^"]*)">([^<]+)</a>', r'[\3](\1 "\2")', md)
+    md = re.sub(r'<a\s+href="([^"]+)">([^<]+)</a>', r"[\2](\1)", md)
+    md = re.sub(r"<strong>([^<]+)</strong>", r"**\1**", md)
+    md = re.sub(r"<em>([^<]+)</em>", r"*\1*", md)
+    md = re.sub(r"<code>([^<]+)</code>", r"`\1`", md)
+    md = re.sub(r"<sup>([^<]+)</sup>", r"^\1^", md)
+    md = re.sub(r"<sub>([^<]+)</sub>", r"~\1~", md)
+    md = re.sub(r"<[^>]+>", "", md)
+
+    if multiline:
+        lines = [l.strip() for l in md.split("\n")]
+        cleaned: list[str] = []
+        for line in lines:
+            if line:
+                cleaned.append(line)
+            elif cleaned and cleaned[-1]:
+                cleaned.append("")
+        md = re.sub(r"\n\n\n+", "\n\n", "\n".join(cleaned))
+    else:
+        md = re.sub(r"\s+", " ", md)
+
+    return md.strip()
 
 
 # ---------------------------------------------------------------------------

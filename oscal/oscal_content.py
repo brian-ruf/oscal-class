@@ -30,7 +30,8 @@ from ruf_common.data    import detect_data_format, safe_load, safe_load_xml
 from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
 from .oscal_datatypes   import oscal_date_time_with_timezone
-from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml, oscal_markdown_to_html
+from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml
+from .oscal_converter   import oscal_markdown_to_html, OSCALConverter, _html_to_et
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Constants
@@ -1052,23 +1053,24 @@ class OSCAL(LoggableMixin):
         if status:
             self.content_state = ContentState.WELL_FORMED
 
-        # TEMPORARY: All content-manipulation methods operate on the XML tree only.
-        # Until dict-based equivalents are added, force JSON/YAML content into XML
-        # as the primary representation so those methods work regardless of load format.
-        # This block runs before validate() so that XML schema validation is used
-        # for JSON/YAML content (avoids spurious JSON-schema failures).
-        # TO REVERSE: delete this block and the logger.debug line that follows it.
-        if status and self.original_format in ("json", "yaml"):
-            logger.debug(f"TEMPORARY: Converting {self.original_format.upper()} to XML primary representation.")
-            if self._sync():
-                self.original_format = "xml"
-                logger.debug("TEMPORARY: Primary format switched to XML.")
+        # For XML sources, immediately convert to dict so all manipulation operates on JSON-native data.
+        if status and self.original_format == "xml":
+            converter = OSCALConverter.from_support(self.model, self.oscal_version, self._support)
+            if converter is not None:
+                xml_string = self._xml_serializer()
+                json_string = converter.xml_to_json(xml_string)
+                if json_string is not None:
+                    self._dict = json.loads(json_string)
+                    self.is_synced = True
+                    logger.debug("XML source converted to dict for JSON-native manipulation.")
+                else:
+                    logger.warning("XML→dict conversion failed; dict-based manipulation unavailable.")
             else:
-                logger.warning("TEMPORARY: dict-to-XML conversion failed; content manipulation methods will not work.")
-        # END TEMPORARY
+                logger.warning(f"No metaschema converter for {self.model} {self.oscal_version}; dict unavailable.")
 
         if status:
-            self.validate()
+            validate_format = "json" if self._dict is not None else self.original_format
+            self.validate(format=validate_format)
 
         return status
 
@@ -2183,14 +2185,10 @@ def append_prop(parent_node: ElementTree.Element, prop: dict):
         remarks_node = ElementTree.SubElement(prop_node, "remarks")
         remarks_html = oscal_markdown_to_html(prop.get('remarks', ''), multiline=True)
         if remarks_html:
-            try:
-                wrapped_html = f"<div>{remarks_html}</div>"
-                temp_root = ElementTree.fromstring(wrapped_html)  # Use fromstring directly
-                for child in temp_root:
-                    remarks_node.append(child)
-            except ElementTree.ParseError as e:
-                logger.error(f"Error parsing remarks HTML: {e}")
-                remarks_node.text = prop.get('remarks', '')
+            html_root = _html_to_et(remarks_html, "")
+            remarks_node.text = html_root.text
+            for child in html_root:
+                remarks_node.append(child)
 
 # -----------------------------------------------------------------------------
 def append_links(parent_node: ElementTree.Element, links: list):
@@ -2242,9 +2240,8 @@ def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> O
     """
     html_str = oscal_markdown_to_html(markdown_text, multiline=multiline)
     if html_str:
-        return ElementTree.fromstring(html_str.encode('utf_8'))
-    else:
-        return None
+        return _html_to_et(html_str, "")
+    return None
 
 # -------------------------------------------------------------------------
 def _format_table_helper(table_lines: list) -> str:
@@ -2333,7 +2330,9 @@ def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", descripti
         remarks_obj = ElementTree.SubElement(resource,"remarks") # Create the description element
         remarks_element = oscal_markdown_to_html_tree(remarks, multiline=True)
         if remarks_element is not None:
-            remarks_obj.append(remarks_element)
+            remarks_obj.text = remarks_element.text
+            for child in remarks_element:
+                remarks_obj.append(child)
     back_matter = oscal_obj.xpath("//back-matter")
 
     if back_matter and isinstance(back_matter, list) and len(back_matter) > 0:
