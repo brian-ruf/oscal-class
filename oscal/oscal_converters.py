@@ -531,6 +531,7 @@ def oscal_markdown_to_html(markdown_text, multiline=False):
         >>> convert_oscal_markdown_to_html("# Title\\n\\nParagraph", is_multiline=True)
         '<h1>Title</h1>\\n<p>Paragraph</p>'
     """
+    import re as _re
 
     # Configure extensions based on whether this is multiline or not
     extensions = [
@@ -545,6 +546,15 @@ def oscal_markdown_to_html(markdown_text, multiline=False):
             'markdown.extensions.tables': {},
         }
     }
+
+    # OSCAL markdown does not allow raw HTML.  Escape any angle bracket that
+    # looks like the start of an HTML/XML tag (letter, /, or ! after <) so
+    # the markdown library treats it as literal text rather than inline HTML.
+    # This preserves the original case (e.g. <BREAK> stays <BREAK>, not <break>)
+    # and ensures known HTML element names written literally (e.g. <em>text</em>)
+    # are not mistaken for markup.  The OscalParameterExtension generates
+    # <insert .../> in its *output*, not from the source, so it is unaffected.
+    markdown_text = _re.sub(r'<(?=[a-zA-Z/!])', r'&lt;', markdown_text)
 
     # Create the markdown processor
     md = markdown.Markdown(

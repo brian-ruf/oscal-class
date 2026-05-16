@@ -4,7 +4,7 @@
         <title>Test Profile</title>
         <last-modified>2026-04-17T21:18:16.691917588Z</last-modified>
         <version>1.0</version>
-        <oscal-version>1.2.1</oscal-version>
+        <oscal-version>1.2.2</oscal-version>
     </metadata>
 
 	<import href="#e9d6719d-c4a3-4d74-9227-907e227427bf">

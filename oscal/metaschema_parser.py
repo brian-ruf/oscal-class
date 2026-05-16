@@ -24,7 +24,6 @@ from ruf_common.data import deserialize_xml, xpath, xpath_atomic, get_markup_con
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # TODO:
 # - Add support for metaschema constraints
-# - Fix metaschema CHOICE
 # TODO: Fix the recursion detection, such as for task/task or part/part.
 # TODO: Fix handling of Group-as elements (May be fixed. Need to verify.)
 # -------------------------------------------------------------------------
@@ -45,7 +44,7 @@ It will issue a WARNING message if it encounteres expected, but unhandled struct
 """
 SUPPRESS_XPATH_NOT_FOUND_WARNINGS = True
 RUNAWAY_LIMIT = 8000
-DEBUG_OBJECT = "choice"
+DEBUG_OBJECT = ""
 
 PRUNE_JSON = True  # If true, will remove None values and emnpty arrays from the Resolved JSON Metaschema output
 OSCAL_DEFAULT_NAMESPACE = "http://csrc.nist.gov/ns/oscal"
@@ -137,9 +136,9 @@ def parse_metaschema_specific(support, oscal_version):
     - dict: A dictionary representing the parsed metaschema tree,
             or an empty dictionary if parsing fails.
     """
-    global global_counter
+    global global_counter, global_stop_here
     logger.info(f"{CYAN}Parsing OSCAL {oscal_version} metaschema.{RESET}")
-    status = True
+    all_ok = True   # tracks whether every model produced a non-empty index
     metaschema_tree = {}
     metaschema_tree["oscal_version"] = oscal_version
     metaschema_tree["oscal_models"] = {}
@@ -149,39 +148,38 @@ def parse_metaschema_specific(support, oscal_version):
     for model in models:
         if model != "complete":
             global_counter = 0
+            global_stop_here = False  # reset runaway guard for each model
             # Fetch the XML content
-            logger.info(f"Parsing {model} metaschema.")    
+            logger.info(f"Parsing {model} metaschema.")
             model_metaschema = support.asset(oscal_version, model, "metaschema")
             if model_metaschema:
-                if status:
-                    # **** Commented out for testing. Uncomment when ready to use.
-                    parser = MetaschemaParser.create(model_metaschema, support)
-                    status = parser.top_pass()
+                parser = MetaschemaParser.create(model_metaschema, support, oscal_version=oscal_version)
+                xml_ok = parser.top_pass()
+                if xml_ok:
                     metaschema_tree["oscal_models"][model] = parser.build_metaschema_tree()
-                    if metaschema_tree["oscal_models"][model] is not None and metaschema_tree["oscal_models"][model] != {}:
-                        logger.debug(f"Successfully parsed {model} metaschema.") 
+                    if metaschema_tree["oscal_models"][model]:
+                        logger.debug(f"Successfully parsed {model} metaschema.")
                     else:
-                        logger.error(f"Failed to parse {oscal_version} {model} metaschema. No data returned.")  
+                        logger.error(f"Failed to parse {oscal_version} {model} metaschema. No data returned.")
+                        all_ok = False
                 else:
-                    logger.error(f"Failed to setup the {model}. metaschema")
-                
-                status = True
+                    logger.error(f"Failed to set up {model} metaschema XML.")
+                    all_ok = False
             else:
                 logger.error(f"Failed to fetch {model} metaschema content.")
-                status = False
+                all_ok = False
 
-    if status:
+    if all_ok:
         logger.info(f"{GREEN}Successfully parsed all {oscal_version} metaschema models. Adding to support module.{RESET}")
-        status = support.add_asset(oscal_version, "complete", "processed", json.dumps(metaschema_tree, indent=2), filename=f"OSCAL_{oscal_version}_metaschema.json")
+        all_ok = support.add_asset(oscal_version, "complete", "processed", json.dumps(metaschema_tree, indent=2), filename=f"OSCAL_{oscal_version}_metaschema.json")
 
-        # # save to a JSON file
         output_file = f"{oscal_version}_complete_metaschema.json"
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(metaschema_tree, f, indent=2)
+    else:
+        logger.error(f"{RED}One or more {oscal_version} metaschema models failed to parse. Support module not updated.{RESET}")
 
-
-
-    return status
+    return all_ok
 # --------------------------------------------------------------------------
 def clean_none_values_recursive(dictionary):
     """
@@ -324,8 +322,8 @@ class MetaschemaParser:
             else:
                 ret_value += "In XML: UNWRAPPED\n"
             ret_value += "\n"
-        if node["rules"] is not None:
-            ret_value += f"Rules: {len(node['rules'])}\n"
+        if node.get("constraints"):
+            ret_value += f"Constraints: {len(node['constraints'])}\n"
         return ret_value
 
     # -------------------------------------------------------------------------
@@ -480,20 +478,19 @@ class MetaschemaParser:
             metaschema_tree = {}
             logger.error(f"Error building metaschema tree: {e}")
             
-        try:    
-            if metaschema_tree:
+        try:
+            nodes = metaschema_tree.get("nodes")
+            if metaschema_tree and nodes:
                 if PRUNE_JSON:
-                    # Clean up the metaschema tree by removing None values and empty arrays
-                    metaschema_tree["nodes"] = clean_none_values_recursive(metaschema_tree["nodes"])
-
-                # output_file = f"{prefix}_unhandled_report.json"
-                # with open(output_file, 'w', encoding='utf-8') as f:
-                #     json.dump(global_unhandled_report, f, indent=2)
-
-
+                    metaschema_tree["nodes"] = clean_none_values_recursive(nodes)
+            elif metaschema_tree and nodes is None:
+                logger.error(f"Metaschema tree for {self.oscal_model} has no root node; root assembly may not have been found.")
+                metaschema_tree = {}
         except Exception as e:
             logger.error(f"Error saving metaschema tree: {e}")
-        logger.debug(f"Metaschema tree built for {self.oscal_model} with {len(metaschema_tree.get('nodes', []))} nodes.")
+            metaschema_tree = {}
+        node_count = len(metaschema_tree["nodes"]) if metaschema_tree.get("nodes") else 0
+        logger.debug(f"Metaschema tree built for {self.oscal_model} with {node_count} nodes.")
 
         return metaschema_tree
 
@@ -521,6 +518,7 @@ class MetaschemaParser:
         metaschema_node["group-as"] = None
         metaschema_node["group-as-in-json"] = None
         metaschema_node["group-as-in-xml"] = None
+        metaschema_node["json-key"] = None
         metaschema_node["json-array-name"] = None
         metaschema_node["json-value-key"] = None
         metaschema_node["json-value-key-flag"] = None
@@ -609,7 +607,7 @@ class MetaschemaParser:
         return metaschema_index
 
     # -------------------------------------------------------------------------
-    def recurse_metaschema(self, name, structure_type="define-assembly", parent="", ignore_local=False, already_searched=[], context=None, skip_children=False, use_name=None):
+    def recurse_metaschema(self, name, structure_type="define-assembly", parent="", ignore_local=False, already_searched=None, context=None, skip_children=False, use_name=None):
         """
         Recursively build the metaschema tree.
         This function processes the XML tree and extracts significant nodes
@@ -627,6 +625,8 @@ class MetaschemaParser:
         metaschema. This is because the imported metaschema may have local elements
         that are not intended to be exposed to the importing metaschema file. 
         """
+        if already_searched is None:
+            already_searched = []
         global global_counter, global_unhandled_report, global_stop_here
         global_counter += 1
         logger.debug(f"{GREEN}[{global_counter}] Working in {self.oscal_model} on {structure_type}:{name} at [{parent}]{RESET}")
@@ -657,7 +657,10 @@ class MetaschemaParser:
             logger.info(f"DEBUG: Working on {structure_type}: {name} in {self.oscal_model} under {parent}")
         if structure_type in ["field", "flag", "assembly"]:
             logger.debug(f"Looking for the {structure_type} definition for {name}")
-            metaschema_node = self.recurse_metaschema(name, f"define-{structure_type}", parent=parent, already_searched=[], context=None) 
+            metaschema_node = self.recurse_metaschema(name, f"define-{structure_type}", parent=parent, already_searched=[], context=None)
+            if not metaschema_node:
+                logger.warning(f"Could not resolve definition for {structure_type} '{name}' in {self.oscal_model}; skipping.")
+                return None
 
         # .............................................................................
         # Setup xpath query
@@ -706,7 +709,7 @@ class MetaschemaParser:
                     metaschema_node["path"] = f"{parent}/@{metaschema_node['use-name']}"
 
             metaschema_node["formal-name"]         = self.graceful_override(metaschema_node["formal-name"],         "./formal-name/text()", definition_obj)
-            # metaschema_node["json-key"]            = self.graceful_override(metaschema_node["json-key"],            "./json-key/text()", definition_obj)
+            metaschema_node["json-key"]            = self.graceful_override(metaschema_node["json-key"],            "./json-key/@flag-ref", definition_obj)
             metaschema_node["json-value-key"]      = self.graceful_override(metaschema_node["json-value-key"],      "./json-value-key/text()", definition_obj)
             metaschema_node["json-value-key-flag"] = self.graceful_override(metaschema_node["json-value-key-flag"], "./json-value-key-flag/text()", definition_obj)
 
@@ -751,10 +754,11 @@ class MetaschemaParser:
                 metaschema_node["children"] = self.handle_children(name, structure_type, metaschema_node, definition_obj)
                 logger.debug("Back from handle model")
             else:
-                # It is one of several known circular references that needs to be handled.
+                # Circular reference: this assembly has the same name as an ancestor.
+                # It is identical to its definition and may contain unlimited descendants.
                 logger.debug(f"Circular Reference protection: {name} is the same as the parent at {metaschema_node['path']}")
                 metaschema_node["structure-type"] = "recursive"
-                metaschema_node["description"] = "<b>Recursive: See parent</b>"
+                metaschema_node["max-occurs"] = "unbounded"
                 metaschema_node["children"] = []
                 metaschema_node["flags"] = []
 
@@ -789,7 +793,7 @@ class MetaschemaParser:
                     if "in-xml" in temp_group_as.attrib:
                         logger.debug(f"Found in-xml attribute: {temp_group_as.attrib.get('in-xml')}")
                         if temp_group_as.attrib.get("in-xml") in ["GROUPED"]:
-                            metaschema_node["wrapped-in-xml"] = temp_group_as.attrib.get("name", "")
+                            metaschema_node["wrapped-in-xml"] = True
                             metaschema_node["path"] = f"{parent}/{temp_group_as.attrib.get('name', '')}/{metaschema_node['use-name']}"
                         elif temp_group_as.attrib.get("in-xml") in ["UNGROUPED"]:
                             pass
@@ -860,8 +864,8 @@ class MetaschemaParser:
                 metaschema_node["min-occurs"] = "1"
                 metaschema_node["max-occurs"] = "1"
 
-            if metaschema_node.get("is-collapsible") is None:
-                metaschema_node["is-collapsible"] = False
+            if metaschema_node.get("json-collapsible") is None:
+                metaschema_node["json-collapsible"] = False
             if metaschema_node.get("deprecated") is None:
                 metaschema_node["deprecated"] = False
             if metaschema_node.get("default") is None:
@@ -874,12 +878,14 @@ class MetaschemaParser:
         return metaschema_node
 
     # -------------------------------------------------------------------------
-    def look_in_imports(self, name, structure_type, parent="", ignore_local=False, already_searched=[]):
+    def look_in_imports(self, name, structure_type, parent="", ignore_local=False, already_searched=None):
         """
         Look for a metaschema definition in the imported files.
         This function searches through the imported metaschema files to find
         a specific definition by name and structure type.
         """
+        if already_searched is None:
+            already_searched = []
         logger.debug(f"Looking for {structure_type} {name} in imports")
         metaschema_node = None
         import_file = None
@@ -971,10 +977,10 @@ class MetaschemaParser:
                     metaschema_node["max-occurs"] = attr_value or metaschema_node["max-occurs"]
                 elif attr_name == "collapsible":  # For fields
                     if attr_value == "yes":
-                        metaschema_node["is-collapsible"] = True
+                        metaschema_node["json-collapsible"] = True
                     elif attr_value == "no":  # default is "no"
-                        metaschema_node["is-collapsible"] = False
-                    logger.debug(f"Collapsible: {metaschema_node['is-collapsible']}")
+                        metaschema_node["json-collapsible"] = False
+                    logger.debug(f"Collapsible: {metaschema_node['json-collapsible']}")
                     unhandled = {"path": metaschema_node["path"], "structure": metaschema_node["structure-type"], attr_name: attr_value}
                     global_unhandled_report.append(unhandled)
                 elif attr_name == "deprecated":
@@ -1062,6 +1068,7 @@ class MetaschemaParser:
             children = self.xpath(xExpr, context)
             if children is not None:
                 for child in children:
+                    child_use_name = None  # Reset per-child; only ref elements supply a use-name override
                     child_structure_type = child.tag.split('}')[-1]  # Remove namespace
                     if child_structure_type in ["field", "assembly", "define-field", "define-assembly", "choice", "any"]:
                         if child_structure_type in ["define-field", "define-assembly"]:
@@ -1074,7 +1081,7 @@ class MetaschemaParser:
                             child_name = f"{child_structure_type.upper()}"
 
                         # print(f"\r[{global_counter}] {ORANGE}Building: {metaschema_node["path"]}/{child_name} [{child.attrib}]", end="", flush=True)
-                        print(f"{ORANGE}[{global_counter}] Building: {metaschema_node['path']}/{child_name} ")  # , end="", flush=True)
+                        # print(f"{ORANGE}[{global_counter}] Building: {metaschema_node['path']}/{child_name} ")  # , end="", flush=True)
 
                         if child_structure_type in ["define-field", "define-assembly", "field", "assembly"]:
 
@@ -1104,7 +1111,6 @@ class MetaschemaParser:
                             temp_object["path"] = metaschema_node["path"] + "/*"
                             temp_object["source"] = metaschema_node["source"]
                             hold_children.append(temp_object)
-                            global_unhandled_report.append({"path": metaschema_node["path"], "structure": metaschema_node["structure-type"], "child": child_structure_type})
 
                     else:
                         logger.error(f"Unexpected child structure type: {child_structure_type} in model for {structure_type} {name}")

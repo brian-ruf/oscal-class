@@ -38,6 +38,7 @@ OSCAL_FORMATS = ["xml", "json", "yaml", "yml"]
 # Release and Support File Patterns
 # DEFAULT_EXCLUDE_TAG_PATTERNS = ["-rc", "-milestone"] # Ignore release tags with these substrings.
 DEFAULT_EXCLUDE_VERSIONS = ["v1.0.0-rc1", "v1.0.0-rc2", "v1.0.0-milestone1", "v1.0.0-milestone2", "v1.0.0-milestone3"]
+METASCHEMA_MIN_VERSION = "v1.1.1"  # NIST did not publish resolved metaschema files before this version
 SUPPORT_FILE_PATTERNS    = {
     "_metaschema_RESOLVED.xml":   "metaschema",    # OSCAL specification files
     "_schema.xsd":                "xml-schema",       # OSCAL XML schema validation files
@@ -178,6 +179,7 @@ class OSCALSupport:
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
         self._cache     = {}        # Internal cache for support operations
+        self._update_stats = None   # Populated during update(); None when not running an update
 
         logger.debug(f"Initializing OSCALSupport with db_type='{db_type}', db_conn='{db_conn}', db_init_mode='{db_init_mode}'")
 
@@ -429,7 +431,18 @@ class OSCALSupport:
             mode = fetch
 
         fetch = mode
-        # self.backend = backend
+
+        self._update_stats = {
+            "versions_processed": [],
+            "versions_skipped":   [],
+            "files_fetched":      0,
+            "files_fetch_failed": [],   # (version, filename)
+            "files_saved":        0,
+            "files_save_failed":  [],   # (version, filename)
+            "metaschema_built":   [],
+            "metaschema_skipped": [],
+            "metaschema_failed":  [],
+        }
 
         try:
             if fetch == "all":
@@ -447,13 +460,11 @@ class OSCALSupport:
                     status = False
 
             if status:
-                # Get OSCAL versions with periodic status updates
                 status = self.__get_oscal_versions(fetch)
 
-            # Final reload of versions
             self.__load_versions()
-
             self.__status_messages("Update process completed.")
+            self.__report_update_stats()
 
         except Exception as e:
             logger.error(f"Error during update: {e}")
@@ -479,7 +490,7 @@ class OSCALSupport:
         if version in self.versions:
             query = f"SELECT filecache_uuid FROM oscal_support WHERE version = '{version}' and model = '{model}' and type = '{asset_type}'"
             results = self.db.query(query)
-            if results is not None:
+            if results:
                 filecache_uuid = results[0].get("filecache_uuid", None)
                 # logger.debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
                 logger.debug(f"Found filecache UUID {filecache_uuid} for {version} and {model}.")
@@ -722,7 +733,7 @@ class OSCALSupport:
             total_releases = len(repo_releases)
 
             self.__status_messages(f"Found {total_releases} releases in the OSCAL GitHub repository.")
-            for idx, entry in enumerate(reversed(repo_releases), 1):
+            for idx, entry in enumerate(repo_releases, 1):
                 self.__status_messages(f"Inspecting release {idx} of {total_releases}...")
                 # Progress indicator (no need for asyncio.sleep in sync mode)
 
@@ -737,6 +748,8 @@ class OSCALSupport:
                                         (fetch_one and oscal_version == fetch))
 
                         if ok_to_continue:
+                            if self._update_stats is not None:
+                                self._update_stats["versions_processed"].append(oscal_version)
                             self.__status_messages(f"Processing {oscal_version} release...")
                             release_date = entry.get("published_at", "0000-00-00T00:00:00Z")
                             release_name = entry.get("name", "")
@@ -757,11 +770,18 @@ class OSCALSupport:
                             }):
                                 OSCAL_versions.append(oscal_version)
                                 if "assets" in entry:
-                                    # Process assets in chunks
                                     self.__fetch_support_files(oscal_version, entry["assets"])
+                                    if helper.compare_semver(oscal_version, METASCHEMA_MIN_VERSION) >= 0:
+                                        self.__build_metaschema_index(oscal_version)
+                                    else:
+                                        if self._update_stats is not None:
+                                            self._update_stats["metaschema_skipped"].append(oscal_version)
+                                        self.__status_messages(f"Skipping metaschema index for {oscal_version} (resolved metaschema not published before {METASCHEMA_MIN_VERSION}).")
                             else:
                                 logger.error(f"Unable to insert OSCAL version {oscal_version} into support database.")
                         else:
+                            if self._update_stats is not None:
+                                self._update_stats["versions_skipped"].append(oscal_version)
                             if fetch_one and oscal_version != fetch:
                                 self.__status_messages(f"Skipping {oscal_version} release. Not the version specified.")
                             elif fetch_latest and oscal_version in self.versions:
@@ -830,6 +850,8 @@ class OSCALSupport:
         content = network.download_file(asset_URL, asset_name)
 
         if content:
+            if self._update_stats is not None:
+                self._update_stats["files_fetched"] += 1
             attributes = {
                 "filename": asset_name,
                 "original_location": asset_URL,
@@ -838,10 +860,44 @@ class OSCALSupport:
                 "acquired": oscal_date_time_with_timezone(),
                 "compressed": COMPRESS_SUPPORT_FILES_IN_DATABASE
             }
-            self.db.cache_file(content, uuid_value, attributes)
-            self.__status_messages(f"Downloaded [{version}] {asset_name}")
+            saved = self.db.cache_file(content, uuid_value, attributes)
+            if saved:
+                if self._update_stats is not None:
+                    self._update_stats["files_saved"] += 1
+                self.__status_messages(f"Downloaded [{version}] {asset_name}")
+            else:
+                if self._update_stats is not None:
+                    self._update_stats["files_save_failed"].append((version, asset_name))
+                self.__status_messages(f"Failed to save [{version}] {asset_name}", "error")
         else:
+            if self._update_stats is not None:
+                self._update_stats["files_fetch_failed"].append((version, asset_name))
             self.__status_messages(f"Failed to download {asset_name}", "error")
+
+    # -------------------------------------------------------------------------
+    def __build_metaschema_index(self, version):
+        """Parse the metaschema for *version* and store the processed index.
+
+        Uses a lazy import to avoid the circular dependency between
+        oscal_support and metaschema_parser.
+        """
+        self.__status_messages(f"Building metaschema index for {version}...")
+        try:
+            from .metaschema_parser import parse_metaschema_specific  # lazy import
+            ok = parse_metaschema_specific(self, version)
+            if ok:
+                if self._update_stats is not None:
+                    self._update_stats["metaschema_built"].append(version)
+                self.__status_messages(f"Metaschema index for {version} built successfully.")
+            else:
+                if self._update_stats is not None:
+                    self._update_stats["metaschema_failed"].append(version)
+                self.__status_messages(f"Metaschema index for {version} failed to build.", "error")
+        except Exception as e:
+            if self._update_stats is not None:
+                self._update_stats["metaschema_failed"].append(version)
+            logger.error(f"Error building metaschema index for {version}: {e}")
+            self.__status_messages(f"Error building metaschema index for {version}: {e}", "error")
 
     # -------------------------------------------------------------------------
     def __clear_oscal_version(self, version):
@@ -956,6 +1012,46 @@ class OSCALSupport:
 
         return status
     # -------------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    def __report_update_stats(self):
+        """Log a summary of the update run collected in self._update_stats."""
+        stats = self._update_stats
+        if stats is None:
+            return
+
+        lines = [
+            "=" * 48,
+            "Update Summary",
+            "=" * 48,
+            f"  Versions processed:    {len(stats['versions_processed'])}",
+            f"  Versions skipped:      {len(stats['versions_skipped'])}",
+            f"  Files downloaded:      {stats['files_fetched']}",
+            f"  Files saved:           {stats['files_saved']}",
+            f"  Download failures:     {len(stats['files_fetch_failed'])}",
+            f"  Save failures:         {len(stats['files_save_failed'])}",
+            f"  Metaschema built:      {len(stats['metaschema_built'])}",
+            f"  Metaschema skipped:    {len(stats['metaschema_skipped'])}",
+            f"  Metaschema failed:     {len(stats['metaschema_failed'])}",
+        ]
+
+        if stats["files_fetch_failed"]:
+            lines.append("\n  Download failures:")
+            for version, filename in stats["files_fetch_failed"]:
+                lines.append(f"    [{version}] {filename}")
+
+        if stats["files_save_failed"]:
+            lines.append("\n  Save failures:")
+            for version, filename in stats["files_save_failed"]:
+                lines.append(f"    [{version}] {filename}")
+
+        if stats["metaschema_failed"]:
+            lines.append("\n  Metaschema build failures:")
+            for version in stats["metaschema_failed"]:
+                lines.append(f"    {version}")
+
+        lines.append("=" * 48)
+        self.__status_messages("\n".join(lines))
 
     # -------------------------------------------------------------------------
     def __status_messages(self, status="", level="info"):
