@@ -10,7 +10,9 @@ It will issue a WARNING message if it encounteres expected, but unhandled struct
 
 """
 import sys
+import re
 import json
+from datetime import datetime, timezone
 # from html import escape
 # import html
 # from urllib.parse import urljoin
@@ -126,58 +128,93 @@ def parse_metaschema(support=None, oscal_version=None) -> int:
 def parse_metaschema_specific(support, oscal_version):
     """
     Parse a specific metaschema model for a given OSCAL version.
-    This function is used to parse a specific metaschema model
-    for a given OSCAL version.
+    Each model index is stored separately in the support database as
+    (version, model, "processed") and written to
+    support/<version>/<model>.json alongside the support database.
     Parameters:
     - support (OSCAL_support): The OSCAL support object.
     - oscal_version (str): The OSCAL version to parse.
-    - oscal_model (str): The OSCAL model to parse.
     Returns:
-    - dict: A dictionary representing the parsed metaschema tree,
-            or an empty dictionary if parsing fails.
+    - bool: True if all models parsed and stored successfully.
     """
+    import os
     global global_counter, global_stop_here
     logger.info(f"{CYAN}Parsing OSCAL {oscal_version} metaschema.{RESET}")
-    all_ok = True   # tracks whether every model produced a non-empty index
-    metaschema_tree = {}
-    metaschema_tree["oscal_version"] = oscal_version
-    metaschema_tree["oscal_models"] = {}
+    all_ok = True
+
+    # Determine the output directory: same folder as the support database,
+    # under a sub-folder named after the OSCAL version.
+    db_conn = getattr(support, "db_conn", None)
+    if db_conn:
+        support_dir = os.path.join(os.path.dirname(os.path.abspath(db_conn)), oscal_version)
+    else:
+        support_dir = os.path.join("support", oscal_version)
+    os.makedirs(support_dir, exist_ok=True)
 
     models = support.enumerate_models(oscal_version)
 
+    models_processed: list = []
+    unresolved_by_model: dict = {}
+
     for model in models:
-        if model != "complete":
-            global_counter = 0
-            global_stop_here = False  # reset runaway guard for each model
-            # Fetch the XML content
-            logger.info(f"Parsing {model} metaschema.")
-            model_metaschema = support.asset(oscal_version, model, "metaschema")
-            if model_metaschema:
-                parser = MetaschemaParser.create(model_metaschema, support, oscal_version=oscal_version)
-                xml_ok = parser.top_pass()
-                if xml_ok:
-                    metaschema_tree["oscal_models"][model] = parser.build_metaschema_tree()
-                    if metaschema_tree["oscal_models"][model]:
-                        logger.debug(f"Successfully parsed {model} metaschema.")
-                    else:
-                        logger.error(f"Failed to parse {oscal_version} {model} metaschema. No data returned.")
-                        all_ok = False
-                else:
-                    logger.error(f"Failed to set up {model} metaschema XML.")
-                    all_ok = False
-            else:
-                logger.error(f"Failed to fetch {model} metaschema content.")
-                all_ok = False
+        if model == "complete":
+            continue
+        global_counter = 0
+        global_stop_here = False
+        logger.info(f"Parsing {model} metaschema.")
+        model_metaschema = support.asset(oscal_version, model, "metaschema")
+        if not model_metaschema:
+            logger.error(f"Failed to fetch {model} metaschema content.")
+            all_ok = False
+            continue
+
+        parser = MetaschemaParser.create(model_metaschema, support, oscal_version=oscal_version)
+        if not parser.top_pass():
+            logger.error(f"Failed to set up {model} metaschema XML.")
+            all_ok = False
+            continue
+
+        model_index = parser.build_metaschema_tree()
+        if not model_index:
+            logger.error(f"Failed to parse {oscal_version} {model} metaschema. No data returned.")
+            all_ok = False
+            continue
+
+        logger.debug(f"Successfully parsed {model} metaschema.")
+        models_processed.append(model)
+
+        nodes = model_index.get("nodes")
+        if nodes:
+            unresolved = _collect_unresolved_targets(nodes)
+            if unresolved:
+                unresolved_by_model[model] = unresolved
+                logger.info(f"  {model}: {len(unresolved)} unresolved constraint target(s) remaining.")
+
+        model_index = {
+            "generated": datetime.now(timezone.utc).isoformat(),
+            **model_index,
+        }
+
+        stored = support.add_asset(
+            oscal_version, model, "processed",
+            json.dumps(model_index, indent=2),
+            filename=f"{model}.json",
+        )
+        if not stored:
+            logger.error(f"Failed to store {oscal_version}/{model} processed index in support database.")
+            all_ok = False
+
+        output_file = os.path.join(support_dir, f"{model}.json")
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(model_index, f, indent=2)
+        logger.debug(f"Wrote {output_file}")
+
+    _write_metaschema_report(models_processed, unresolved_by_model, oscal_version, support_dir)
 
     if all_ok:
-        logger.info(f"{GREEN}Successfully parsed all {oscal_version} metaschema models. Adding to support module.{RESET}")
-        all_ok = support.add_asset(oscal_version, "complete", "processed", json.dumps(metaschema_tree, indent=2), filename=f"OSCAL_{oscal_version}_metaschema.json")
-
-        output_file = f"{oscal_version}_complete_metaschema.json"
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(metaschema_tree, f, indent=2)
+        logger.info(f"{GREEN}Successfully parsed and stored all {oscal_version} metaschema models.{RESET}")
     else:
-        logger.error(f"{RED}One or more {oscal_version} metaschema models failed to parse. Support module not updated.{RESET}")
+        logger.error(f"{RED}One or more {oscal_version} metaschema models failed to parse or store.{RESET}")
 
     return all_ok
 # --------------------------------------------------------------------------
@@ -291,8 +328,9 @@ class MetaschemaParser:
             ret_value += f"Remarks: {node['remarks']}\n"
         if node["example"] is not None:
             ret_value += f"Example: {node['example']}\n"
-        if node["flags"] is not None:
-            ret_value += f"Flags: {len(node['flags'])}\n"
+        flag_count = sum(1 for c in node.get("children", []) if c.get("structure-type") == "flag")
+        if flag_count:
+            ret_value += f"Flags: {flag_count}\n"
         if node["source"] is not None:
             ret_value += f"Source: {', '.join(node['source'])}\n"
         if node["children"] is not None:
@@ -474,15 +512,26 @@ class MetaschemaParser:
 
             metaschema_tree["nodes"] = self.recurse_metaschema(self.oscal_model, "define-assembly", context=context)
 
+            # Second pass: process all constraints now that the full tree exists.
+            # Build a mock XML skeleton first so that elementpath can evaluate
+            # constraint target XPath expressions with structural context.
+            # _apply_constraints pops the temporary _constraint_xml key from every
+            # node, so no XML references leak into the serialised output.
+            if metaschema_tree.get("nodes"):
+                self._build_skeleton(metaschema_tree["nodes"])
+                self._apply_constraints(metaschema_tree["nodes"])
+
         except Exception as e:
             metaschema_tree = {}
             logger.error(f"Error building metaschema tree: {e}")
-            
+
         try:
             nodes = metaschema_tree.get("nodes")
             if metaschema_tree and nodes:
                 if PRUNE_JSON:
                     metaschema_tree["nodes"] = clean_none_values_recursive(nodes)
+                _annotate_ns_conditions(metaschema_tree["nodes"])
+                _compute_json_paths(metaschema_tree["nodes"], "")
             elif metaschema_tree and nodes is None:
                 logger.error(f"Metaschema tree for {self.oscal_model} has no root node; root assembly may not have been found.")
                 metaschema_tree = {}
@@ -505,6 +554,7 @@ class MetaschemaParser:
         # Reset the metaschema tree
         metaschema_node = {}
         metaschema_node["path"] = None
+        metaschema_node["json-path"] = None
         metaschema_node["use-name"] = None
         metaschema_node["name"] = None
         metaschema_node["structure-type"] = None
@@ -533,7 +583,6 @@ class MetaschemaParser:
         metaschema_node["description"] = []
         metaschema_node["remarks"] = []
         metaschema_node["example"] = []
-        metaschema_node["flags"] = []
         metaschema_node["children"] = []
         metaschema_node["constraints"] = []
 
@@ -748,19 +797,33 @@ class MetaschemaParser:
             else:
                 metaschema_node["source"] = [self.oscal_model]  
 
-            if not has_repeated_ending(metaschema_node["path"], f"/{metaschema_node['use-name']}", frequency=2):
-                metaschema_node["flags"]    = self.handle_flags(metaschema_node, definition_obj, structure_type, name, parent)
+            # Cycle guard: stop if this assembly's use-name already appears at
+            # least twice as a non-terminal segment in the current path.  Allowing
+            # one occurrence (i.e. stopping on the second) means each recursive
+            # element (part/part, group/group, task/task, …) gets one additional
+            # level of concrete children before hitting the recursive stub, which
+            # is enough for constraint routing to reach flags on the first nested
+            # instance (e.g. part/part/@name).
+            _is_cycle = metaschema_node["path"].count(f"/{metaschema_node['use-name']}/") >= 2
+            if not _is_cycle:
+                flag_nodes = self.handle_flags(metaschema_node, definition_obj, structure_type, name, parent)
                 logger.debug(f"Back from handle flags in {self.oscal_model} for {structure_type} / {name} in {parent}")
-                metaschema_node["children"] = self.handle_children(name, structure_type, metaschema_node, definition_obj)
+                child_nodes = self.handle_children(name, structure_type, metaschema_node, definition_obj)
                 logger.debug("Back from handle model")
+                metaschema_node["children"] = flag_nodes + child_nodes
+                # Defer constraint processing.  Constraints live on the <define-*>
+                # element, NOT on <assembly ref>, <field ref>, or <flag ref> elements.
+                # When structure_type is a reference, the inner define-* recursion
+                # (above) already stored the correct _constraint_xml; don't overwrite it.
+                if structure_type.startswith("define-"):
+                    metaschema_node["_constraint_xml"] = (definition_obj, structure_type, name, parent)
             else:
-                # Circular reference: this assembly has the same name as an ancestor.
+                # Circular reference: this assembly already appears as an ancestor.
                 # It is identical to its definition and may contain unlimited descendants.
-                logger.debug(f"Circular Reference protection: {name} is the same as the parent at {metaschema_node['path']}")
+                logger.debug(f"Circular Reference protection: {name} is already an ancestor at {metaschema_node['path']}")
                 metaschema_node["structure-type"] = "recursive"
                 metaschema_node["max-occurs"] = "unbounded"
                 metaschema_node["children"] = []
-                metaschema_node["flags"] = []
 
         # .............................................................................
 
@@ -917,7 +980,7 @@ class MetaschemaParser:
         """Handle Flags defined or referenced in the Field or Assembly"""
         logger.debug(f"Handling flags for {structure_type} {name}")
         
-        hold_flags = metaschema_node.get("flags", [])
+        hold_flags = []
 
         temp_flags = self.xpath("./(define-flag | flag)", definition_obj)
         if temp_flags is not None:
@@ -1117,6 +1180,897 @@ class MetaschemaParser:
             else:
                 logger.debug(f"No children found in model for {structure_type} {name}")
         return hold_children
+
+    # -------------------------------------------------------------------------
+    def _apply_constraints(self, node: dict, _seen: set | None = None) -> None:
+        """Second pass: walk the complete tree and process all deferred constraints.
+
+        Every non-recursive node in the tree has a ``_constraint_xml`` key set by
+        ``recurse_metaschema`` during the first (structural) pass.  This method
+        pops that key and calls ``handle_constraints`` now that the full tree is
+        in place, so all potential target nodes already exist regardless of the
+        order they were built.
+        """
+        if _seen is None:
+            _seen = set()
+        node_id = id(node)
+        if node_id in _seen:
+            return
+        _seen.add(node_id)
+
+        pending = node.pop("_constraint_xml", None)
+        if pending is not None:
+            definition_obj, structure_type, name, parent = pending
+            self.handle_constraints(node, definition_obj, structure_type, name, parent)
+
+        for child in node.get("children", []):
+            self._apply_constraints(child, _seen)
+
+    # -------------------------------------------------------------------------
+    def _build_skeleton(self, root_node: dict) -> None:
+        """Build a mock XML element tree from the index for XPath constraint resolution.
+
+        Two look-up tables are populated after this call:
+          _skel_elem_map  – id(element) → index_node  (assembly / field nodes)
+          _skel_path_map  – node_path   → element     (context look-up by path)
+
+        Flag nodes are represented as attributes on their parent element; the
+        attribute value is always empty because the skeleton encodes structure only.
+        """
+        self._skel_elem_map: dict = {}
+        self._skel_path_map: dict = {}
+        self._skel_root = self._build_skeleton_node(root_node, None)
+
+    def _build_skeleton_node(self, index_node: dict, parent_elem: "ET.Element | None") -> "ET.Element | None":
+        """Recursive helper for _build_skeleton."""
+        stype = index_node.get("structure-type", "")
+        name  = (index_node.get("use-name") or index_node.get("name") or "").strip()
+        path  = index_node.get("path") or ""
+
+        if not name:
+            return None
+
+        if stype == "flag":
+            if parent_elem is not None:
+                parent_elem.set(name, "")
+            return None
+
+        # "choice" nodes are transparent in XML: their children appear directly
+        # under the parent element with no intervening wrapper.  Fold them in place.
+        if stype == "choice":
+            for child in index_node.get("children", []):
+                self._build_skeleton_node(child, parent_elem)
+            return None
+
+        try:
+            elem = ET.Element(name)
+        except Exception:
+            return None
+
+        self._skel_elem_map[id(elem)] = index_node
+        # Only register the first element to claim a path.  CHOICE nodes carry
+        # their parent's path and must not overwrite the parent's entry.
+        if path and path not in self._skel_path_map:
+            self._skel_path_map[path] = elem
+
+        if parent_elem is not None:
+            parent_elem.append(elem)
+
+        for child in index_node.get("children", []):
+            self._build_skeleton_node(child, elem)
+
+        return elem
+
+    # -------------------------------------------------------------------------
+    def handle_constraints(self, metaschema_node, definition_obj, structure_type, name, parent):
+        """Process <constraint><allowed-values> elements from a definition object.
+
+        For target='.' or absent: applies to the current node.
+        For target='@flag-name': applies to the named flag child.
+        For complex Metapath targets: stored with unresolved-target preserved.
+
+        Multiple allowed-values sets for the same target are cumulative; allow-others
+        conflicts are resolved with 'yes' winning, and a warning is emitted.
+        """
+        logger.debug(f"Handling constraints for {structure_type} {name}")
+
+        constraint_elements = self.xpath("./constraint", definition_obj)
+        if constraint_elements is None:
+            return metaschema_node
+
+        if not isinstance(constraint_elements, list):
+            constraint_elements = [constraint_elements]
+
+        # Collect allowed-values grouped by target string
+        target_map = {}
+        for constraint_elem in constraint_elements:
+            av_elements = self.xpath("./allowed-values", constraint_elem)
+            if av_elements is None:
+                continue
+            if not isinstance(av_elements, list):
+                av_elements = [av_elements]
+            for av_elem in av_elements:
+                parsed = self._parse_allowed_values_elem(av_elem)
+                if parsed is None:
+                    continue
+                target = parsed["target"]
+                if target not in target_map:
+                    target_map[target] = []
+                target_map[target].append(parsed)
+
+        for target, av_list in target_map.items():
+            merged = self._merge_allowed_values(av_list, context=f"{structure_type}/{name}")
+
+            # Extract has-oscal-namespace() condition and simplify the target before routing.
+            # e.g. ".[has-oscal-namespace('...')]/@name" → cleaned="./@name", condition={...}
+            # e.g. "prop[has-oscal-namespace(...) and @name='type']/@value" → "prop[@name='type']/@value"
+            cleaned_target, ns_condition = _extract_oscal_namespace_condition(target)
+
+            # Route via elementpath against the skeleton.  Alternation groups
+            # (A|B|C)/rest are expanded so each branch can be reported independently.
+            routing_target = cleaned_target.strip()
+            expanded_rts = _expand_top_level_alternation(routing_target)
+
+            for rt in expanded_rts:
+                resolved, pred_conds, ep_error = self._resolve_via_elementpath(metaschema_node, rt)
+                all_conditions = ([ns_condition] if ns_condition else []) + pred_conds
+
+                if resolved:
+                    c = dict(merged)
+                    if all_conditions:
+                        c["conditions"] = all_conditions
+                    for target_node in resolved:
+                        self._add_constraint_to_node(target_node, c)
+                else:
+                    reason = "pattern-unsupported" if ep_error else "navigation-failed"
+                    logger.debug(
+                        f"Constraint target '{target}' (branch '{rt}') in "
+                        f"{structure_type}/{name}: unresolved ({reason})"
+                    )
+                    merged_with_target = dict(merged)
+                    merged_with_target["unresolved-target"] = rt
+                    merged_with_target["unresolved-reason"] = reason
+                    self._add_constraint_to_node(metaschema_node, merged_with_target)
+
+        return metaschema_node
+
+    # -------------------------------------------------------------------------
+    def _parse_allowed_values_elem(self, av_elem):
+        """Parse a single <allowed-values> XML element into a constraint dict."""
+        av_id    = av_elem.attrib.get("id", "")
+        allow_others_str = av_elem.attrib.get("allow-others", "no")
+        target   = av_elem.attrib.get("target", ".").strip() or "."
+
+        enums = []
+        enum_elems = self.xpath("./enum", av_elem)
+        if enum_elems is not None:
+            if not isinstance(enum_elems, list):
+                enum_elems = [enum_elems]
+            for enum_elem in enum_elems:
+                enum_value = enum_elem.attrib.get("value", "")
+                if not enum_value:
+                    continue
+                deprecated_at = enum_elem.attrib.get("deprecated", None)
+                enum_desc = self.get_markup_content(".", enum_elem) or ""
+                entry = {"value": enum_value, "description": enum_desc}
+                if deprecated_at is not None:
+                    entry["deprecated"] = deprecated_at
+                enums.append(entry)
+
+        return {
+            "type": "allowed-values",
+            "id": av_id,
+            "target": target,
+            "allow-others": allow_others_str == "yes",
+            "values": enums,
+        }
+
+    # -------------------------------------------------------------------------
+    def _merge_allowed_values(self, av_list, context=""):
+        """Merge a list of allowed-values dicts for the same target.
+
+        Values are cumulative (additive, deduped by value key).
+        allow-others: 'yes' wins; warns when contradictory inputs disagree.
+        """
+        if len(av_list) == 1:
+            return av_list[0]
+
+        merged_values = []
+        seen_values = set()
+        allow_others_seen = set()
+        first_id = av_list[0].get("id", "")
+        first_target = av_list[0].get("target", ".")
+
+        for av in av_list:
+            allow_others_seen.add(av.get("allow-others", False))
+            for v in av.get("values", []):
+                key = v.get("value", "")
+                if key and key not in seen_values:
+                    merged_values.append(v)
+                    seen_values.add(key)
+
+        if True in allow_others_seen and False in allow_others_seen:
+            logger.warning(f"Contradictory allow-others values for allowed-values in {context}: treating as allow-others=yes")
+
+        result = {
+            "type": "allowed-values",
+            "id": first_id,
+            "target": first_target,
+            "allow-others": True in allow_others_seen,
+            "values": merged_values,
+        }
+        conditions = next((av["conditions"] for av in av_list if "conditions" in av), None)
+        if conditions is not None:
+            result["conditions"] = conditions
+        return result
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _constraint_merge_key(constraint):
+        """Return a hashable key that identifies which allowed-values constraints
+        can be merged.  Two constraints merge only when both their unresolved-target
+        AND their conditions match — constraints scoped to different namespaces (or
+        with different flag-equals guards) must stay separate so validation can
+        evaluate each one independently.
+        """
+        unresolved = constraint.get("unresolved-target")
+        conds = constraint.get("conditions") or []
+        # Produce a stable, order-independent fingerprint of the conditions list.
+        parts = []
+        for c in sorted(conds, key=lambda x: (x.get("type", ""), x.get("flag", ""))):
+            parts.append(
+                f"{c.get('type','')}:{c.get('flag','')}:{c.get('value','')}"
+                f":{','.join(sorted(str(v) for v in c.get('values', [])))}"
+            )
+        return (unresolved, "|".join(parts))
+
+    def _add_constraint_to_node(self, node, constraint):
+        """Add a constraint to a node's constraints list.
+
+        Allowed-values constraints are cumulative: if an existing constraint on
+        the same node has the same unresolved-target AND the same conditions, their
+        value lists are merged rather than duplicated.  Constraints with different
+        conditions (e.g. one scoped to the OSCAL namespace, another to a vendor
+        namespace) are kept as separate entries so validation can evaluate each one
+        independently.
+        """
+        if "constraints" not in node:
+            node["constraints"] = []
+
+        incoming_key = self._constraint_merge_key(constraint)
+        for i, existing in enumerate(node["constraints"]):
+            if (existing.get("type") == "allowed-values"
+                    and self._constraint_merge_key(existing) == incoming_key):
+                node["constraints"][i] = self._merge_allowed_values(
+                    [existing, constraint],
+                    context=node.get("path", "")
+                )
+                return
+
+        node["constraints"].append(constraint)
+
+    # -------------------------------------------------------------------------
+    def _resolve_via_elementpath(self, context_node: dict, routing_target: str) -> tuple:
+        """Resolve a Metapath routing target against the skeleton using elementpath.
+
+        Returns (resolved_nodes, conditions, is_error).
+          resolved_nodes – list of index nodes the XPath reaches, or None if nothing found
+          conditions     – flag-equals / flag-in dicts extracted from value predicates
+          is_error       – True when elementpath raises (malformed / unsupported XPath)
+        """
+        import elementpath
+
+        context_stype = context_node.get("structure-type", "")
+
+        # Flag nodes have no element representation in the skeleton.
+        # The only sensible target from a flag is "." (self).
+        if context_stype == "flag":
+            clean_rt, pred_conds = _make_skeleton_xpath(routing_target)
+            stripped = clean_rt.strip().lstrip("./")
+            if not stripped:
+                return [context_node], pred_conds, False
+            return None, pred_conds, False
+
+        if not hasattr(self, "_skel_path_map"):
+            return None, [], False
+
+        path = context_node.get("path") or ""
+        context_elem = self._skel_path_map.get(path)
+        if context_elem is None:
+            return None, [], False
+
+        # Strip @attr=value predicates — skeleton elements have no real values so
+        # predicate filters would never match; convert them to conditions instead.
+        skeleton_xpath, pred_conds = _make_skeleton_xpath(routing_target)
+
+        # Split off a trailing /@attr_name so flags are looked up via the index
+        # rather than relying on elementpath attribute-node return types.
+        attr_name: str | None = None
+        nav_expr = skeleton_xpath.strip()
+
+        segs = _split_path_segments(nav_expr)
+        if segs and segs[-1].startswith("@"):
+            attr_name = segs[-1][1:]
+            nav_expr = "/".join(segs[:-1]).strip() if len(segs) > 1 else "."
+        elif nav_expr.startswith("@") and "/" not in nav_expr:
+            attr_name = nav_expr[1:]
+            nav_expr = "."
+
+        try:
+            elem_results = elementpath.select(context_elem, nav_expr)
+        except Exception as exc:
+            logger.debug(
+                f"elementpath error evaluating '{nav_expr}' "
+                f"(from '{routing_target}'): {exc}"
+            )
+            return None, pred_conds, True
+
+        index_nodes: list = []
+        for r in elem_results:
+            if not isinstance(r, ET.Element):
+                continue
+            idx_node = self._skel_elem_map.get(id(r))
+            if idx_node is None:
+                continue
+            if attr_name:
+                flag_node = next(
+                    (c for c in idx_node.get("children", [])
+                     if c.get("structure-type") == "flag"
+                     and (c.get("use-name") == attr_name or c.get("name") == attr_name)),
+                    None,
+                )
+                if flag_node is not None:
+                    index_nodes.append(flag_node)
+            else:
+                index_nodes.append(idx_node)
+
+        return (index_nodes or None), pred_conds, False
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Module-level helpers kept outside MetaschemaParser so oscal_support can
+# import them for lazy annotation of indexes loaded from the DB without
+# triggering a circular import.
+
+# Matches @flag='value' predicates inside [...] brackets.
+_ATTR_PRED_RE = re.compile(r"@([\w][\w-]*)='([^']*)'")
+# Matches @flag=('v1','v2',...) multi-value sequence predicates (spaces around commas allowed).
+_ATTR_PRED_MULTI_RE = re.compile(r"@([\w][\w-]*)=\(('(?:[^']*)'(?:\s*,\s*'[^']*')*)\)")
+
+
+def _expand_top_level_alternation(target: str) -> list:
+    """Expand a leading (A|B|C)/rest alternation into [A/rest, B/rest, C/rest].
+
+    Only expands when the very first character is '(' — this is the Metapath
+    pattern for a union of paths, e.g.
+        (.|statement|.//by-component)/prop/@name
+        (component|inventory-item)/prop/@value
+
+    The '|' split is done at depth 0 only so nested predicates like
+    ``@name=('v1','v2')`` are not split.  Returns ``[target]`` unchanged when no
+    top-level alternation is present or when the parens are unbalanced.
+    """
+    if not target.startswith("("):
+        return [target]
+
+    # Locate the closing ')' at depth 0.
+    depth = 0
+    close = -1
+    for i, ch in enumerate(target):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+            if depth == 0:
+                close = i
+                break
+
+    if close < 0:
+        return [target]  # unbalanced
+
+    inner = target[1:close]
+    rest  = target[close + 1:]  # e.g. "/prop/@name"
+
+    # Split inner on '|' at depth 0 (guard nested brackets/parens).
+    alternatives: list = []
+    current: list = []
+    depth = 0
+    for ch in inner:
+        if ch in "([":
+            depth += 1
+            current.append(ch)
+        elif ch in ")]":
+            depth -= 1
+            current.append(ch)
+        elif ch == "|" and depth == 0:
+            alt = "".join(current).strip()
+            if alt:
+                alternatives.append(alt)
+            current = []
+        else:
+            current.append(ch)
+    tail = "".join(current).strip()
+    if tail:
+        alternatives.append(tail)
+
+    if len(alternatives) <= 1:
+        return [target]  # no real alternation
+
+    return [f"{alt}{rest}" for alt in alternatives]
+
+
+def _split_path_segments(path: str) -> list:
+    """Split a Metapath-style path on '/' without splitting inside [...] brackets.
+
+    Naive str.split('/') breaks targets like
+    ``responsible-party[role-id=(/catalog/metadata/role/@id)]/@party-uuid``
+    because the inner path also contains slashes.  This function only splits at
+    top-level slashes (depth == 0).
+    """
+    segments: list = []
+    current: list = []
+    depth = 0
+    for ch in path:
+        if ch == "[":
+            depth += 1
+            current.append(ch)
+        elif ch == "]":
+            depth = max(depth - 1, 0)
+            current.append(ch)
+        elif ch == "/" and depth == 0:
+            segments.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        segments.append("".join(current))
+    return segments or [path]
+
+
+def _parse_child_predicates(child_ref: str) -> tuple:
+    """Parse a child reference that may include bracket predicates.
+
+    Returns ``(plain_name, [condition, ...])`` where each condition is one of:
+    - ``{"type": "flag-equals", "flag": ..., "value": ...}`` for ``@f='v'``
+    - ``{"type": "flag-in", "flag": ..., "values": [...]}`` for ``@f=('v1','v2',...)``
+
+    The plain_name may be ``"."`` or ``"(."`` to indicate the current node
+    (self-reference); callers should check for this and skip navigation.
+
+    Returns ``(None, [])`` when the predicate contains expressions that cannot
+    be reduced to the above forms (e.g. positional or function predicates).
+    The caller should fall through to unresolved in that case.
+    """
+    if "[" not in child_ref:
+        return child_ref, []
+
+    bracket_start = child_ref.index("[")
+    plain_name = child_ref[:bracket_start]
+    inner = child_ref[bracket_start + 1 : child_ref.rindex("]")]
+
+    pred_conditions = []
+
+    for m in _ATTR_PRED_MULTI_RE.finditer(inner):
+        values = [v.strip().strip("'") for v in m.group(2).split(",")]
+        pred_conditions.append({"type": "flag-in", "flag": m.group(1), "values": values})
+
+    for m in _ATTR_PRED_RE.finditer(inner):
+        pred_conditions.append({"type": "flag-equals", "flag": m.group(1), "value": m.group(2)})
+
+    # Verify the predicate contained only recognised terms joined by 'and'/'or'
+    remaining = _ATTR_PRED_MULTI_RE.sub("", inner)
+    remaining = _ATTR_PRED_RE.sub("", remaining)
+    remaining = re.sub(r"\s*(and|or)\s*", "", remaining).strip()
+    if remaining:
+        return None, []
+
+    return plain_name, pred_conditions
+
+
+def _make_skeleton_xpath(target: str) -> tuple:
+    """Strip @attr=value predicates from an XPath expression.
+
+    Returns (stripped_xpath, conditions) where conditions is a list of
+    flag-equals / flag-in dicts.  Empty brackets left by removal are deleted.
+    Non-attribute predicate content (functions, positional tests) is preserved
+    verbatim so that elementpath can evaluate it (or raise, signalling an
+    unsupported pattern).
+    """
+    conditions: list = []
+    result: list = []
+    i = 0
+    n = len(target)
+    while i < n:
+        if target[i] == "[":
+            depth = 1
+            j = i + 1
+            while j < n and depth > 0:
+                if target[j] == "[":
+                    depth += 1
+                elif target[j] == "]":
+                    depth -= 1
+                j += 1
+            inner = target[i + 1 : j - 1]
+
+            local_conds: list = []
+            for m in _ATTR_PRED_MULTI_RE.finditer(inner):
+                values = [v.strip().strip("'") for v in m.group(2).split(",")]
+                local_conds.append({"type": "flag-in", "flag": m.group(1), "values": values})
+            for m in _ATTR_PRED_RE.finditer(inner):
+                local_conds.append({"type": "flag-equals", "flag": m.group(1), "value": m.group(2)})
+
+            remaining = _ATTR_PRED_MULTI_RE.sub("", inner)
+            remaining = _ATTR_PRED_RE.sub("", remaining)
+            remaining = re.sub(r"\s*(and|or)\s*", " ", remaining).strip()
+
+            conditions.extend(local_conds)
+            if remaining:
+                result.append(f"[{remaining}]")
+            i = j
+        else:
+            result.append(target[i])
+            i += 1
+
+    return "".join(result), conditions
+
+
+# Matches has-oscal-namespace('ns') or has-oscal-namespace(('ns1','ns2',...))
+_HAS_NS_RE = re.compile(
+    r"has-oscal-namespace\("
+    r"("
+    r"'[^']*'"           # single-quoted string
+    r"|"
+    r"\([^)]*\)"         # tuple in parens (NS URIs contain no parens)
+    r")"
+    r"\)"
+)
+
+
+def _parse_ns_arg(arg: str) -> list:
+    """Extract namespace URI strings from a has-oscal-namespace() argument."""
+    return re.findall(r"'([^']*)'", arg)
+
+
+def _extract_oscal_namespace_condition(target: str) -> tuple:
+    """Detect has-oscal-namespace() in a Metapath target.
+
+    Returns (cleaned_target, condition) where condition is a dict or None.
+
+    condition format:
+        {"type": "namespace", "values": [...], "allow-absent": bool}
+
+    allow-absent is True when OSCAL_DEFAULT_NAMESPACE is among the values,
+    meaning a prop/part with no ns field satisfies the condition (the default
+    namespace applies).  For any other namespace the ns field must be present
+    and equal one of the listed values (case-sensitive).
+    """
+    if "has-oscal-namespace" not in target:
+        return target, None
+
+    collected_ns: list = []
+
+    def _remove_call(m: re.Match) -> str:
+        collected_ns.extend(_parse_ns_arg(m.group(1)))
+        return ""
+
+    cleaned = _HAS_NS_RE.sub(_remove_call, target)
+    cleaned = re.sub(r"\[\s*and\s+", "[", cleaned)
+    cleaned = re.sub(r"\s+and\s*\]", "]", cleaned)
+    cleaned = re.sub(r"\[\s*\]", "", cleaned)
+
+    if not collected_ns:
+        return target, None
+
+    unique_values = list(dict.fromkeys(collected_ns))
+    allow_absent = OSCAL_DEFAULT_NAMESPACE in unique_values
+    if allow_absent and "" not in unique_values:
+        # "" represents the absent/default ns field (treated as NIST namespace)
+        unique_values.append("")
+    condition = {
+        "type": "namespace",
+        "values": unique_values,
+        "allow-absent": allow_absent,
+    }
+    return cleaned, condition
+
+
+def _migrate_flags_to_children(node: dict, _seen: set | None = None) -> None:
+    """Migrate legacy nodes that store flags separately into children.
+
+    Older cached indexes have a top-level ``flags`` key alongside ``children``.
+    This function merges those flags into the beginning of ``children`` and
+    removes the stale key so the rest of the code only needs to look in one place.
+    Safe to call on already-migrated data (no-op when ``flags`` key is absent).
+    """
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        return
+    _seen.add(node_id)
+
+    if "flags" in node:
+        old_flags = node.pop("flags") or []
+        if old_flags:
+            node["children"] = old_flags + node.get("children", [])
+
+    for constraint in node.get("constraints", []):
+        if "condition" in constraint and "conditions" not in constraint:
+            constraint["conditions"] = [constraint.pop("condition")]
+
+    for child in node.get("children", []):
+        _migrate_flags_to_children(child, _seen)
+
+
+def _reroute_unresolved_constraints(node: dict, _seen: set | None = None) -> None:
+    """Re-route unresolved constraints in old cached indexes to their correct nodes.
+
+    Cached indexes built before the current routing improvements store constraints
+    like ``./child/@flag``, ``child/@flag``, and ``@flag`` as unresolved on the
+    parent node.  This function walks the tree and moves those constraints to the
+    correct flag node, extracting conditions along the way — matching the logic
+    now used by ``handle_constraints`` at parse time.
+    """
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        return
+    _seen.add(node_id)
+
+    remaining = []
+    for constraint in node.get("constraints", []):
+        if "unresolved-target" not in constraint:
+            remaining.append(constraint)
+            continue
+
+        target = constraint["unresolved-target"]
+        cleaned, ns_cond = _extract_oscal_namespace_condition(target)
+        rt = cleaned.strip()
+        if rt.startswith("./"):
+            rt = rt[2:].strip()
+
+        routed = False
+
+        if rt.startswith("@") and "/" not in rt:
+            # @flag-name → route to named flag child of current node
+            flag_name = rt[1:]
+            for c in node.get("children", []):
+                if c.get("structure-type") == "flag" and (
+                    c.get("use-name") == flag_name or c.get("name") == flag_name
+                ):
+                    re_routed = {k: v for k, v in constraint.items()
+                                 if k not in ("unresolved-target", "conditions")}
+                    if ns_cond:
+                        re_routed["conditions"] = [ns_cond]
+                    c.setdefault("constraints", []).append(re_routed)
+                    routed = True
+                    break
+
+        elif "/" in rt and _split_path_segments(rt)[-1].startswith("@"):
+            # N-level descent: seg1/.../segN/@flag (same logic as handle_constraints)
+            *path_segs, flag_ref = _split_path_segments(rt)
+            flag_name = flag_ref[1:]
+
+            current = node
+            all_conds = [ns_cond] if ns_cond else []
+            nav_ok = True
+            for seg in path_segs:
+                plain, pred_conds = _parse_child_predicates(seg)
+                if plain is None:
+                    nav_ok = False
+                    break
+                all_conds.extend(pred_conds)
+                if plain in (".", "(.)", "(.)"):
+                    continue  # self-reference: stay at current node
+                nxt = next(
+                    (c for c in current.get("children", [])
+                     if c.get("structure-type") != "flag"
+                     and (c.get("use-name") == plain or c.get("name") == plain)),
+                    None,
+                )
+                if nxt is None:
+                    nav_ok = False
+                    break
+                current = nxt
+
+            if nav_ok:
+                flag_node = next(
+                    (c for c in current.get("children", [])
+                     if c.get("structure-type") == "flag"
+                     and (c.get("use-name") == flag_name or c.get("name") == flag_name)),
+                    None,
+                )
+                if flag_node is not None:
+                    re_routed = {k: v for k, v in constraint.items()
+                                 if k not in ("unresolved-target", "conditions")}
+                    if all_conds:
+                        re_routed["conditions"] = all_conds
+                    flag_node.setdefault("constraints", []).append(re_routed)
+                    routed = True
+
+        if not routed:
+            remaining.append(constraint)
+
+    node["constraints"] = remaining
+
+    for child in node.get("children", []):
+        _reroute_unresolved_constraints(child, _seen)
+
+
+def _annotate_ns_conditions(node: dict, _seen: set | None = None) -> None:
+    """Recursively stamp a condition key onto every unresolved-target constraint
+    that uses has-oscal-namespace()."""
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        logger.warning(f"Cycle detected in index tree during ns-condition annotation at {node.get('path', '?')}")
+        return
+    _seen.add(node_id)
+
+    for constraint in node.get("constraints", []):
+        if "unresolved-target" in constraint and "conditions" not in constraint:
+            _, condition = _extract_oscal_namespace_condition(
+                constraint["unresolved-target"]
+            )
+            if condition is not None:
+                constraint["conditions"] = [condition]
+    for child in node.get("children", []):
+        _annotate_ns_conditions(child, _seen)
+
+
+def _compute_json_paths(node: dict, parent_json: str, _seen: set | None = None) -> None:
+    """Recursively set json-path on every node in the index tree.
+
+    json-path is the JSON-equivalent of path:
+    - Flags lose the @ prefix  (XML @name → JSON name)
+    - Assemblies/fields with group-as use the group-as key (XML prop → JSON props)
+    - In-xml GROUPED wrappers collapse: the group-as key IS the JSON path segment,
+      not group-as + use-name (XML revisions/revision → JSON revisions)
+    - Everything else keeps its use-name unchanged
+    """
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        logger.warning(f"Cycle detected in index tree during json-path computation at {node.get('path', '?')}")
+        return
+    _seen.add(node_id)
+
+    use_name = node.get("use-name") or node.get("name", "")
+    structure_type = node.get("structure-type", "")
+    group_as = node.get("group-as")
+
+    if structure_type == "flag":
+        json_path = f"{parent_json}/{use_name}"
+    elif group_as:
+        json_path = f"{parent_json}/{group_as}"
+    else:
+        json_path = f"{parent_json}/{use_name}"
+
+    node["json-path"] = json_path
+
+    for child in node.get("children", []):
+        _compute_json_paths(child, json_path, _seen)
+
+def _collect_unresolved_targets(node: dict, results: list | None = None, _seen: set | None = None) -> list:
+    """Walk the index tree and return all constraints that still have unresolved-target.
+
+    Each entry is a dict with keys:
+      path    – node path where the constraint was stored
+      target  – the unresolved target expression
+      values  – allowed values list (list of value strings)
+      id      – constraint XML id attribute (may be empty)
+      source  – list of metaschema model names the node was sourced from
+      reason  – "pattern-unsupported" | "navigation-failed" | "unknown"
+    """
+    if results is None:
+        results = []
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        return results
+    _seen.add(node_id)
+
+    node_path = node.get("path", "")
+    node_source = node.get("source", [])
+    for constraint in node.get("constraints", []):
+        if "unresolved-target" in constraint:
+            results.append({
+                "path":   node_path,
+                "target": constraint["unresolved-target"],
+                "values": [v.get("value", "") for v in constraint.get("values", [])],
+                "id":     constraint.get("id", ""),
+                "source": list(node_source),
+                "reason": constraint.get("unresolved-reason", "unknown"),
+            })
+
+    for child in node.get("children", []):
+        _collect_unresolved_targets(child, results, _seen)
+
+    return results
+
+
+def _write_metaschema_report(
+    models_processed: list,
+    unresolved_by_model: dict,
+    oscal_version: str,
+    support_dir: str,
+) -> str:
+    """Write a markdown summary report for an OSCAL version's metaschema parse run.
+
+    The report lists every model processed and, for each model with remaining
+    unresolved constraint targets, a two-section breakdown:
+
+    * **Unhandled patterns** – the target expression uses a Metapath construct
+      (deep-descent ``//``, bare field names, etc.) that the parser does not yet
+      support.  These require a parser enhancement to resolve.
+
+    * **Navigation failures** – the target pattern is understood but the named
+      child or flag was not found in the index tree.  These may indicate a
+      metaschema element that was skipped, or a bug in the index build.
+    """
+    import os
+
+    lines = [
+        f"# OSCAL Metaschema Index — {oscal_version}",
+        "",
+        "## Models Processed",
+        "",
+    ]
+    for model in models_processed:
+        status = " ⚠" if model in unresolved_by_model else " ✓"
+        lines.append(f"- {model}{status}")
+    lines.append("")
+
+    lines.append("## Unresolved Allowed-Values Constraints")
+    lines.append("")
+
+    total = sum(len(v) for v in unresolved_by_model.values())
+    if total == 0:
+        lines.append("_None — all constraint targets were fully resolved._")
+        lines.append("")
+    else:
+        for model in models_processed:
+            items = unresolved_by_model.get(model)
+            if not items:
+                continue
+
+            unsupported = [i for i in items if i.get("reason") == "pattern-unsupported"]
+            nav_failed  = [i for i in items if i.get("reason") == "navigation-failed"]
+            other       = [i for i in items if i.get("reason") not in ("pattern-unsupported", "navigation-failed")]
+
+            lines.append(f"### {model}  ({len(items)} unresolved)")
+            lines.append("")
+
+            def _table(section_items: list, heading: str) -> None:
+                if not section_items:
+                    return
+                lines.append(f"#### {heading}")
+                lines.append("")
+                lines.append("| Path | Target | Values | Source |")
+                lines.append("|------|--------|--------|--------|")
+                for item in section_items:
+                    def _esc(s: str) -> str:
+                        return s.replace("|", "\\|")
+                    path   = _esc(item.get("path", ""))
+                    tgt    = _esc(item.get("target", ""))
+                    vals   = _esc(", ".join(item.get("values", [])) or "—")
+                    source = _esc(", ".join(item.get("source", [])) or "—")
+                    lines.append(f"| `{path}` | `{tgt}` | {vals} | {source} |")
+                lines.append("")
+
+            _table(unsupported, "Unhandled Patterns")
+            _table(nav_failed,  "Navigation Failures")
+            _table(other,       "Other")
+
+    report_path = os.path.join(support_dir, "metaschema_report.md")
+    with open(report_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    logger.info(f"Metaschema report written to {report_path}")
+    return report_path
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == "__main__":

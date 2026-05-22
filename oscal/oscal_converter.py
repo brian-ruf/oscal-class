@@ -41,12 +41,8 @@ import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, SubElement
 from loguru import logger
 
-import markdown
-from markdown.extensions import Extension
-from markdown.inlinepatterns import InlineProcessor
-from markdown.treeprocessors import Treeprocessor
-
 from .oscal_support import get_support, METASCHEMA_MIN_VERSION
+from .oscal_converters import oscal_markdown_to_html, oscal_html_to_markdown
 from ruf_common.helper import compare_semver
 
 OSCAL_XML_NAMESPACE = "http://csrc.nist.gov/ns/oscal/1.0"
@@ -159,222 +155,6 @@ def _html_to_et(html_str: str, namespace: str) -> Element:
     parser.feed(html_str)
     parser.close()
     return parser.get_root()
-
-
-# ---------------------------------------------------------------------------
-# OSCAL markdown ↔ HTML conversion
-# ---------------------------------------------------------------------------
-
-class _ParameterInsertionProcessor(InlineProcessor):
-    """Handles OSCAL ``{{ insert: param, id }}`` syntax → ``<insert>`` element."""
-
-    def handleMatch(self, m, data):
-        parts = [p.strip() for p in m.group(1).strip().split(",")]
-        if len(parts) != 2:
-            return None, None, None
-        el = Element("insert")
-        el.set("type", parts[0])
-        el.set("id-ref", parts[1])
-        return el, m.start(0), m.end(0)
-
-
-class _SubscriptProcessor(InlineProcessor):
-    """Handles ``~text~`` → ``<sub>text</sub>``."""
-
-    def handleMatch(self, m, data):
-        el = Element("sub")
-        el.text = m.group(1)
-        return el, m.start(0), m.end(0)
-
-
-class _SuperscriptProcessor(InlineProcessor):
-    """Handles ``^text^`` → ``<sup>text</sup>``."""
-
-    def handleMatch(self, m, data):
-        el = Element("sup")
-        el.text = m.group(1)
-        return el, m.start(0), m.end(0)
-
-
-class _OscalTableTreeprocessor(Treeprocessor):
-    """
-    Removes non-OSCAL table wrapper elements (thead, tbody, tfoot, etc.)
-    so the table only contains ``<tr>`` children directly.
-    """
-
-    def run(self, root):
-        for table in root.iter("table"):
-            self._flatten(table)
-
-    def _flatten(self, table):
-        rows = []
-        for child in list(table):
-            if child.tag in ("thead", "tbody"):
-                rows.extend(child)
-                table.remove(child)
-            elif child.tag == "tr":
-                rows.append(child)
-            elif child.tag in ("tfoot", "col", "colgroup", "caption"):
-                table.remove(child)
-        table.clear()
-        for row in rows:
-            table.append(row)
-
-
-class _OscalParameterExtension(Extension):
-    """Markdown extension wiring up all OSCAL inline/tree processors."""
-
-    def extendMarkdown(self, md):
-        md.inlinePatterns.register(
-            _ParameterInsertionProcessor(r"\{\{\s*insert:\s*([^}]+)\}\}", md),
-            "oscal_param_insert", 175,
-        )
-        md.inlinePatterns.register(
-            _SubscriptProcessor(r"~([^~]+)~", md),
-            "oscal_subscript", 174,
-        )
-        md.inlinePatterns.register(
-            _SuperscriptProcessor(r"\^([^^]+)\^", md),
-            "oscal_superscript", 173,
-        )
-        md.treeprocessors.register(
-            _OscalTableTreeprocessor(md), "oscal_table_compliance", 0
-        )
-
-
-def oscal_markdown_to_html(markdown_text: str, multiline: bool = False) -> str:
-    """
-    Convert OSCAL CommonMark to an HTML fragment.
-
-    ``multiline=True``  → markup-multiline: block elements preserved, ``<p>`` wrap applied.
-    ``multiline=False`` → markup-line: inline only, outer ``<p>`` stripped.
-    """
-    if not markdown_text:
-        return ""
-
-    # OSCAL markdown does not allow raw HTML.  Escape any angle bracket that
-    # looks like the start of an HTML/XML tag so the markdown library treats it
-    # as literal text rather than inline HTML.  This preserves original case
-    # (e.g. <BREAK> → &lt;BREAK&gt;) and ensures known element names written
-    # literally are not mis-parsed.  The OscalParameterExtension generates
-    # <insert .../> in its *output*, not in the source, so it is unaffected.
-    markdown_text = re.sub(r"<(?=[a-zA-Z/!])", r"&lt;", markdown_text)
-
-    md = markdown.Markdown(
-        extensions=["extra", "sane_lists", _OscalParameterExtension()],
-        extension_configs={
-            "extra": {
-                "markdown.extensions.fenced_code": {},
-                "markdown.extensions.tables": {},
-            }
-        },
-    )
-    html = md.convert(markdown_text)
-
-    if not multiline:
-        if html.startswith("<p>") and html.endswith("</p>"):
-            html = html[3:-4]
-        html = html.replace("\n", " ").strip()
-    else:
-        has_block = any(
-            tag in html
-            for tag in ("<p>", "<h1>", "<h2>", "<h3>", "<h4>", "<h5>", "<h6>",
-                        "<ul>", "<ol>", "<blockquote>", "<table>")
-        )
-        if not has_block and html.strip():
-            html = f"<p>{html}</p>"
-
-    return html
-
-
-def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
-    """
-    Convert an HTML fragment to OSCAL CommonMark.
-
-    ``multiline=True``  → markup-multiline (block elements converted).
-    ``multiline=False`` → markup-line (inline elements only).
-    """
-    if not html_text:
-        return ""
-
-    md = html_text.strip()
-
-    # OSCAL insert tags → {{ insert: type, id-ref }}
-    def _replace_insert(match):
-        attrs = match.group(1) or ""
-        type_m = re.search(r'\btype\s*=\s*(["\'])(.*?)\1', attrs, flags=re.IGNORECASE)
-        id_m   = re.search(r'\bid-ref\s*=\s*(["\'])(.*?)\1', attrs, flags=re.IGNORECASE)
-        if not type_m or not id_m:
-            return match.group(0)
-        return f"{{{{ insert: {type_m.group(2).strip()}, {id_m.group(2).strip()} }}}}"
-
-    md = re.sub(
-        r"<insert\b([^>]*)\s*(?:/\s*>|>\s*</insert\s*>)",
-        _replace_insert, md, flags=re.IGNORECASE,
-    )
-
-    if multiline:
-        for level in range(1, 7):
-            md = re.sub(f"<h{level}>([^<]+)</h{level}>", f'{"#" * level} \\1\n\n', md)
-
-        def _code_block(m):
-            return f"\n\n```\n{m.group(1)}\n```\n\n"
-        md = re.sub(r"<pre>([^<]*)</pre>", _code_block, md, flags=re.DOTALL)
-
-        def _table(m):
-            t = m.group(0)
-            hdr = re.search(r"<tr>((?:<th[^>]*>[^<]*</th>)+)</tr>", t)
-            if not hdr:
-                return t
-            cols = re.findall(r"<th[^>]*>([^<]*)</th>", hdr.group(1))
-            aligns = [a for a in re.findall(r'<th[^>]*align="([^"]*)"', hdr.group(1))]
-            rows = []
-            for rm in re.finditer(r"<tr>((?:<td[^>]*>.*?</td>)+)</tr>", t, flags=re.DOTALL):
-                rows.append(re.findall(r"<td[^>]*>(.*?)</td>", rm.group(1), flags=re.DOTALL))
-            if not cols or not rows:
-                return t
-            lines = ["| " + " | ".join(cols) + " |"]
-            seps = []
-            for i in range(len(cols)):
-                a = aligns[i] if i < len(aligns) else "left"
-                seps.append(":---:" if a == "center" else "---:" if a == "right" else "---")
-            lines.append("| " + " | ".join(seps) + " |")
-            for row in rows:
-                row = (row + [""] * len(cols))[: len(cols)]
-                lines.append("| " + " | ".join(row) + " |")
-            return "\n\n" + "\n".join(lines) + "\n\n"
-
-        md = re.sub(r"<table>.*?</table>", _table, md, flags=re.DOTALL)
-        md = re.sub(r"<blockquote>([^<]+)</blockquote>", r"\n\n> \1\n\n", md)
-        md = re.sub(r"<ul><li>([^<]+)</li></ul>", r"\n\n- \1\n", md)
-        md = re.sub(r"<ol><li>([^<]+)</li></ol>", r"\n\n1. \1\n", md)
-        md = re.sub(r"<p>([^<]+)</p>", r"\1\n\n", md)
-
-    # Inline formatting
-    md = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>', r'![\1](\2 "\3")', md)
-    md = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s*/>', r"![\1](\2)", md)
-    md = re.sub(r'<a\s+href="([^"]+)"\s+title="([^"]*)">([^<]+)</a>', r'[\3](\1 "\2")', md)
-    md = re.sub(r'<a\s+href="([^"]+)">([^<]+)</a>', r"[\2](\1)", md)
-    md = re.sub(r"<strong>([^<]+)</strong>", r"**\1**", md)
-    md = re.sub(r"<em>([^<]+)</em>", r"*\1*", md)
-    md = re.sub(r"<code>([^<]+)</code>", r"`\1`", md)
-    md = re.sub(r"<sup>([^<]+)</sup>", r"^\1^", md)
-    md = re.sub(r"<sub>([^<]+)</sub>", r"~\1~", md)
-    md = re.sub(r"<[^>]+>", "", md)
-
-    if multiline:
-        lines = [l.strip() for l in md.split("\n")]
-        cleaned: list[str] = []
-        for line in lines:
-            if line:
-                cleaned.append(line)
-            elif cleaned and cleaned[-1]:
-                cleaned.append("")
-        md = re.sub(r"\n\n\n+", "\n\n", "\n".join(cleaned))
-    else:
-        md = re.sub(r"\s+", " ", md)
-
-    return md.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -507,24 +287,12 @@ class OSCALConverter:
             )
             index_version = METASCHEMA_MIN_VERSION
 
-        raw = support.asset(index_version, "complete", "processed")
-        if not raw:
+        model_index = support.get_metaschema_index(index_version, model)
+        if model_index is None:
             logger.error(
-                f"No processed metaschema index found for {index_version}. "
-                "Update the support module."
+                f"No processed metaschema index for {index_version}/{model}. "
+                "Run support.update() to populate support assets."
             )
-            return None
-
-        try:
-            full_index = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.error(f"Could not parse metaschema index: {exc}")
-            return None
-
-        model_index = full_index.get("oscal_models", {}).get(model)
-        if not model_index:
-            available = list(full_index.get("oscal_models", {}).keys())
-            logger.error(f"Model '{model}' not found in index for {index_version}. Available: {available}")
             return None
 
         return cls(model_index)
@@ -607,12 +375,12 @@ class OSCALConverter:
         if name and stype in ("assembly", "field") and name not in self._defs:
             self._defs[name] = node
         for child in node.get("children") or []:
-            self._index_defs(child)
-        for flag in node.get("flags") or []:
-            if flag:
-                fn = flag.get("name", "")
+            if child and child.get("structure-type") == "flag":
+                fn = child.get("name", "")
                 if fn and fn not in self._defs:
-                    self._defs[fn] = flag
+                    self._defs[fn] = child
+            else:
+                self._index_defs(child)
 
     def _resolve(self, node: dict) -> dict:
         """Return the full definition node for a recursive stub."""
@@ -639,9 +407,7 @@ class OSCALConverter:
         #    Build a local-name lookup of all attributes present on this element
         #    so we can iterate the index sequence rather than attribute order.
         attrib_by_local: dict[str, str] = {_local(k): v for k, v in element.attrib.items()}
-        for flag_nd in node.get("flags") or []:
-            if not flag_nd:
-                continue
+        for flag_nd in [c for c in node.get("children") or [] if c and c.get("structure-type") == "flag"]:
             ln = flag_nd.get("use-name", "")
             if ln in attrib_by_local:
                 result[ln] = _cast(attrib_by_local[ln], flag_nd.get("datatype", "string"))
@@ -832,9 +598,8 @@ class OSCALConverter:
                 known.add(cn.get("use-name", ""))
                 if cn.get("group-as"):
                     known.add(cn["group-as"])
-        for fn in node.get("flags") or []:
-            if fn:
-                known.add(fn.get("use-name", ""))
+        for fn in [c for c in node.get("children") or [] if c and c.get("structure-type") == "flag"]:
+            known.add(fn.get("use-name", ""))
 
         unmodeled: dict = {}
         for child in element:
@@ -863,9 +628,7 @@ class OSCALConverter:
         remaining = dict(json_obj)
 
         # 1. Flags → XML attributes
-        for flag_nd in node.get("flags") or []:
-            if not flag_nd:
-                continue
+        for flag_nd in [c for c in node.get("children") or [] if c and c.get("structure-type") == "flag"]:
             fname = flag_nd.get("use-name", "")
             if fname in remaining:
                 val = remaining.pop(fname)
@@ -1027,6 +790,705 @@ class OSCALConverter:
                     parent.append(ET.fromstring(xml_str))
                 except ET.ParseError as exc:
                     logger.warning(f"Could not re-parse unmodeled content: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# OSCALPath – XPath-like query engine for OSCAL JSON
+# ---------------------------------------------------------------------------
+
+class _PathStep:
+    """One step in a parsed XPath-like expression."""
+    __slots__ = ("axis", "name", "predicates")
+
+    def __init__(self, axis: str, name: str, predicates: list) -> None:
+        self.axis = axis            # "child" | "descendant" | "attribute" |
+                                    # "wildcard" | "self" | "text" | "name_func"
+        self.name = name            # XML element or attribute name; "" for specials
+        self.predicates = predicates  # list of _PathPred
+
+
+class _PathPred:
+    """A predicate clause inside ``[...]``."""
+    __slots__ = ("lhs", "op", "rhs", "negated")
+
+    def __init__(self, lhs: list, op: str, rhs: "str | None", negated: bool) -> None:
+        self.lhs = lhs          # list of _PathStep (path to compare value)
+        self.op = op            # "=" | "!=" | "<" | ">" | "<=" | ">=" | "" (existence)
+        self.rhs = rhs          # right-hand side literal, or None for existence test
+        self.negated = negated  # True when wrapped in not(...)
+
+
+def _opath_extract_bracket(path: str, start: int) -> tuple[str, int]:
+    """Return (inner_content, end_idx) for the ``[...]`` block starting at *start*."""
+    depth = 0
+    i = start
+    while i < len(path):
+        if path[i] == "[":
+            depth += 1
+        elif path[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return path[start + 1 : i], i + 1
+        i += 1
+    return path[start + 1 :], len(path)
+
+
+# Matches: <lhs-path> <op> "<rhs>" or '<rhs>'
+_PRED_CMP_RE = re.compile(
+    r"^(.+?)\s*(!=|<=|>=|=|<|>)\s*(?:\"([^\"]*)\"|'([^']*)')\s*$",
+    re.DOTALL,
+)
+
+
+def _opath_parse_pred(s: str) -> _PathPred:
+    """Parse a predicate string (the content between ``[`` and ``]``)."""
+    s = s.strip()
+    negated = False
+    m_not = re.match(r"not\s*\((.+)\)\s*$", s, re.DOTALL)
+    if m_not:
+        s = m_not.group(1).strip()
+        negated = True
+
+    m = _PRED_CMP_RE.match(s)
+    if m:
+        lhs_path = m.group(1).strip()
+        op  = m.group(2)
+        rhs = m.group(3) if m.group(3) is not None else m.group(4)
+        return _PathPred(_opath_parse(lhs_path), op, rhs, negated)
+
+    # Existence predicate — no operator
+    return _PathPred(_opath_parse(s), "", None, negated)
+
+
+def _opath_parse(path: str) -> list[_PathStep]:
+    """
+    Parse an XPath-like expression into a list of :class:`_PathStep` objects.
+
+    Supported syntax::
+
+        /*/foo/bar              absolute path (leading / anchors to doc root;
+                                /* matches any top-level model object)
+        foo/bar                 relative path (from caller-supplied context)
+        //foo                   descendant axis — search at any depth
+        //foo//bar              chained descendant axes
+        @attr                   attribute/flag value
+        foo[@id='x']            step with equality predicate
+        foo[not(@id)]           step with negated existence predicate
+        foo[a/b='x']            step with path-expression predicate
+        foo[@a='x'][@b='y']     multiple predicates (all must hold)
+        text()                  scalar value of the current node
+        *                       wildcard — all direct children
+    """
+    steps: list[_PathStep] = []
+    i = 0
+    n = len(path)
+    pending_desc = False  # True when the next step uses the descendant axis
+
+    if path.startswith("//"):
+        pending_desc = True
+        i = 2
+    elif path.startswith("/"):
+        steps.append(_PathStep("self", "", []))
+        i = 1
+
+    while i < n:
+        if path[i] == "/":
+            if i + 1 < n and path[i + 1] == "/":
+                pending_desc = True
+                i += 2
+            else:
+                i += 1
+            continue
+
+        axis = "descendant" if pending_desc else "child"
+        pending_desc = False
+
+        if path[i] == "@":
+            i += 1
+            m = re.match(r"[\w\-\.]+", path[i:])
+            name = m.group() if m else ""
+            if m:
+                i += m.end()
+            steps.append(_PathStep("attribute", name, []))
+
+        elif path[i] == "*":
+            steps.append(_PathStep("wildcard", "", []))
+            i += 1
+
+        elif path[i : i + 6] == "text()":
+            steps.append(_PathStep("text", "", []))
+            i += 6
+
+        elif path[i : i + 6] == "name()":
+            steps.append(_PathStep("name_func", "", []))
+            i += 6
+
+        else:
+            m = re.match(r"[\w\-\.]+", path[i:])
+            if not m:
+                i += 1
+                continue
+            name = m.group()
+            i += m.end()
+
+            preds: list[_PathPred] = []
+            while i < n and path[i] == "[":
+                pred_str, i = _opath_extract_bracket(path, i)
+                preds.append(_opath_parse_pred(pred_str))
+
+            steps.append(_PathStep(axis, name, preds))
+
+    return steps
+
+
+class OSCALPath:
+    """
+    XPath-like query engine for OSCAL JSON data.
+
+    Uses the metaschema index to translate XML path steps into the correct JSON
+    navigation — resolving element names to their JSON keys, and handling the
+    different container types (ARRAY, BY_KEY, SINGLETON_OR_ARRAY, scalar).
+
+    Parameters
+    ----------
+    model_index
+        Model-specific metaschema index dict (the value at
+        ``full_index["oscal_models"][model_name]``).  The same dict accepted
+        by :class:`OSCALConverter`.
+
+    Examples
+    --------
+    ::
+
+        path = OSCALPath(catalog_model_index)
+
+        # Descendant search with attribute predicate
+        controls = path.query("//control[@id='ac-2.2']", doc)
+
+        # Absolute path
+        title = path.query_one("/*/metadata/title", doc)
+
+        # Relative path from a sub-dict
+        ver = path.query_one("oscal-version", doc["catalog"]["metadata"])
+
+        # Path expression inside a predicate
+        labelled = path.query("//part[prop[@name='label']]", doc)
+
+        # Multiple predicates
+        specific = path.query("//param[@id='ac-1_prm_1'][select]", doc)
+    """
+
+    _SKIP_KEYS: frozenset[str] = frozenset({"$schema", "_unmodeled"})
+
+    def __init__(self, model_index: dict) -> None:
+        self.root_node: dict = model_index.get("nodes") or {}
+        self._defs: dict[str, dict] = {}
+        # xml_name → list of spec dicts
+        self._name_map: dict[str, list[dict]] = {}
+        self._build_index(self.root_node, frozenset())
+
+    # ------------------------------------------------------------------
+    # Index building
+    # ------------------------------------------------------------------
+
+    def _build_index(self, node: dict | None, visited: frozenset) -> None:
+        if not node:
+            return
+        stype = node.get("structure-type", "")
+        if stype == "recursive":
+            return
+
+        name = node.get("name", "")
+        if name and stype in ("assembly", "field") and name not in self._defs:
+            self._defs[name] = node
+
+        node_id = id(node)
+        if node_id in visited:
+            return
+        visited = visited | {node_id}
+
+        xml_name = node.get("use-name") or name
+        if xml_name and stype not in ("", "choice", "any"):
+            spec = self._make_spec(xml_name, node)
+            bucket = self._name_map.setdefault(xml_name, [])
+            if not any(s["json_key"] == spec["json_key"] for s in bucket):
+                bucket.append(spec)
+
+        for child in node.get("children") or []:
+            if not child:
+                continue
+            if child.get("structure-type") == "choice":
+                # Recurse into each alternative — they all live at the same level
+                for alt in child.get("children") or []:
+                    if alt:
+                        self._build_index(self._resolve_def(alt), visited)
+            else:
+                self._build_index(self._resolve_def(child), visited)
+
+        for flag in [c for c in node.get("children") or [] if c and c.get("structure-type") == "flag"]:
+            fn = flag.get("use-name") or flag.get("name", "")
+            if fn:
+                bucket = self._name_map.setdefault(fn, [])
+                spec = {"xml_name": fn, "json_key": fn, "container": "SCALAR",
+                        "key_flag": "", "node": flag}
+                if not any(s["json_key"] == fn for s in bucket):
+                    bucket.append(spec)
+
+    def _make_spec(self, xml_name: str, node: dict) -> dict:
+        group_as   = node.get("group-as") or ""
+        json_key   = group_as or xml_name
+        group_json = node.get("group-as-in-json") or ""
+        key_flag   = node.get("json-key") or ""
+        max_occurs = node.get("max-occurs", "1")
+        stype      = node.get("structure-type", "")
+
+        if group_json == "BY_KEY" and key_flag:
+            container = "BY_KEY"
+        elif group_json == "ARRAY" or max_occurs == "unbounded":
+            container = "ARRAY"
+        elif group_json == "SINGLETON_OR_ARRAY":
+            container = "SINGLETON_OR_ARRAY"
+        elif stype == "flag":
+            container = "SCALAR"
+        else:
+            container = "OBJECT"
+
+        return {
+            "xml_name": xml_name,
+            "json_key":  json_key,
+            "container": container,
+            "key_flag":  key_flag,
+            "node":      node,
+        }
+
+    def _resolve_def(self, node: dict) -> dict:
+        if node.get("structure-type") == "recursive":
+            return self._defs.get(node.get("name", ""), node)
+        return node
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def query(self, path: str, data) -> list:
+        """
+        Return a list of all JSON values matching *path* in *data*.
+
+        *data* is normally the full parsed OSCAL JSON document
+        (``{"catalog": {...}}``) for absolute paths, or any sub-dict for
+        relative paths.  Scalar results (strings, numbers) are returned as-is.
+        """
+        steps = _opath_parse(path)
+        return self._eval_steps(steps, [data])
+
+    def query_one(self, path: str, data, default=None):
+        """Return the first matching value, or *default* when nothing matches."""
+        results = self.query(path, data)
+        return results[0] if results else default
+
+    # ------------------------------------------------------------------
+    # Step evaluation
+    # ------------------------------------------------------------------
+
+    def _eval_steps(self, steps: list[_PathStep], ctx: list) -> list:
+        for step in steps:
+            if not ctx:
+                break
+            ctx = self._eval_step(step, ctx)
+        return ctx
+
+    def _eval_step(self, step: _PathStep, ctx: list) -> list:
+        axis, name, preds = step.axis, step.name, step.predicates
+        out: list = []
+
+        for val in ctx:
+            if axis == "self":
+                cands = [val]
+            elif axis == "child":
+                cands = list(self._child(val, name))
+            elif axis == "descendant":
+                cands = list(self._descendants(val, name))
+            elif axis == "attribute":
+                cands = list(self._attribute(val, name))
+            elif axis == "wildcard":
+                cands = list(self._wildcard(val))
+            elif axis == "text":
+                cands = list(self._text(val))
+            elif axis == "name_func":
+                # name() on a top-level dict: return the root model key
+                if isinstance(val, dict):
+                    cands = [k for k in val if not k.startswith("$") and not k.startswith("_")]
+                else:
+                    cands = []
+            else:
+                cands = []
+
+            # Apply predicates (all must hold — AND semantics)
+            for pred in preds:
+                cands = [c for c in cands if self._eval_pred(pred, c)]
+
+            out.extend(cands)
+
+        return out
+
+    # ------------------------------------------------------------------
+    # Navigation primitives
+    # ------------------------------------------------------------------
+
+    def _child(self, val, name: str):
+        """Yield JSON values that are direct children named *name* in XML terms."""
+        if not isinstance(val, dict):
+            return
+        specs = self._name_map.get(name)
+        if specs:
+            for spec in specs:
+                jk = spec["json_key"]
+                if jk in val:
+                    yield from self._extract(val[jk], spec)
+        else:
+            # No index entry — try the key directly (flags, $schema, etc.)
+            if name in val:
+                raw = val[name]
+                if isinstance(raw, list):
+                    yield from raw
+                else:
+                    yield raw
+
+    def _descendants(self, val, name: str):
+        """Yield all values at any depth that match XML element name *name*."""
+        # Direct children first
+        yield from self._child(val, name)
+        # Recurse
+        if isinstance(val, dict):
+            for k, v in val.items():
+                if k in self._SKIP_KEYS:
+                    continue
+                if isinstance(v, (dict, list)):
+                    yield from self._descendants(v, name)
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, (dict, list)):
+                    yield from self._descendants(item, name)
+
+    def _attribute(self, val, name: str):
+        """Yield the value of attribute/flag *name* from *val*."""
+        if isinstance(val, dict) and name in val:
+            yield val[name]
+
+    def _wildcard(self, val):
+        """Yield all direct children of *val*."""
+        if isinstance(val, dict):
+            for k, v in val.items():
+                if k not in self._SKIP_KEYS:
+                    yield v
+        elif isinstance(val, list):
+            yield from val
+
+    def _text(self, val):
+        """Yield the scalar text/value of *val*."""
+        if isinstance(val, (str, int, float, bool)):
+            yield val
+        elif isinstance(val, dict):
+            # Fields with flags store their text under STRVALUE
+            for key in ("STRVALUE", "value"):
+                if key in val:
+                    yield val[key]
+                    return
+
+    def _extract(self, raw, spec: dict):
+        """
+        Yield item(s) from a raw JSON value according to the metaschema container
+        type recorded in *spec*.
+
+        For BY_KEY groups the dict key is re-injected as a field (using the
+        ``json-key`` flag name) so that predicates like ``[@param-id='x']``
+        work even though the key was extracted from the item in JSON.
+        """
+        container = spec["container"]
+        key_flag  = spec.get("key_flag", "")
+
+        if container == "ARRAY":
+            if isinstance(raw, list):
+                yield from raw
+
+        elif container == "BY_KEY":
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if isinstance(v, dict):
+                        # Re-inject the key so attribute predicates can match it
+                        yield {key_flag: k, **v} if key_flag else v
+                    else:
+                        yield {key_flag: k, "value": v} if key_flag else {"value": v}
+
+        elif container == "SINGLETON_OR_ARRAY":
+            if isinstance(raw, list):
+                yield from raw
+            elif raw is not None:
+                yield raw
+
+        else:  # OBJECT or SCALAR
+            if raw is not None:
+                yield raw
+
+    # ------------------------------------------------------------------
+    # Predicate evaluation
+    # ------------------------------------------------------------------
+
+    def _eval_pred(self, pred: _PathPred, val) -> bool:
+        lhs_vals = self._eval_steps(pred.lhs, [val])
+
+        if pred.op:
+            result = any(self._compare(v, pred.op, pred.rhs) for v in lhs_vals)
+        else:
+            result = bool(lhs_vals)  # existence check
+
+        return not result if pred.negated else result
+
+    def _compare(self, val, op: str, rhs: "str | None") -> bool:
+        if rhs is None:
+            return False
+        s = str(val) if not isinstance(val, str) else val
+        if op == "=":
+            return s == rhs
+        if op == "!=":
+            return s != rhs
+        try:
+            a: float | str = float(s)
+            b: float | str = float(rhs)
+        except (ValueError, TypeError):
+            a, b = s, rhs
+        if op == "<":
+            return a < b
+        if op == ">":
+            return a > b
+        if op == "<=":
+            return a <= b
+        if op == ">=":
+            return a >= b
+        return False
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_support(cls, model: str, version: str, support=None) -> "OSCALPath | None":
+        """
+        Build an :class:`OSCALPath` from the support object's processed index.
+
+        Parameters mirror :meth:`OSCALConverter.from_support`.
+        """
+        conv = OSCALConverter.from_support(model, version, support)
+        if conv is None:
+            return None
+        return cls({"nodes": conv.root_node,
+                    "oscal_model": conv.model,
+                    "oscal_namespace": conv.namespace,
+                    "oscal_version": conv.version})
+
+
+# ---------------------------------------------------------------------------
+# NativePath – JSON-native path query engine (no metaschema index)
+# ---------------------------------------------------------------------------
+
+class NativePath:
+    """
+    Lightweight path query engine that works directly on JSON key names,
+    requiring no metaschema index.
+
+    The path syntax is identical to :class:`OSCALPath`, with one key
+    difference: steps use the *JSON* key names exactly as they appear in the
+    document rather than the XML element names.  For OSCAL JSON that means
+    ``controls`` (not ``control``), ``props`` (not ``prop``), etc.
+
+    **Array transparency** — when navigating to a key whose value is a JSON
+    array, the array is automatically iterated so subsequent steps and
+    predicates apply to each item individually.  Predicate paths work the
+    same way:  ``[props[name='label']]`` navigates into the ``props`` array
+    and checks each prop item.
+
+    No instantiation arguments are needed; a module-level singleton
+    :data:`native_path` is provided for convenience.
+
+    Examples::
+
+        # Descendant search with predicate
+        native_path.query("//controls[id='ac-2.2']", doc)
+
+        # Absolute path
+        native_path.query_one("/*/metadata/title", doc)
+
+        # Relative path from a sub-dict
+        native_path.query("oscal-version", doc["catalog"]["metadata"])
+
+        # Path expression inside a predicate
+        native_path.query("//controls[props[name='label']]", doc)
+
+        # Multiple predicates
+        native_path.query("//controls[id='ac-2'][controls]", doc)
+
+        # Negation / inequality
+        native_path.query("//props[name='label'][value!='']", doc)
+
+        # Existence predicate
+        native_path.query("//params[select]", doc)
+
+        # @ prefix works as a synonym for bare key (for XPath familiarity)
+        native_path.query("//controls[@id='ac-2.2']", doc)
+    """
+
+    _SKIP_KEYS: frozenset[str] = frozenset({"$schema", "_unmodeled"})
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def query(self, path: str, data) -> list:
+        """
+        Return a list of all values matching *path* in *data*.
+
+        *data* may be the full document dict (for absolute paths starting
+        with ``/``) or any sub-dict / value (for relative paths).
+        """
+        steps = _opath_parse(path)
+        return self._eval_steps(steps, [data])
+
+    def query_one(self, path: str, data, default=None):
+        """Return the first matching value, or *default* when nothing matches."""
+        results = self.query(path, data)
+        return results[0] if results else default
+
+    # ------------------------------------------------------------------
+    # Step evaluation
+    # ------------------------------------------------------------------
+
+    def _eval_steps(self, steps: list[_PathStep], ctx: list) -> list:
+        for step in steps:
+            if not ctx:
+                break
+            ctx = self._eval_step(step, ctx)
+        return ctx
+
+    def _eval_step(self, step: _PathStep, ctx: list) -> list:
+        axis, name, preds = step.axis, step.name, step.predicates
+        out: list = []
+
+        for val in ctx:
+            if axis == "self":
+                cands = [val]
+            elif axis in ("child", "attribute"):
+                # @ prefix is a synonym for a bare key in JSON
+                cands = list(self._child(val, name))
+            elif axis == "descendant":
+                cands = list(self._descendants(val, name))
+            elif axis == "wildcard":
+                cands = list(self._wildcard(val))
+            elif axis == "text":
+                cands = list(self._text(val))
+            elif axis == "name_func":
+                if isinstance(val, dict):
+                    cands = [k for k in val if not k.startswith("$")]
+                else:
+                    cands = []
+            else:
+                cands = []
+
+            for pred in preds:
+                cands = [c for c in cands if self._eval_pred(pred, c)]
+
+            out.extend(cands)
+
+        return out
+
+    # ------------------------------------------------------------------
+    # Navigation primitives
+    # ------------------------------------------------------------------
+
+    def _child(self, val, name: str):
+        """
+        Navigate to key *name* in *val*.  When the value is a list, yield
+        each item so the next step applies to items individually.
+        """
+        if not isinstance(val, dict):
+            return
+        if name not in val:
+            return
+        raw = val[name]
+        if isinstance(raw, list):
+            yield from raw
+        else:
+            yield raw
+
+    def _descendants(self, val, name: str):
+        """
+        Recursively find key *name* at any depth, auto-iterating arrays
+        encountered along the way.
+        """
+        yield from self._child(val, name)
+
+        if isinstance(val, dict):
+            for k, v in val.items():
+                if k in self._SKIP_KEYS:
+                    continue
+                if isinstance(v, (dict, list)):
+                    yield from self._descendants(v, name)
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, (dict, list)):
+                    yield from self._descendants(item, name)
+
+    def _wildcard(self, val):
+        """Yield all direct children (values of a dict, or items of a list)."""
+        if isinstance(val, dict):
+            for k, v in val.items():
+                if k not in self._SKIP_KEYS:
+                    yield v
+        elif isinstance(val, list):
+            yield from val
+
+    def _text(self, val):
+        """Yield *val* itself when it is a scalar."""
+        if isinstance(val, (str, int, float, bool)):
+            yield val
+
+    # ------------------------------------------------------------------
+    # Predicate evaluation
+    # ------------------------------------------------------------------
+
+    def _eval_pred(self, pred: _PathPred, val) -> bool:
+        lhs_vals = self._eval_steps(pred.lhs, [val])
+        if pred.op:
+            result = any(self._compare(v, pred.op, pred.rhs) for v in lhs_vals)
+        else:
+            result = bool(lhs_vals)  # existence check
+        return not result if pred.negated else result
+
+    def _compare(self, val, op: str, rhs: "str | None") -> bool:
+        if rhs is None:
+            return False
+        s = str(val) if not isinstance(val, str) else val
+        if op == "=":
+            return s == rhs
+        if op == "!=":
+            return s != rhs
+        try:
+            a: float | str = float(s)
+            b: float | str = float(rhs)
+        except (ValueError, TypeError):
+            a, b = s, rhs
+        if op == "<":
+            return a < b
+        if op == ">":
+            return a > b
+        if op == "<=":
+            return a <= b
+        if op == ">=":
+            return a >= b
+        return False
+
+
+#: Module-level singleton — use directly without instantiating.
+native_path = NativePath()
 
 
 # ---------------------------------------------------------------------------

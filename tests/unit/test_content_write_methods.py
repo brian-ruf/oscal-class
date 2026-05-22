@@ -1,15 +1,13 @@
 """
 Unit tests for OSCAL content write methods (OSCAL base class and module functions):
+    - OSCAL.__set_field()
     - OSCAL.set_metadata()
     - OSCAL.append_child()
-    - OSCAL.assign_html_string_to_node()
-    - OSCAL.append_resource()  (instance method)
-    - append_prop() / append_props()  (module functions)
-    - append_link() / append_links()  (module functions)
-    - append_resource()               (module function)
+    - OSCAL.append_resource()             (instance method)
+    - append_prop() / append_props()      (module functions)
+    - append_link() / append_links()      (module functions)
+    - append_resource()                   (module function)
 """
-from xml.etree import ElementTree
-
 import pytest
 
 from oscal import Catalog
@@ -32,28 +30,76 @@ def cat():
 
 
 # ===========================================================================
+# OSCAL.__set_field()
+# ===========================================================================
+class TestSetField:
+
+    def test_sets_scalar_value(self, cat):
+        """__set_field() updates a scalar string in _dict."""
+        cat._OSCAL__set_field("metadata/title", "New Title")
+        assert cat._dict["catalog"]["metadata"]["title"] == "New Title"
+
+    def test_overwrites_existing_value(self, cat):
+        """__set_field() overwrites an existing key."""
+        cat._OSCAL__set_field("metadata/title", "First")
+        cat._OSCAL__set_field("metadata/title", "Second")
+        assert cat._dict["catalog"]["metadata"]["title"] == "Second"
+
+    def test_sets_non_string_value(self, cat):
+        """__set_field() accepts any JSON-compatible value type."""
+        cat._OSCAL__set_field("metadata/title", 42)
+        assert cat._dict["catalog"]["metadata"]["title"] == 42
+
+    def test_missing_intermediate_key_returns_false(self, cat):
+        """__set_field() returns False when an intermediate key does not exist."""
+        result = cat._OSCAL__set_field("nonexistent/title", "x")
+        assert result is False
+
+    def test_list_index_set(self, cat):
+        """__set_field() can set a value inside a list by integer index."""
+        meta = cat._dict["catalog"]["metadata"]
+        meta["roles"] = [{"id": "admin", "title": "Admin"}]
+        cat._OSCAL__set_field("metadata/roles/0/title", "Updated Admin")
+        assert meta["roles"][0]["title"] == "Updated Admin"
+
+    def test_invalid_list_index_returns_false(self, cat):
+        """__set_field() returns False on an out-of-range list index."""
+        cat._dict["catalog"]["metadata"]["roles"] = []
+        result = cat._OSCAL__set_field("metadata/roles/5/title", "x")
+        assert result is False
+
+    def test_no_dict_returns_false(self, cat):
+        """__set_field() returns False when _dict is None."""
+        cat._dict = None
+        result = cat._OSCAL__set_field("metadata/title", "x")
+        assert result is False
+
+    def test_returns_true_on_success(self, cat):
+        """__set_field() returns True when the write succeeds."""
+        result = cat._OSCAL__set_field("metadata/title", "OK")
+        assert result is True
+
+
+# ===========================================================================
 # OSCAL.set_metadata()
 # ===========================================================================
 class TestSetMetadata:
 
     def test_set_title(self, cat):
-        """set_metadata() updates the title in the XML tree."""
+        """set_metadata() updates the title in _dict."""
         cat.set_metadata({"title": "Updated Title"})
-        # title is cached on load; verify via XPath into the tree
-        result = cat.xpath_atomic("/*/metadata/title/text()")
-        assert result == "Updated Title"
+        assert cat._dict["catalog"]["metadata"]["title"] == "Updated Title"
 
     def test_set_version(self, cat):
-        """set_metadata() updates the version in the XML tree."""
+        """set_metadata() updates the version in _dict."""
         cat.set_metadata({"version": "2.0"})
-        result = cat.xpath_atomic("/*/metadata/version/text()")
-        assert result == "2.0"
+        assert cat._dict["catalog"]["metadata"]["version"] == "2.0"
 
     def test_set_multiple_fields(self, cat):
         """set_metadata() can set several scalar fields in one call."""
         cat.set_metadata({"title": "Multi Field", "version": "3.0"})
-        assert cat.xpath_atomic("/*/metadata/title/text()") == "Multi Field"
-        assert cat.xpath_atomic("/*/metadata/version/text()") == "3.0"
+        assert cat._dict["catalog"]["metadata"]["title"] == "Multi Field"
+        assert cat._dict["catalog"]["metadata"]["version"] == "3.0"
 
     def test_set_empty_dict_no_crash(self, cat):
         """set_metadata({}) must not raise."""
@@ -74,74 +120,54 @@ class TestSetMetadata:
 # ===========================================================================
 class TestAppendChild:
 
-    def test_returns_element(self, cat):
-        """append_child() returns an Element on success."""
-        result = cat.append_child("/*/metadata", "remarks", "Test remark")
+    def test_returns_dict(self, cat):
+        """append_child() returns the appended dict on success."""
+        result = cat.append_child("metadata/props", {"name": "label", "value": "AC-1"})
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_child_has_correct_tag(self, cat):
-        """append_child() creates a node with the requested tag."""
-        result = cat.append_child("/*/metadata", "remarks", "Hello")
-        assert "remarks" in result.tag
+    def test_child_appended_to_list(self, cat):
+        """append_child() appends the child to the list at the given path."""
+        child = {"name": "label", "value": "AC-1"}
+        cat.append_child("metadata/props", child)
+        props = cat._dict["catalog"]["metadata"]["props"]
+        assert len(props) == 1
+        assert props[0] is child
 
-    def test_child_has_content(self, cat):
-        """append_child() sets text content when node_content is provided."""
-        result = cat.append_child("/*/metadata", "remarks", "My remarks")
-        assert result.text == "My remarks"
+    def test_creates_list_when_absent(self, cat):
+        """append_child() creates the target list when the key does not exist."""
+        cat.append_child("metadata/props", {"name": "x", "value": "y"})
+        assert "props" in cat._dict["catalog"]["metadata"]
 
-    def test_child_with_attributes(self, cat):
-        """append_child() applies attribute_list entries to the new element."""
-        result = cat.append_child("/*/metadata", "link",
-                                  attribute_list={"href": "https://example.com", "rel": "reference"})
-        assert result is not None
-        assert result.get("href") == "https://example.com"
-        assert result.get("rel") == "reference"
+    def test_multiple_appends_ordered(self, cat):
+        """append_child() preserves insertion order across multiple calls."""
+        cat.append_child("metadata/props", {"name": "a", "value": "1"})
+        cat.append_child("metadata/props", {"name": "b", "value": "2"})
+        props = cat._dict["catalog"]["metadata"]["props"]
+        assert props[0]["name"] == "a"
+        assert props[1]["name"] == "b"
 
-    def test_bad_xpath_returns_none(self, cat):
-        """append_child() returns None when the parent XPath has no match."""
-        result = cat.append_child("//nonexistent-parent-xyz", "remarks")
+    def test_bad_path_returns_none(self, cat):
+        """append_child() returns None when an intermediate path key is missing."""
+        result = cat.append_child("nonexistent/props", {"name": "x", "value": "y"})
+        assert result is None
+
+    def test_leaf_not_list_returns_none(self, cat):
+        """append_child() returns None when the leaf key holds a non-list value."""
+        cat._dict["catalog"]["metadata"]["title"] = "scalar"
+        result = cat.append_child("metadata/title", {"name": "x", "value": "y"})
         assert result is None
 
     def test_marks_content_modified(self, cat):
         """append_child() marks the object as having unsaved changes."""
-        cat.append_child("/*/metadata", "remarks", "test")
+        cat.append_child("metadata/props", {"name": "x", "value": "y"})
         assert cat.is_unsaved is True
 
-
-# ===========================================================================
-# OSCAL.assign_html_string_to_node()
-# ===========================================================================
-class TestAssignHtmlStringToNode:
-
-    def test_plain_text_assigned(self, cat):
-        """assign_html_string_to_node() puts plain text into the node."""
-        node = ElementTree.Element("remarks")
-        cat.assign_html_string_to_node(node, "Simple text")
-        assert node.text == "Simple text"
-
-    def test_html_tag_appended_as_child(self, cat):
-        """assign_html_string_to_node() appends HTML elements as children."""
-        node = ElementTree.Element("remarks")
-        cat.assign_html_string_to_node(node, "<p>Hello</p>")
-        children = list(node)
-        assert len(children) > 0
-        assert children[0].tag == "p"
-
-    def test_multiple_html_elements(self, cat):
-        """assign_html_string_to_node() handles multiple child elements."""
-        node = ElementTree.Element("remarks")
-        cat.assign_html_string_to_node(node, "<p>First</p><p>Second</p>")
-        children = list(node)
-        assert len(children) == 2
-
-    def test_malformed_html_does_not_raise(self, cat):
-        """assign_html_string_to_node() should not raise on broken HTML."""
-        node = ElementTree.Element("remarks")
-        try:
-            cat.assign_html_string_to_node(node, "<p>Unclosed")
-        except Exception:
-            pytest.fail("assign_html_string_to_node raised on malformed HTML")
+    def test_no_dict_returns_none(self, cat):
+        """append_child() returns None when _dict is None."""
+        cat._dict = None
+        result = cat.append_child("metadata/props", {"name": "x", "value": "y"})
+        assert result is None
 
 
 # ===========================================================================
@@ -149,51 +175,78 @@ class TestAssignHtmlStringToNode:
 # ===========================================================================
 class TestAppendPropFunctions:
 
-    def test_append_prop_adds_child(self):
-        """append_prop() adds a <prop> child to the parent element."""
-        parent = ElementTree.Element("control")
+    def test_append_prop_adds_entry(self):
+        """append_prop() adds a prop dict to parent['props']."""
+        parent = {}
         append_prop(parent, {"name": "label", "value": "AC-1"})
-        children = list(parent)
-        assert len(children) == 1
-        assert "prop" in children[0].tag
+        assert "props" in parent
+        assert len(parent["props"]) == 1
 
     def test_append_prop_sets_name_and_value(self):
-        """append_prop() sets name and value attributes."""
-        parent = ElementTree.Element("control")
+        """append_prop() copies name and value into the entry."""
+        parent = {}
         append_prop(parent, {"name": "label", "value": "AC-1"})
-        prop = list(parent)[0]
-        assert prop.get("name") == "label"
-        assert prop.get("value") == "AC-1"
+        entry = parent["props"][0]
+        assert entry["name"] == "label"
+        assert entry["value"] == "AC-1"
 
     def test_append_prop_optional_class(self):
-        """append_prop() sets optional class attribute when present."""
-        parent = ElementTree.Element("control")
+        """append_prop() copies optional class key when present."""
+        parent = {}
         append_prop(parent, {"name": "label", "value": "AC-1", "class": "sp800-53"})
-        prop = list(parent)[0]
-        assert prop.get("class") == "sp800-53"
+        assert parent["props"][0]["class"] == "sp800-53"
 
     def test_append_prop_optional_ns(self):
-        """append_prop() sets optional ns attribute."""
-        parent = ElementTree.Element("control")
+        """append_prop() copies optional ns key."""
+        parent = {}
         append_prop(parent, {"name": "label", "value": "AC-1",
                               "ns": "https://fedramp.gov/ns/oscal"})
-        prop = list(parent)[0]
-        assert prop.get("ns") == "https://fedramp.gov/ns/oscal"
+        assert parent["props"][0]["ns"] == "https://fedramp.gov/ns/oscal"
+
+    def test_append_prop_optional_group(self):
+        """append_prop() copies optional group key."""
+        parent = {}
+        append_prop(parent, {"name": "label", "value": "AC-1", "group": "access"})
+        assert parent["props"][0]["group"] == "access"
+
+    def test_append_prop_optional_remarks(self):
+        """append_prop() copies remarks as a plain string."""
+        parent = {}
+        append_prop(parent, {"name": "label", "value": "AC-1", "remarks": "Note"})
+        assert parent["props"][0]["remarks"] == "Note"
+
+    def test_append_prop_unknown_keys_excluded(self):
+        """append_prop() does not copy unrecognised keys."""
+        parent = {}
+        append_prop(parent, {"name": "x", "value": "y", "foo": "bar"})
+        assert "foo" not in parent["props"][0]
+
+    def test_append_prop_returns_entry(self):
+        """append_prop() returns the appended dict."""
+        parent = {}
+        result = append_prop(parent, {"name": "x", "value": "y"})
+        assert result is parent["props"][0]
 
     def test_append_props_adds_multiple(self):
-        """append_props() adds one <prop> per entry in the list."""
-        parent = ElementTree.Element("control")
+        """append_props() adds one entry per item in the list."""
+        parent = {}
         append_props(parent, [
             {"name": "label", "value": "AC-1"},
             {"name": "sort-id", "value": "ac-01"},
         ])
-        assert len(list(parent)) == 2
+        assert len(parent["props"]) == 2
 
     def test_append_props_empty_list_no_crash(self):
-        """append_props([]) must not raise."""
-        parent = ElementTree.Element("control")
+        """append_props([]) must not raise and leaves props absent."""
+        parent = {}
         append_props(parent, [])
-        assert len(list(parent)) == 0
+        assert "props" not in parent
+
+    def test_append_props_extends_existing_list(self):
+        """append_props() appends to an already-populated props list."""
+        parent = {"props": [{"name": "existing", "value": "v"}]}
+        append_props(parent, [{"name": "new", "value": "n"}])
+        assert len(parent["props"]) == 2
 
 
 # ===========================================================================
@@ -201,51 +254,75 @@ class TestAppendPropFunctions:
 # ===========================================================================
 class TestAppendLinkFunctions:
 
-    def test_append_link_adds_child(self):
-        """append_link() adds a <link> child to the parent element."""
-        parent = ElementTree.Element("control")
+    def test_append_link_adds_entry(self):
+        """append_link() adds a link dict to parent['links']."""
+        parent = {}
         append_link(parent, {"href": "https://example.com"})
-        children = list(parent)
-        assert len(children) == 1
-        assert "link" in children[0].tag
+        assert "links" in parent
+        assert len(parent["links"]) == 1
 
     def test_append_link_sets_href(self):
-        """append_link() sets the href attribute."""
-        parent = ElementTree.Element("control")
+        """append_link() copies href into the entry."""
+        parent = {}
         append_link(parent, {"href": "https://example.com"})
-        link = list(parent)[0]
-        assert link.get("href") == "https://example.com"
+        assert parent["links"][0]["href"] == "https://example.com"
 
     def test_append_link_optional_rel(self):
-        """append_link() sets rel attribute when present."""
-        parent = ElementTree.Element("control")
+        """append_link() copies rel when present."""
+        parent = {}
         append_link(parent, {"href": "https://example.com", "rel": "reference"})
-        link = list(parent)[0]
-        assert link.get("rel") == "reference"
+        assert parent["links"][0]["rel"] == "reference"
+
+    def test_append_link_optional_media_type(self):
+        """append_link() copies media-type when present."""
+        parent = {}
+        append_link(parent, {"href": "https://example.com", "media-type": "text/html"})
+        assert parent["links"][0]["media-type"] == "text/html"
 
     def test_append_link_optional_text(self):
-        """append_link() adds a <text> child when text is provided."""
-        parent = ElementTree.Element("control")
+        """append_link() copies text when present."""
+        parent = {}
         append_link(parent, {"href": "https://example.com", "text": "More info"})
-        link = list(parent)[0]
-        text_children = [c for c in link if "text" in c.tag]
-        assert len(text_children) == 1
-        assert text_children[0].text == "More info"
+        assert parent["links"][0]["text"] == "More info"
+
+    def test_append_link_optional_resource_fragment(self):
+        """append_link() copies resource-fragment when present."""
+        parent = {}
+        append_link(parent, {"href": "#abc", "resource-fragment": "section-1"})
+        assert parent["links"][0]["resource-fragment"] == "section-1"
+
+    def test_append_link_unknown_keys_excluded(self):
+        """append_link() does not copy unrecognised keys."""
+        parent = {}
+        append_link(parent, {"href": "x", "foo": "bar"})
+        assert "foo" not in parent["links"][0]
+
+    def test_append_link_returns_entry(self):
+        """append_link() returns the appended dict."""
+        parent = {}
+        result = append_link(parent, {"href": "https://example.com"})
+        assert result is parent["links"][0]
 
     def test_append_links_adds_multiple(self):
-        """append_links() adds one <link> per entry."""
-        parent = ElementTree.Element("control")
+        """append_links() adds one entry per item."""
+        parent = {}
         append_links(parent, [
             {"href": "https://one.example.com"},
             {"href": "https://two.example.com"},
         ])
-        assert len(list(parent)) == 2
+        assert len(parent["links"]) == 2
 
     def test_append_links_empty_list_no_crash(self):
         """append_links([]) must not raise."""
-        parent = ElementTree.Element("control")
+        parent = {}
         append_links(parent, [])
-        assert len(list(parent)) == 0
+        assert "links" not in parent
+
+    def test_append_links_extends_existing_list(self):
+        """append_links() appends to an already-populated links list."""
+        parent = {"links": [{"href": "https://existing.com"}]}
+        append_links(parent, [{"href": "https://new.com"}])
+        assert len(parent["links"]) == 2
 
 
 # ===========================================================================
@@ -253,47 +330,80 @@ class TestAppendLinkFunctions:
 # ===========================================================================
 class TestAppendResourceFunction:
 
-    def test_returns_element(self, cat):
-        """Module-level append_resource() returns an Element."""
+    def test_returns_dict(self, cat):
+        """Module-level append_resource() returns a dict."""
         result = append_resource(cat, title="Test Resource",
                                  description="A test resource")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
     def test_resource_has_uuid(self, cat):
-        """append_resource() assigns a UUID to the resource element."""
+        """append_resource() assigns a UUID when none is supplied."""
         result = append_resource(cat, title="UUID Test")
-        assert result.get("uuid") != ""
+        assert result.get("uuid") not in (None, "")
 
     def test_resource_explicit_uuid(self, cat):
-        """append_resource() uses the provided UUID when given."""
+        """append_resource() uses the provided UUID."""
         uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         result = append_resource(cat, uuid=uuid, title="Explicit UUID")
-        assert result.get("uuid") == uuid
+        assert result["uuid"] == uuid
 
     def test_resource_has_title(self, cat):
-        """append_resource() includes a <title> child."""
+        """append_resource() sets the title key."""
         result = append_resource(cat, title="My Resource")
-        title_nodes = [c for c in result if "title" in c.tag]
-        assert len(title_nodes) == 1
-        assert title_nodes[0].text == "My Resource"
+        assert result["title"] == "My Resource"
 
     def test_resource_has_description(self, cat):
-        """append_resource() includes a <description> child."""
+        """append_resource() sets the description key."""
         result = append_resource(cat, description="A description")
-        desc_nodes = [c for c in result if "description" in c.tag]
-        assert len(desc_nodes) == 1
-
-    def test_instance_method_delegates_to_module_fn(self, cat):
-        """Instance append_resource() produces an Element via the module function."""
-        result = cat.append_resource(title="Instance Method Test")
-        assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert result["description"] == "A description"
 
     def test_resource_with_props(self, cat):
-        """append_resource() adds <prop> children from the props list."""
+        """append_resource() populates props via append_props."""
         result = append_resource(cat, title="With Props",
                                  props=[{"name": "type", "value": "document"}])
-        prop_nodes = [c for c in result if "prop" in c.tag]
-        assert len(prop_nodes) == 1
-        assert prop_nodes[0].get("name") == "type"
+        assert result["props"][0]["name"] == "type"
+
+    def test_resource_with_rlinks(self, cat):
+        """append_resource() copies rlinks preserving href and media-type."""
+        result = append_resource(
+            cat, title="With Rlinks",
+            rlinks=[{"href": "/docs/plan.pdf", "media-type": "application/pdf"}]
+        )
+        assert result["rlinks"][0]["href"] == "/docs/plan.pdf"
+        assert result["rlinks"][0]["media-type"] == "application/pdf"
+
+    def test_resource_with_remarks(self, cat):
+        """append_resource() stores remarks as a plain markdown string."""
+        result = append_resource(cat, title="With Remarks", remarks="See also: policy.")
+        assert result["remarks"] == "See also: policy."
+
+    def test_resource_appended_to_back_matter(self, cat):
+        """append_resource() places the resource in back-matter/resources."""
+        append_resource(cat, title="Resource A")
+        resources = cat._dict["catalog"]["back-matter"]["resources"]
+        assert any(r["title"] == "Resource A" for r in resources)
+
+    def test_multiple_resources_accumulate(self, cat):
+        """Multiple append_resource() calls accumulate in the resources list."""
+        append_resource(cat, title="Resource A")
+        append_resource(cat, title="Resource B")
+        resources = cat._dict["catalog"]["back-matter"]["resources"]
+        assert len(resources) == 2
+
+    def test_instance_method_returns_dict(self, cat):
+        """Instance append_resource() returns a dict via the module function."""
+        result = cat.append_resource(title="Instance Method Test")
+        assert result is not None
+        assert isinstance(result, dict)
+
+    def test_instance_method_marks_modified(self, cat):
+        """Instance append_resource() marks the object as having unsaved changes."""
+        cat.append_resource(title="Modified")
+        assert cat.is_unsaved is True
+
+    def test_no_dict_returns_none(self, cat):
+        """Module-level append_resource() returns None when _dict is None."""
+        cat._dict = None
+        result = append_resource(cat, title="Should Fail")
+        assert result is None

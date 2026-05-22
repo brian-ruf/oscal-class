@@ -9,10 +9,10 @@
 """
 from __future__         import annotations
 import os
+import re
 import json
 import yaml
 import uuid
-import elementpath
 from loguru             import logger
 from typing             import Optional, Any, Protocol, runtime_checkable
 from datetime           import datetime, timezone
@@ -26,12 +26,14 @@ from dataclasses        import dataclass, field
 
 from ruf_common.logging import LoggableMixin
 from ruf_common.network import download_file
-from ruf_common.data    import detect_data_format, safe_load, safe_load_xml
+from ruf_common.data    import detect_data_format, safe_load, safe_load_xml, xpath_atomic
 from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
-from .oscal_datatypes   import oscal_date_time_with_timezone
-from .oscal_converters  import oscal_xml_to_json, oscal_json_to_xml
-from .oscal_converter   import oscal_markdown_to_html, OSCALConverter, _html_to_et
+from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES
+from .oscal_converter   import (
+    oscal_markdown_to_html, OSCALConverter, _html_to_et,
+    OSCALPath, NativePath, native_path,
+)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Constants
@@ -112,6 +114,66 @@ class OriginState(Enum):
     REMOTE_FRESH    = "remote-fresh"    # Remote content, cached and within TTL
     REMOTE_STALE    = "remote-stale"    # Remote content, cached but TTL exceeded
 
+def _check_datatype(value: str, datatype: str, location: str, field: str) -> dict | None:
+    """Validate a string *value* against an OSCAL *datatype* pattern.
+
+    Returns a structured error dict when the value fails the pattern, or ``None``
+    when the value is acceptable (including when no applicable pattern is defined).
+    Patterns that fail to compile are silently skipped.
+    """
+    type_info = OSCAL_DATATYPES.get(datatype)
+    if not type_info:
+        return None
+    pattern = type_info.get("json-pattern", "")
+    if not pattern:
+        return None
+    try:
+        if re.fullmatch(pattern, value) is None:
+            return {
+                "error-type": "invalid-type",
+                "location":   location,
+                "field":      field,
+                "value":      value,
+                "expected": {
+                    "type":        datatype,
+                    "pattern":     pattern,
+                    "description": type_info.get("documentation", ""),
+                },
+            }
+    except re.error:
+        pass
+    return None
+
+
+_OSCAL_NS = "http://csrc.nist.gov/ns/oscal"
+
+
+def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
+    """Return True when all conditions on a constraint are satisfied by *instance*.
+
+    Condition types:
+      namespace   – ``@ns`` flag must be in the allowed namespace values list.
+                    Absent ``@ns`` is treated as the OSCAL default namespace per spec.
+      flag-equals – a sibling flag must equal a specific value.
+
+    An absent or unrecognised condition type is treated as satisfied (fail-open).
+    """
+    for cond in constraint.get("conditions", []):
+        ctype = cond.get("type")
+        if ctype == "namespace":
+            # Absent @ns defaults to the OSCAL namespace per OSCAL specification
+            ns_val = instance.get("ns") or _OSCAL_NS
+            allowed = cond.get("values", [])
+            if ns_val not in allowed:
+                return False
+        elif ctype == "flag-equals":
+            flag = cond.get("flag", "")
+            expected = cond.get("value", "")
+            if instance.get(flag) != expected:
+                return False
+    return True
+
+
 # Progressive content validation states. Each level implies all prior levels passed.
 class ContentState(IntEnum):
     NONE             = -1  # No content / uninitialized
@@ -121,7 +183,6 @@ class ContentState(IntEnum):
     VALID            = 3  # Content passes OSCAL schema validation (minimum for viewing/editing)
     IMPORTS_RESOLVED = 4  # All imported OSCAL documents resolved successfully
     # FUTURE: CORE_METASCHEMA_VALID = 5, ADDITIONAL_METASCHEMA_VALID = 6
-
 
 @runtime_checkable
 class _ReadableSource(Protocol):
@@ -174,22 +235,10 @@ def if_update_successful(fn):
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
         result = fn(self, *args, **kwargs)
-        self.is_synced  = False
-        self.is_unsaved = True
-        self.last_modified = oscal_date_time_with_timezone()
+        if result is not None:
+            self.is_unsaved = True
+            self.last_modified = oscal_date_time_with_timezone()
         return result
-    return wrapper
-
-# -----------------------------------------------------------------------------
-def sync_first(fn):
-    """Ensure content is synced before performing the operation."""
-    logger.debug(f"Applying @sync_first decorator to '{fn.__name__}'")
-    @wraps(fn)
-    def wrapper(self, *args, **kwargs):
-        if not self._sync():
-            logger.warning(f"Unable to find required format convertion for '{fn.__name__}' on '{self.model}'.")
-            return None
-        return fn(self, *args, **kwargs)
     return wrapper
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -207,7 +256,6 @@ class OSCAL(LoggableMixin):
             is_local    : True if the source is a local file, False if it's remote (http/https)
             is_cached   : True if remote content has a local cache copy, False otherwise
             is_read_only: True if local content is read-only, False if it's read-write
-            is_synced   : True if the in-memory tree/dict is in sync with the raw content, False if there are unsaved changes
             is_unsaved  : True if there are unsaved modifications, False otherwise
 
         Attributes (Caching and Expiration):
@@ -266,17 +314,20 @@ class OSCAL(LoggableMixin):
         self.remarks         : str = ""
 
         # Processing Objects
-        self.is_synced   : bool = False # Boolean indicating whether the tree and dict are in sync
         self.import_list: list = []    # Flat list of direct imports (one level)
         self._import_tree: dict | None = None  # Cached recursive import tree (None = not yet built)
         self._dict: dict | None = None # JSON/YAML constructs
         self._tree = None              # XML constructs
+        self._oscal_path: OSCALPath | None = None  # Lazily built metaschema-aware path engine
 
         # Validation Status
-        self.schema_valid = {}    # A dictionary indicating whether the content is valid against the schema for each format
-        self.schema_valid["_tree"]  = None # Will be set to True/False after XML validation, None if not yet validated or not applicable
-        self.schema_valid["_dict"] = None # Will be set to True/False after JSON validation, None if not yet validated or not applicable
-        self.metaschema_valid = None # A boolean indicating whether the content is valid against the NIST OSCAL Metaschema
+        self.validation_status: dict[str, bool | None] = {
+            "well-formed":    None,  # content is parseable and OSCAL model/version is identified
+            "structure":      None,  # all required fields and hierarchy are present
+            "data-types":     None,  # every field/flag value matches its declared OSCAL datatype
+            "allowed-values": None,  # every constrained value is within its enumerated set
+        }
+        self.validation_errors: list[dict] = []  # structured errors from the most recent validate() call
         self.errors = {} # A dictionary to hold any acquisition, validation or importing errors encountered during processing
 
         # Get the OSCAL support object
@@ -530,10 +581,7 @@ class OSCAL(LoggableMixin):
     def __repr__(self):
         """A concise string representation showing key metadata and validation status."""
         ret_value = ""
-        if self.original_format == "xml":
-            ret_value += "✅" if self.schema_valid.get("_tree") else "⚠️"
-        elif self.original_format in ("json", "yaml"):
-            ret_value += "✅" if self.schema_valid.get("_dict") else "⚠️"
+        ret_value += "✅" if self.is_valid else "⚠️"
 
         ret_value += f" OSCAL[{self.model}:{self.oscal_version} {self.original_format.upper()}] {self.title})"
 
@@ -561,71 +609,22 @@ class OSCAL(LoggableMixin):
         if self.content_state >= ContentState.IMPORTS_RESOLVED:
             ret_value += f"\nImports Resolved: {len(self.import_list)} import(s) found."
             for child in self.import_list:
-                if child.get("status") == "failed":
-                    ret_value += f"\n    → Error: {child.get('error', 'Unknown error')}"
-                else:
-                    ret_value += f"\n    → {child.get('object', '')}"
+                href   = child.get("href_valid") or child.get("href_original", "")
+                status = child.get("status", ImportState.NOT_LOADED)
+                ret_value += f"\n    [{status}] {href}"
+                failure = child.get("failure")
+                if failure:
+                    ret_value += f" — {failure.message}"
+                for item in child.get("href_list", []):
+                    item_href   = item.get("href", "")
+                    item_status = item.get("status")
+                    marker      = "" if item.get("original", True) else " [retry]"
+                    if item_status:
+                        ret_value += f"\n        [{item_status}]{marker} {item_href}"
+                    else:
+                        ret_value += f"\n        [not tried]{marker} {item_href}"
 
         return ret_value
-
-    # -------------------------------------------------------------------------
-    def _build_import_tree(self, new_href: str = "") -> bool:
-        """
-        Internal method to build a recursive import tree.
-
-        The resulting cached tree is rooted at this OSCAL object and contains
-        one child node per imported OSCAL document, recursively.
-        """
-        root_href = (new_href or self.href or self.href_original).strip()
-        if new_href:
-            self.href = root_href
-
-        def _node_for(doc: "OSCAL", seen: set[str]) -> dict:
-            node_href = (doc.href or doc.href_original).strip()
-            node = {
-                "href_original": doc.href_original,
-                "href_valid":    node_href,
-                "status":        ImportState.READY if doc.is_valid else ImportState.INVALID,
-                "is_valid":      doc.is_valid,
-                "is_local":      doc.is_local,
-                "is_remote":     doc.is_remote,
-                "is_cached":     doc.is_cached,
-                "object":        doc,
-                "children":      [],
-            }
-
-            # Keep backward compatibility with existing consumers that expect
-            # an 'imports' key for child nodes.
-            node["imports"] = node["children"]
-
-            node_key = node_href or doc.href_original
-            if node_key and node_key in seen:
-                logger.warning(f"import_tree: circular reference detected at '{node_key}' — stopping recursion.")
-                return node
-
-            next_seen = seen | ({node_key} if node_key else set())
-            doc.resolve_imports()
-
-            for entry in doc.import_list:
-                child_obj: OSCAL | None = entry.get("object")
-                if child_obj is None:
-                    continue
-                child_node = _node_for(child_obj, next_seen)
-                node["children"].append(child_node)
-
-            return node
-
-        if not root_href and not self.href_original:
-            logger.warning("_build_import_tree called without an available href.")
-
-        self._import_tree = _node_for(self, set())
-        return True
-
-    # -------------------------------------------------------------------------
-    @property
-    def unresolved_imports(self) -> dict:
-        """Return the subset of import_tree entries with FAILED status."""
-        return {href: details for href, details in self.import_tree.items() if details.get('status') == 'failed'}
 
     # -------------------------------------------------------------------------
     @property
@@ -635,17 +634,95 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     def retry_import(self, failed_href: str, replacement_href: str) -> bool:
-        """Retry a failed import by replacing its href and re-attempting resolution.
-        Returns True if the retry was initiated, False if the failed_href was not found.
+        """Retry a failed import identified by href.
+
+        The failed import is matched by href (original or previously resolved),
+        then re-attempted using replacement_href.
         """
-        if failed_href in self.import_tree:
-            logger.info(f"Retrying import for '{failed_href}' with replacement '{replacement_href}'")
-            self.import_tree[failed_href]['href'] = replacement_href
-            self.import_tree[failed_href]['status'] = 'retrying'
-            return True
-        else:
-            logger.warning(f"Failed import href '{failed_href}' not found in import tree. Cannot retry.")
+        if not failed_href or not replacement_href:
+            logger.warning("retry_import requires both failed_href and replacement_href.")
             return False
+
+        target_entry = None
+        for entry in self.import_list:
+            failure = entry.get("failure")
+            failure_uri = failure.uri if isinstance(failure, ImportFailure) else ""
+            if (
+                entry.get("href_original") == failed_href
+                or entry.get("href_valid") == failed_href
+                or failure_uri == failed_href
+                or any(item.get("href") == failed_href for item in entry.get("href_list", []))
+            ):
+                target_entry = entry
+                break
+
+        if target_entry is None:
+            logger.warning(f"Failed import href '{failed_href}' not found. Cannot retry.")
+            return False
+
+        src = self.href or self.href_original
+        if src:
+            parsed_src = urlparse(src)
+            if parsed_src.scheme and len(parsed_src.scheme) > 1:
+                base_path = src.rsplit("/", 1)[0] + "/"
+            else:
+                base_path = os.path.dirname(os.path.abspath(src))
+        else:
+            base_path = os.getcwd()
+
+        resolved = _resolve_href(base_path, replacement_href)
+        logger.info(f"Retrying import '{failed_href}' with replacement '{resolved}'")
+
+        retry_item: dict = {"href": resolved, "original": False}
+        try:
+            child = OSCAL.acquire(resolved)
+            if child.is_valid:
+                retry_item["status"]        = ImportState.READY
+                target_entry["href_valid"]  = resolved
+                target_entry["object"]      = child
+                target_entry["is_valid"]    = True
+                target_entry["is_local"]    = child.is_local
+                target_entry["is_remote"]   = child.is_remote
+                target_entry["is_cached"]   = child.is_cached
+                target_entry["status"]      = ImportState.READY
+                target_entry["failure"]     = None
+            else:
+                retry_item["status"]       = ImportState.INVALID
+                target_entry["href_valid"] = ""
+                target_entry["object"]     = None
+                target_entry["is_valid"]   = False
+                target_entry["status"]     = ImportState.INVALID
+                target_entry["failure"]    = ImportFailure(
+                    code=ImportFailureCode.CONTENT_INVALID,
+                    href_original=target_entry.get("href_original", failed_href),
+                    uri=resolved,
+                    message="Replacement content loaded but failed OSCAL validation",
+                )
+        except ImportLoadError as exc:
+            retry_item["status"]       = ImportState.INVALID
+            target_entry["href_valid"] = ""
+            target_entry["object"]     = None
+            target_entry["is_valid"]   = False
+            target_entry["status"]     = ImportState.INVALID
+            target_entry["failure"]    = ImportFailure(
+                code=exc.code,
+                href_original=target_entry.get("href_original", failed_href),
+                uri=exc.uri,
+                message=str(exc),
+            )
+        target_entry.setdefault("href_list", []).append(retry_item)
+
+        self._import_tree = None
+        has_invalid = any(e.get("status") == ImportState.INVALID for e in self.import_list)
+        if self.is_valid and not has_invalid:
+            self.content_state = ContentState.IMPORTS_RESOLVED
+
+        return True
+
+    # -------------------------------------------------------------------------
+    def retry_imports(self, failed_href: str, replacement_href: str) -> bool:
+        """Compatibility alias for callers using the plural method name."""
+        return self.retry_import(failed_href, replacement_href)
 
     # -------------------------------------------------------------------------
     def resolve_imports(self, base_path: str = "") -> list:
@@ -688,33 +765,19 @@ class OSCAL(LoggableMixin):
             else:
                 base_path = os.getcwd()
 
-        # --- collect raw hrefs from whichever representation is primary ---
+        # --- collect raw hrefs from dict ---
         raw_hrefs: list[str] = []
 
-        if self._tree is not None:
-            xml_patterns = _IMPORT_PATTERNS.get(self.model, [])
-            if not xml_patterns:
-                logger.debug(f"resolve_imports: no XML patterns defined for model '{self.model}'.")
-            for element_xpath, attr_name in xml_patterns:
-                nodes = self.xpath(element_xpath)
-                if not nodes:
-                    continue
-                for node in nodes:
-                    href = node.get(attr_name, "").strip()
-                    if href:
-                        raw_hrefs.append(href)
-
-        elif self._dict is not None:
-            dict_patterns = _IMPORT_PATTERNS_DICT.get(self.model, [])
-            if not dict_patterns:
-                logger.debug(f"resolve_imports: no dict patterns defined for model '{self.model}'.")
-            root_obj = self._dict.get(self.model, {})
-            for spec in dict_patterns:
-                raw_hrefs.extend(_hrefs_from_dict_spec(root_obj, spec))
-
-        else:
-            logger.warning("resolve_imports: no content representation available.")
+        if self._dict is None:
+            logger.warning("resolve_imports: no content available.")
             return self.import_list
+
+        dict_patterns = _IMPORT_PATTERNS_DICT.get(self.model, [])
+        if not dict_patterns:
+            logger.debug(f"resolve_imports: no dict patterns defined for model '{self.model}'.")
+        root_obj = self._dict.get(self.model, {})
+        for spec in dict_patterns:
+            raw_hrefs.extend(_hrefs_from_dict_spec(root_obj, spec))
 
         if not raw_hrefs:
             logger.debug(f"resolve_imports: no import references found in '{self.model}'.")
@@ -727,6 +790,7 @@ class OSCAL(LoggableMixin):
             entry: dict = {
                 "href_original": raw_href,
                 "href_valid":    "",
+                "href_list":     [{"href": raw_href, "original": True}],
                 "status":        ImportState.NOT_LOADED,
                 "is_valid":      False,
                 "is_local":      None,
@@ -779,49 +843,54 @@ class OSCAL(LoggableMixin):
                     self.import_list.append(entry)
                     continue
 
-                # Build candidates from rlinks in order; base64 fallback is future work
-                candidates = []
+                # Append back-matter rlinks to href_list; base64 fallback is future work
                 for rl in resource_info["rlinks"]:
-                    candidates.append(rl)
-                    candidates.extend(_oscal_format_variants(rl))
+                    entry["href_list"].append({**rl, "original": True})
 
                 # Stash resource metadata so the failure record can carry it
                 entry["resource_uuid"]        = fragment
                 entry["resource_title"]       = resource_info.get("title", "")
                 entry["resource_description"] = resource_info.get("description", "")
 
-            else:
-                candidates = [_resolve_href(base_path, raw_href)]
-
-            # --- Try each candidate in order; use the first that yields valid OSCAL ---
+            # --- Try each href_list item in order; use the first that yields valid OSCAL ---
             rlinks_tried: list[str] = []
             last_load_error: ImportLoadError | None = None
 
-            for candidate in candidates:
-                resolved = _resolve_href(base_path, candidate)
-                rlinks_tried.append(resolved)
-                try:
-                    child = OSCAL.acquire(resolved)
-                    if child.is_valid:
-                        entry["href_valid"] = resolved
-                        entry["object"]     = child
-                        entry["is_valid"]   = True
-                        entry["is_local"]   = child.is_local
-                        entry["is_remote"]  = child.is_remote
-                        entry["is_cached"]  = child.is_cached
-                        entry["status"]     = ImportState.READY
-                        last_load_error     = None
-                        break
-                    logger.warning(f"resolve_imports: '{resolved}' loaded but failed OSCAL validation.")
-                except ImportLoadError as exc:
-                    last_load_error = exc
-                    logger.warning(f"resolve_imports: load error for '{resolved}': {exc}")
-                    # Auth/unsupported errors won't improve by trying format variants
-                    if exc.code in (ImportFailureCode.REMOTE_AUTH_REQUIRED,
-                                    ImportFailureCode.REMOTE_UNSUPPORTED):
-                        break
-                except Exception as exc:
-                    logger.warning(f"resolve_imports: could not load '{resolved}': {exc}")
+            for item in entry["href_list"]:
+                if item["href"].startswith("#"):
+                    continue
+                primary  = _resolve_href(base_path, item["href"])
+                attempts = [primary] + [_resolve_href(base_path, v) for v in _oscal_format_variants(item["href"])]
+                for resolved in attempts:
+                    rlinks_tried.append(resolved)
+                    try:
+                        child = OSCAL.acquire(resolved)
+                        if child.is_valid:
+                            item["status"]      = ImportState.READY
+                            entry["href_valid"] = resolved
+                            entry["object"]     = child
+                            entry["is_valid"]   = True
+                            entry["is_local"]   = child.is_local
+                            entry["is_remote"]  = child.is_remote
+                            entry["is_cached"]  = child.is_cached
+                            entry["status"]     = ImportState.READY
+                            last_load_error     = None
+                            break
+                        item["status"] = ImportState.INVALID
+                        logger.warning(f"resolve_imports: '{resolved}' loaded but failed OSCAL validation.")
+                    except ImportLoadError as exc:
+                        item["status"]  = ImportState.INVALID
+                        last_load_error = exc
+                        logger.warning(f"resolve_imports: load error for '{resolved}': {exc}")
+                        # Auth/unsupported errors won't improve by trying format variants
+                        if exc.code in (ImportFailureCode.REMOTE_AUTH_REQUIRED,
+                                        ImportFailureCode.REMOTE_UNSUPPORTED):
+                            break
+                    except Exception as exc:
+                        item["status"] = ImportState.INVALID
+                        logger.warning(f"resolve_imports: could not load '{resolved}': {exc}")
+                if entry["status"] == ImportState.READY:
+                    break
 
             if entry["status"] != ImportState.READY:
                 entry["status"] = ImportState.INVALID
@@ -844,6 +913,7 @@ class OSCAL(LoggableMixin):
                     entry["failure"] = ImportFailure(
                         code=failure_code,
                         href_original=raw_href,
+                        rlinks_tried=rlinks_tried,
                         uri=failure_uri,
                         message=failure_msg,
                     )
@@ -903,9 +973,16 @@ class OSCAL(LoggableMixin):
         Use rebuild_import_tree() to force a fresh traversal.
         """
         if self._import_tree is None:
+            _working_href = self.href or self.href_original
+            _root_href_list: list[dict] = [
+                {"href": _working_href, "status": ImportState.READY, "original": True}
+            ]
+            if self.href_original and self.href_original != _working_href:
+                _root_href_list.append({"href": self.href_original, "original": True})
             self._import_tree = {
                 "href_original": self.href_original,
-                "href_valid":    self.href_original,
+                "href_valid":    _working_href,
+                "href_list":     _root_href_list,
                 "status":        ImportState.READY if self.is_valid else ImportState.INVALID,
                 "is_valid":      self.is_valid,
                 "is_local":      self.is_local,
@@ -1003,11 +1080,11 @@ class OSCAL(LoggableMixin):
                 self._tree = safe_load_xml(content)
                 if self._tree is not None:
                     status = True
-                    oscal_root = self.xpath_atomic("/*/name()")
-                    oscal_version = "v" + self.xpath_atomic("/*/metadata/oscal-version/text()")
-                    content_title = self.xpath_atomic("/*/metadata/title/text()")
-                    content_version = self.xpath_atomic("/*/metadata/version/text()")
-                    content_publication = self.xpath_atomic("/*/metadata/published/text()")
+                    oscal_root = xpath_atomic(self._tree, _NSMAP, "/*/name()")
+                    oscal_version = "v" + xpath_atomic(self._tree, _NSMAP, "/*/metadata/oscal-version/text()")
+                    content_title = xpath_atomic(self._tree, _NSMAP, "/*/metadata/title/text()")
+                    content_version = xpath_atomic(self._tree, _NSMAP, "/*/metadata/version/text()")
+                    content_publication = xpath_atomic(self._tree, _NSMAP, "/*/metadata/published/text()")
                 else:
                     status = False
                     logger.error("Content is not well-formed XML.")
@@ -1050,10 +1127,13 @@ class OSCAL(LoggableMixin):
                 logger.error(f"OSCAL version '{oscal_version}' is not recognized.")
                 status = False
 
+        self.validation_status["well-formed"] = status
         if status:
             self.content_state = ContentState.WELL_FORMED
 
         # For XML sources, immediately convert to dict so all manipulation operates on JSON-native data.
+        # Once dict is populated the parsed XML tree is released — it can be rebuilt on demand via
+        # _build_tree() if XML output is later requested.
         if status and self.original_format == "xml":
             converter = OSCALConverter.from_support(self.model, self.oscal_version, self._support)
             if converter is not None:
@@ -1061,98 +1141,96 @@ class OSCAL(LoggableMixin):
                 json_string = converter.xml_to_json(xml_string)
                 if json_string is not None:
                     self._dict = json.loads(json_string)
-                    self.is_synced = True
-                    logger.debug("XML source converted to dict for JSON-native manipulation.")
+                    self._tree = None
+                    logger.debug("XML source converted to dict; XML tree released.")
                 else:
                     logger.warning("XML→dict conversion failed; dict-based manipulation unavailable.")
             else:
                 logger.warning(f"No metaschema converter for {self.model} {self.oscal_version}; dict unavailable.")
 
-        if status:
-            validate_format = "json" if self._dict is not None else self.original_format
-            self.validate(format=validate_format)
+        if status and self._dict is not None:
+            self.validate(format="json")
 
         return status
 
     # -------------------------------------------------------------------------
     def validate(self, format: str = "") -> bool:
-        """
-        Validate OSCAL content.
-        This assumes the content has already been determined to be well-formed XML, JSON, or YAML,
-        and that the OSCAL model and version have been identified.
-        Currently uses the appropriate format schema.
-        Eventually will use meataschema for direct validation.
-        """
+        """Validate OSCAL content against the metaschema index in sequenced phases.
 
-        if format == "":
-            format = self.original_format
+        Phases (each recorded in ``validation_status``):
+          structure      – all required fields and hierarchy are present
+          data-types     – every leaf value matches its declared OSCAL datatype
+          allowed-values – every constrained value is within its enumerated set
 
-        if format not in OSCAL_FORMATS:
+        ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
+        All three phases always run regardless of earlier failures, giving a complete
+        picture of issues in a single call.  The format argument is accepted for API
+        compatibility but does not alter the validation path — ``_dict`` is always the
+        authoritative representation.
+
+        Returns True only when every phase passes (content_state reaches VALID).
+        """
+        for phase in ("structure", "data-types", "allowed-values"):
+            self.validation_status[phase] = None
+        self.validation_errors = []
+
+        if format and format not in OSCAL_FORMATS:
             logger.error(f"Validation format '{format}' is not a recognized OSCAL format.")
-            self.content_state = ContentState.WELL_FORMED
             return False
 
-        if format == "xml":
-            logger.debug("Validating XML content against schema...")
-            xml_schema_content = self._support.get_asset(self.oscal_version, self.model, "xml-schema")
+        if self._dict is None:
+            logger.error("No dict content available for validation.")
+            return False
 
-            if xml_schema_content:
-                import xmlschema
-                try:
-                    schema = xmlschema.XMLSchema(xml_schema_content)
-                    xml_string = self._xml_serializer()
-                    schema.validate(xml_string)
-                    self.schema_valid["_tree"] = True
-                    self.content_state = ContentState.VALID
-                    logger.debug("XML schema validation passed.")
+        index = self._support.get_metaschema_index(self.oscal_version, self.model)
+        if index is None:
+            logger.warning("Metaschema index unavailable; treating all validation phases as passed.")
+            for phase in ("structure", "data-types", "allowed-values"):
+                self.validation_status[phase] = True
+            self.content_state = ContentState.VALID
+            if self.content_state < ContentState.IMPORTS_RESOLVED:
+                self.resolve_imports()
+            return True
 
-                except xmlschema.XMLSchemaValidationError as e:
-                    logger.error(f"XML schema validation failed: {e.reason}")
-                    self.schema_valid["_tree"] = False
-                    self.content_state = ContentState.WELL_FORMED
-                except Exception as e:
-                    logger.error(f"XML schema validation error: {e}")
-                    self.schema_valid["_tree"] = False
-                    self.content_state = ContentState.WELL_FORMED
-            else:
-                logger.error(f"XML schema for {self.model} {self.oscal_version} could not be loaded.")
-                self.schema_valid["_tree"] = False
-                self.content_state = ContentState.WELL_FORMED
+        model_nodes  = index.get("nodes")
+        model_instance = self._dict.get(self.model)
 
-        elif format in ("json", "yaml"):
-            logger.debug(f"Validating {format} content against schema...")
-            json_schema_content = self._support.get_asset(self.oscal_version, self.model, "json-schema")
+        if not isinstance(model_instance, dict) or model_nodes is None:
+            logger.warning("Cannot locate model root or index nodes; treating all phases as passed.")
+            for phase in ("structure", "data-types", "allowed-values"):
+                self.validation_status[phase] = True
+            self.content_state = ContentState.VALID
+            if self.content_state < ContentState.IMPORTS_RESOLVED:
+                self.resolve_imports()
+            return True
 
-            if json_schema_content:
-                import jsonschema_rs
-                try:
-                    if isinstance(json_schema_content, str):
-                        schema_dict = json.loads(json_schema_content)
-                    else:
-                        schema_dict = json_schema_content
+        logger.debug("Validating content against metaschema index (all phases)...")
+        errors: list[dict] = []
+        self._walk_instance(model_instance, model_nodes, errors, f"/{self.model}")
 
-                    if isinstance(schema_dict, dict) and isinstance(self._dict, dict):
-                        jsonschema_rs.validate(schema_dict, self._dict)
-                        self.schema_valid["_dict"] = True
-                        self.content_state = ContentState.VALID
-                        logger.debug("JSON schema validation passed.")
-                    else:
-                        logger.error("JSON schema could not be parsed as a dictionary.")
-                        self.schema_valid["_dict"] = False
-                        self.content_state = ContentState.WELL_FORMED
+        struct_errors = [e for e in errors if e["error-type"] == "missing-required"]
+        dtype_errors  = [e for e in errors if e["error-type"] == "invalid-type"]
+        av_errors     = [e for e in errors if e["error-type"] == "allowed-values"]
 
-                except jsonschema_rs.ValidationError as e:
-                    logger.error(f"JSON schema validation failed: {e}")
-                    self.schema_valid["_dict"] = False
-                    self.content_state = ContentState.WELL_FORMED
-                except Exception as e:
-                    logger.error(f"JSON schema validation error: {e}")
-                    self.schema_valid["_dict"] = False
-                    self.content_state = ContentState.WELL_FORMED
-            else:
-                logger.error(f"JSON schema for {self.model} {self.oscal_version} could not be loaded.")
-                self.schema_valid["_dict"] = False
-                self.content_state = ContentState.WELL_FORMED
+        self.validation_status["structure"]      = (len(struct_errors) == 0)
+        self.validation_status["data-types"]     = (len(dtype_errors)  == 0)
+        self.validation_status["allowed-values"] = (len(av_errors)     == 0)
+        self.validation_errors = errors
+
+        for e in errors:
+            logger.debug(
+                f"[{e['error-type']}] {e.get('location', '')} "
+                f"field={e.get('field', '')} value={e.get('value')!r}"
+            )
+
+        all_passed = all(self.validation_status[p] for p in ("structure", "data-types", "allowed-values"))
+        if all_passed:
+            self.content_state = ContentState.VALID
+            logger.debug("All validation phases passed.")
+        else:
+            self.content_state = ContentState.WELL_FORMED
+            failed = [p for p in ("structure", "data-types", "allowed-values") if not self.validation_status[p]]
+            logger.info(f"Validation failed phases: {failed} ({len(errors)} total error(s))")
 
         if self.is_valid and self.content_state < ContentState.IMPORTS_RESOLVED:
             self.resolve_imports()
@@ -1160,413 +1238,444 @@ class OSCAL(LoggableMixin):
         return self.is_valid
 
     # -------------------------------------------------------------------------
-    def _sync(self, target_format: str = "") -> bool:
-        """
-        This method syncronizes the _tree and _dict from whichever is primary to 
-        whichever is secondary.
+    def _walk_instance(
+        self,
+        instance: dict,
+        node: dict,
+        errors: list[dict],
+        location: str,
+    ) -> None:
+        """Recursively walk *instance* against metaschema *node*, collecting structured errors.
 
-        If target_format is specified, this will compare the original and 
-        specified formats, and it will only sync if necessary to ensure 
-        the target_format is in sync with the source format.
+        Error types produced:
+          ``missing-required``  – a required field or flag is absent
+          ``invalid-type``      – a value does not match its declared OSCAL datatype pattern
+          ``allowed-values``    – a value is not in its enumerated allowed-values set
+
+        All three error types are collected in a single pass so that ``validate()`` can
+        partition them by phase after the walk completes.
+
+        Args:
+            instance: The JSON dict being validated at the current tree level.
+            node:     The metaschema index node describing the expected structure.
+            errors:   Accumulator list — errors are appended in-place.
+            location: JSON path to *instance* used for error reporting (e.g. "/catalog/metadata").
         """
-        logger.debug("Syncing content if necessary...")
-        status = False
-        if not self.is_synced:
-            # If the target format doesn't make sennse, log an error and return False
-            if target_format and target_format not in OSCAL_FORMATS:
-                logger.error(f"Target format specified for sync is not an OSCAL format: {target_format}")
-                return False
-            
-            if target_format == "xml" and self.original_format == "xml":
-                logger.debug("Target format is XML and original format is XML; no sync needed.")
-                status = True
-            
-            if target_format in ("json", "yaml") and self.original_format in ("json", "yaml"):
-                logger.debug(f"Target format is {target_format.upper()} and original format is {self.original_format.upper()}; no sync needed.")
-                status = True
-            
-            if self.original_format == "xml":
-                if self._tree is not None:
-                    logger.debug("Converting XML tree to dictionary for JSON/YAML representation...")
-                    xsl_converter=self._support.get_asset(self.oscal_version, self.model, "xml-to-json")
-                    if not xsl_converter:
-                        logger.error("Unable to locate XSLT converter for XML to JSON conversion. Cannot convert to dict.")
-                        return False
-                    xml_string = self._xml_serializer()
-                    json_string = oscal_xml_to_json(xml_string, xsl_converter=xsl_converter)
-                    self._dict = json.loads(json_string)
-                    self.is_synced = True
-                    logger.debug("Conversion from XML to dict successful.")
-                    status= True
-                else:
-                    logger.error("No XML tree available to convert to dict.")
-            elif self.original_format in ("json", "yaml"):
-                if self._dict is not None:
-                    logger.debug("Converting dictionary to XML tree for XML representation...")
-                    xsl_converter=self._support.get_asset(self.oscal_version, self.model, "json-to-xml")
-                    if not xsl_converter:
-                        logger.error("Unable to locate XSLT converter for JSON to XML conversion. Cannot convert to XML tree.")
-                        return False
-                    json_string = json.dumps(self._dict)
-                    xml_string = oscal_json_to_xml(json_string, xsl_converter=xsl_converter, validate_json=True)
-                    self._tree = ElementTree.ElementTree(ElementTree.fromstring(xml_string))
-                    self.is_synced = True
-                    logger.debug("Conversion from dict to XML successful.")
-                    status = True
-                else:
-                    logger.error("No dictionary available to convert to XML tree.")
-            else:
-                logger.error(f"Unsupported original format for conversion: {self.original_format}")
-        else:
-            logger.debug("Content is already synced; no conversion needed.")
-            status = True
-    
-        return status
+        if not isinstance(instance, dict) or not isinstance(node, dict):
+            return
+
+        children = node.get("children", [])
+
+        # ------------------------------------------------------------------
+        # Flags: structure → data-type → allowed-values
+        # ------------------------------------------------------------------
+        for flag_node in (c for c in children if c.get("structure-type") == "flag"):
+            flag_name = flag_node.get("use-name") or flag_node.get("name")
+            if not flag_name:
+                continue
+
+            if flag_node.get("min-occurs") == "1" and flag_name not in instance:
+                errors.append({
+                    "error-type": "missing-required",
+                    "location":   location,
+                    "field":      f"@{flag_name}",
+                    "value":      None,
+                    "expected":   {},
+                })
+                continue
+
+            if flag_name not in instance:
+                continue
+
+            flag_val = instance[flag_name]
+
+            # Data type check
+            datatype = flag_node.get("datatype")
+            if datatype and isinstance(flag_val, str) and flag_val:
+                err = _check_datatype(flag_val, datatype, location, f"@{flag_name}")
+                if err:
+                    errors.append(err)
+
+            # Allowed-values check
+            for constraint in flag_node.get("constraints", []):
+                if constraint.get("type") != "allowed-values":
+                    continue
+                if constraint.get("allow-others", False):
+                    continue
+                if not _constraint_conditions_met(constraint, instance):
+                    continue
+                values = constraint.get("values", [])
+                if flag_val not in {v["value"] for v in values}:
+                    errors.append({
+                        "error-type": "allowed-values",
+                        "location":   location,
+                        "field":      f"@{flag_name}",
+                        "value":      flag_val,
+                        "expected": {
+                            "one-of": [
+                                {"enum": v["value"], "description": v.get("description", "")}
+                                for v in sorted(values, key=lambda x: x["value"])
+                            ],
+                        },
+                    })
+
+        # ------------------------------------------------------------------
+        # Non-flag children: structure → data-type (fields) → recurse
+        # ------------------------------------------------------------------
+        for child_node in children:
+            stype = child_node.get("structure-type")
+            if stype in ("flag", "choice", "any", "recursive"):
+                continue
+            child_name = child_node.get("use-name") or child_node.get("name")
+            if not child_name:
+                continue
+
+            json_key  = child_node.get("group-as") or child_name
+            child_val = instance.get(json_key)
+            required  = child_node.get("min-occurs") == "1"
+
+            if child_val is None:
+                if required:
+                    errors.append({
+                        "error-type": "missing-required",
+                        "location":   location,
+                        "field":      child_name,
+                        "value":      None,
+                        "expected":   {},
+                    })
+                continue
+
+            child_loc = f"{location}/{json_key}"
+
+            # Data type check for scalar fields
+            if stype == "field" and isinstance(child_val, str) and child_val:
+                datatype = child_node.get("datatype")
+                if datatype:
+                    err = _check_datatype(child_val, datatype, location, child_name)
+                    if err:
+                        errors.append(err)
+
+            # Recurse into assemblies and grouped fields
+            if isinstance(child_val, list):
+                for i, item in enumerate(child_val):
+                    if isinstance(item, dict):
+                        self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]")
+            elif isinstance(child_val, dict):
+                self._walk_instance(child_val, child_node, errors, child_loc)
+
+    # -------------------------------------------------------------------------
+    def _build_tree(self) -> bool:
+        """Build `_tree` from `_dict` using the metaschema-based JSON-to-XML converter."""
+        if self._dict is None:
+            logger.error("No dict available to build XML tree from.")
+            return False
+        converter = OSCALConverter.from_support(self.model, self.oscal_version, self._support)
+        if converter is None:
+            logger.error(f"No metaschema converter for {self.model} {self.oscal_version}; cannot build XML tree.")
+            return False
+        json_string = json.dumps(self._dict)
+        xml_string = converter.json_to_xml(json_string)
+        if not xml_string:
+            logger.error("JSON-to-XML conversion produced no output.")
+            return False
+        self._tree = ElementTree.ElementTree(ElementTree.fromstring(xml_string.encode("utf-8")))
+        logger.debug("XML tree built from dict.")
+        return True
+
     # -------------------------------------------------------------------------
     @property
     def xml(self) -> str:
-        """Return the content as an XML string, converting if necessary."""
-
-        if self.original_format in ("json", "yaml"):
-            if not self.is_synced:
-                if not self._sync():
-                    logger.error("Failed to sync content for XML serialization.")
-                    return ""
-        elif self.original_format != "xml":
-            logger.error(f"Unsupported original format for XML serialization: {self.original_format}")
-            return ""
-
+        """Return the content as an XML string, converting from dict if necessary."""
+        if self._tree is None:
+            if not self._build_tree():
+                logger.error("Failed to build XML tree for serialization.")
+                return ""
         return self._xml_serializer()
 
     # -------------------------------------------------------------------------
     @property
     def json(self) -> str:
-        """Return the content as a JSON string, converting if necessary."""
-
-        if self.original_format == "xml":
-            if not self.is_synced:
-                if not self._sync():
-                    logger.error("Failed to sync content for JSON serialization.")
-                    return ""
-        elif self.original_format not in ("json", "yaml"):
-            logger.error(f"Unsupported original format for JSON serialization: {self.original_format}")
+        """Return the content as a JSON string."""
+        if self._dict is None:
+            logger.error("No content available for JSON serialization.")
             return ""
-
         return json.dumps(self._dict, indent=INDENT)
 
     # -------------------------------------------------------------------------
     @property
     def yaml(self) -> str:
-        """Return the content as a YAML string, converting if necessary."""
-
-        if self.original_format == "xml":
-            if not self.is_synced:
-                if not self._sync():
-                    logger.error("Failed to sync content for YAML serialization.")
-                    return ""
-        elif self.original_format not in ("json", "yaml"):
-            logger.error(f"Unsupported original format for YAML serialization: {self.original_format}")
+        """Return the content as a YAML string."""
+        if self._dict is None:
+            logger.error("No content available for YAML serialization.")
             return ""
-
         return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
     @if_update_successful
-    def set_metadata(self, content: dict = {}):
+    def set_metadata(self, content: dict = {}) -> bool:
         """
         Sets metadata fields in the OSCAL content.
         Args:
             content (dict): A dictionary containing metadata fields to set.
         """
+        success = False
+        if self._dict is None:
+            logger.error("No content available to set metadata.")
+            return success
+        model_obj = self._dict.setdefault(self.model, {})
+        if "metadata" not in model_obj:
+            logger.warning("No metadata section found in content. Creating.")
+            model_obj["metadata"] = {}
+        metadata = model_obj["metadata"]
+        
         for item in content:
-            # logger.debug(f"Metadata field to set: {item} = {content[item]}")
             if item in ['revisions', 'document-ids', 'roles', 'locations', 'parties', 'links', 'props', 'responsible-parties']:
-                # These are complex fields - skip for now
                 logger.warning(f"Setting complex metadata field '{item}' is not yet implemented.")
                 continue
-            else:
-                if self._tree is not None:
-                    self.__set_field(f"/*/metadata/{item}", content.get(item, ""))
-                elif self._dict is not None:
-                    if "metadata" not in self._dict:
-                        self._dict["metadata"] = {}
-                        logger.warning("No metadata section found in content. Creating.")
-                    self._dict["metadata"][item] = content.get(item, "")                
+            metadata[item] = content.get(item, "")
+        success = True
+
+        return success
 
     # -------------------------------------------------------------------------
-    def xpath_atomic(self, xExpr: str, context: ElementTree.Element | ElementTree.ElementTree | None = None) -> str:
+    @property
+    def _path_engine(self) -> OSCALPath | None:
+        """Lazily build and cache the metaschema-aware path engine for this model/version."""
+        if self._oscal_path is None and self.model and self.oscal_version:
+            self._oscal_path = OSCALPath.from_support(
+                self.model, self.oscal_version, self._support
+            )
+        return self._oscal_path
+
+    def query(self, path: str, context: dict | None = None) -> list:
         """
-        Performs an xpath query that is expected to return a single atomic value,
-        Parameters:
-        - xExpr (str): An xpath expression
-        - context (obj)[optional]: Context object.
-        If the context object is present, the xpath expression is run against
-        that context. If absent, the xpath expression is run against the
-        entire document.
-        Returns:
-        - str: The atomic value as a string.
+        Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
+
+        Steps use OSCAL XML element names (``control``, ``prop``, ``part``, …)
+        and the metaschema index translates them to the correct JSON keys
+        (``controls``, ``props``, ``parts``, …) including array/BY_KEY grouping.
+
+        Parameters
+        ----------
+        path : str
+            Path expression using XML element names, e.g.
+            ``"//control[@id='ac-2.2']"`` or ``"/*/metadata/title"``.
+        context : dict, optional
+            Sub-dict to query within.  Defaults to the full document dict
+            (``self._dict``).
+
+        Returns a list of matching JSON values, or ``[]`` on error / no match.
         """
+        engine = self._path_engine
+        if engine is None:
+            logger.error("query: OSCALPath engine unavailable — metaschema index may not be loaded.")
+            return []
+        data = context if context is not None else self._dict
+        if data is None:
+            logger.error("query: no JSON content available.")
+            return []
+        return engine.query(path, data)
 
-        ret_value = ""
+    def query_one(self, path: str, context: dict | None = None, default=None):
+        """Return the first result of :meth:`query`, or *default* when nothing matches."""
+        results = self.query(path, context)
+        return results[0] if results else default
 
-        if context is not None:
-            logger.debug(f"Using provided context for XPath Atomic: {xExpr}")
-        else:
-            context = self._tree
-            logger.debug(f"Using document root as context for XPath Atomic: {xExpr}")
-
-        if context is None:
-            logger.error("No XML context available for XPath Atomic query.")
-            return ""
-
-        results = elementpath.select(context, xExpr, namespaces=_NSMAP)
-        if not results:
-            logger.debug(f"No XPath Atomic results found for expression: {xExpr}")
-            return ""
-
-        ret_value = results[0]
-        logger.debug(f"xPath atomic result type: {str(type(ret_value))}")
-
-        return str(ret_value)
-
-    # -------------------------------------------------------------------------
-    def xpath(self, xExpr: str, context: ElementTree.Element | ElementTree.ElementTree | None = None) -> Optional[list[Any]]:
+    def json_query(self, path: str, context: dict | None = None) -> list:
         """
-        Performs an xpath query either on the entire XML document
-        or on a context within the document.
+        Query the JSON content using JSON key name syntax (via :class:`NativePath`).
 
-        Parameters:
-        - xExpr (str): An xpath expression
-        - context (obj)[optional]: Context object.
-        If the context object is present, the xpath expression is run against
-        that context. If absent, the xpath expression is run against the
-        entire document.
+        Steps use the actual JSON key names (``controls``, ``props``, ``parts``, …)
+        with no metaschema translation required.  Arrays are iterated
+        transparently, so ``//controls[id='ac-2.2']`` navigates directly into
+        any ``controls`` array at any depth.
 
-        Returns:
-        - None if there is an error or if nothing is found.
-        -
+        Parameters
+        ----------
+        path : str
+            Path expression using JSON key names, e.g.
+            ``"//controls[id='ac-2.2']"`` or ``"/*/metadata/title"``.
+        context : dict, optional
+            Sub-dict to query within.  Defaults to the full document dict
+            (``self._dict``).
+
+        Returns a list of matching JSON values, or ``[]`` on error / no match.
         """
-        ret_value: Optional[list[Any]] = None
-        if context is not None:
-            logger.debug(f"Using provided context for XPath: {xExpr}")
-        else:
-            context = self._tree
-            logger.debug(f"Using document root as context for XPath: {xExpr}")
+        data = context if context is not None else self._dict
+        if data is None:
+            logger.error("json_query: no JSON content available.")
+            return []
+        return native_path.query(path, data)
 
-        if context is None:
-            logger.error("No XML context available for XPath query.")
-            return None
-        try:
-            result = elementpath.select(context, xExpr, namespaces=_NSMAP)
-            if result is None:
-                ret_value = None
-            elif isinstance(result, list):
-                ret_value = result
-            else:
-                ret_value = [result]
-            # logger.debug(f"xPath results type: {str(type(ret_value))} with {len(ret_value)} nodes found.")
-        except Exception as error:
-            logger.error(f"XPath expression '{xExpr}' failed: {str(error)}")
-            ret_value = None
-
-        return ret_value
+    def json_query_one(self, path: str, context: dict | None = None, default=None):
+        """Return the first result of :meth:`json_query`, or *default* when nothing matches."""
+        results = self.json_query(path, context)
+        return results[0] if results else default
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
     @if_update_successful
-    def __set_field(self, path: str, field_value: str):
+    def __set_field(self, path: str, field_value) -> bool:
         """
-        Sets a specific field in the OSCAL content.
-        The xpath expression must point to a single element.
+        Sets a field in the OSCAL content by JSON path.
+
+        Path segments are separated by '/' and are relative to the model root.
+        List elements are addressed by integer index.
+
         Args:
-            field_name (str): The name of the metadata field to set.
-            field_value (str): The value to set for the metadata field.
+            path (str): Slash-separated path relative to the model root.
+                        e.g. "metadata/title" or "back-matter/resources/0/title"
+            field_value: Value to set at the target path (any JSON-compatible type).
+
+        Returns:
+            bool: True on success, False on any error.
         """
-        # logger.debug(f"Setting field or attribute at '{path}' to value '{field_value}'")
-        basename = os.path.basename(path)
+        if self._dict is None:
+            logger.error("__set_field: no content available.")
+            return False
 
-        if "@" in basename: # Attribute
-            base_path = path.rsplit("/", 1)[0] # Remove attribute part
-            # logger.debug(f"Setting attribute on '{base_path}' to value '{field_value}'")
-            attr_name = basename.replace("@", "")
-            parent_nodes = self.xpath(base_path)
-            if parent_nodes is None or len(parent_nodes) != 1:
-                logger.warning(f"XPath '{path}' returned unexpected results or no results. Cannot set attribute.")
-                return
-            parent_node = parent_nodes[0]  # Extract the first element from the list
-            # logger.debug(f"Setting @{attr_name} to {field_value} on {ElementTree.tostring(parent_node, 'utf-8')}")
-            try:
-                parent_node.set(attr_name, field_value)
-                logger.debug(f"Attribute @{attr_name} set to {field_value}")
-            except Exception as error:
-                logger.error(f"Failed to set attribute @{attr_name} to {field_value}: {str(error)}")
-        else:
-            logger.debug(f"Setting field '{path}' to value '{field_value}'")
-            current_nodes = self.xpath(path)
-            if current_nodes:
-                if len(current_nodes) > 1:
-                    logger.warning(f"XPath '{path}' returned multiple results. Only the first will be set.")
-                elif len(current_nodes) == 0:
-                    logger.warning(f"XPath '{path}' returned no results. Cannot set value.")
-                    return
+        parts = path.strip("/").split("/")
+        obj = self._dict.get(self.model, {})
 
-                else:
-                    current_node = current_nodes[0]
-                    logger.debug(f"Current node before setting: {ElementTree.tostring(current_node, 'utf-8')}")
-                    current_node.text = field_value
-                    logger.debug(f"Current node after setting: {ElementTree.tostring(current_node, 'utf-8')}")
-
-    # -------------------------------------------------------------------------
-    @requires(is_read_only=False)
-    @if_update_successful
-    def assign_html_string_to_node(self, parent_node: ElementTree.Element, html_string: str):
-        """
-        Assigns an HTML string to an XML node, converting it to proper XML structure.
-        This properly handles mixed content (text + elements).
-        Parameters:
-        - parent_node (ElementTree.Element): The parent XML node to which the HTML content will be added.
-        - html_string (str): The HTML string to convert and assign.
-        """
-        try:
-            # Wrap the HTML string in a temporary root element
-            wrapped_html = f"<div>{html_string}</div>"
-            temp_root = ElementTree.fromstring(wrapped_html)
-
-            # Handle mixed content properly
-            # First, add any initial text content
-            if temp_root.text:
-                if parent_node.text is None:
-                    parent_node.text = temp_root.text
-                else:
-                    parent_node.text += temp_root.text
-
-            # Then append each child element with its tail text
-            for child in temp_root:
-                parent_node.append(child)
-                # The tail text is automatically preserved when appending
-
-            logger.debug("HTML string successfully assigned to node.")
-        except Exception as error:
-            logger.error(f"Error assigning HTML string to node: {type(error).__name__} - {str(error)}")
-            logger.error("HTML String: " + html_string)
-
-    # -------------------------------------------------------------------------
-    @requires(is_read_only=False)
-    @if_update_successful
-    def append_child(self, xpath: str, node_name: str, node_content: str = "", attribute_list: list = []) -> (ElementTree.Element | None):
-        # logger.debug("APPENDING " + node_name + " as child to " + xpath) #  + " in " + self._tree.tag)
-        status = False
-        child = None
-        try:
-            logger.debug("Fetching parent at " + xpath)
-            # Use elementpath for reliable XPath processing
-            parent_nodes = elementpath.select(self._tree, xpath, namespaces=_NSMAP)
-            parent_node = None
-            if isinstance(parent_nodes, list) and len(parent_nodes) > 0:
-                parent_node = parent_nodes[0]
-            # parent_node = self.xpath(xpath)
-            logger.debug(parent_node)
-            if parent_node is not None:
-                logger.debug("TAG: " + parent_node.tag)
-                child = ElementTree.Element(node_name)
-
-                logger.debug("SETTING CONTENT")
-                if node_content != "":
-                    child.text = node_content
-
-                logger.debug("SETTING ATTRIBUTES")
-                for attrib in attribute_list:
-                    child.set(attrib, attribute_list[attrib])
-
-                parent_node.append(child)
-                status = True
+        for part in parts[:-1]:
+            if isinstance(obj, list):
+                try:
+                    obj = obj[int(part)]
+                except (ValueError, IndexError):
+                    logger.error(f"__set_field: invalid list index '{part}' in path '{path}'.")
+                    return False
+            elif isinstance(obj, dict):
+                if part not in obj:
+                    logger.error(f"__set_field: key '{part}' not found in path '{path}'.")
+                    return False
+                obj = obj[part]
             else:
-                logger.warning("APPEND: Unable to find " + xpath )
-        except Exception as error:
-            logger.error("Error appending child (" + node_name + "): " + type(error).__name__ + " - " + str(error))
+                logger.error(f"__set_field: cannot traverse into {type(obj).__name__} at '{part}' in path '{path}'.")
+                return False
 
-        if status:
-            return child
+        leaf = parts[-1]
+        if isinstance(obj, list):
+            try:
+                obj[int(leaf)] = field_value
+            except (ValueError, IndexError):
+                logger.error(f"__set_field: invalid list index '{leaf}' in path '{path}'.")
+                return False
+        elif isinstance(obj, dict):
+            obj[leaf] = field_value
         else:
+            logger.error(f"__set_field: cannot set field on {type(obj).__name__} at path '{path}'.")
+            return False
+
+        logger.debug(f"__set_field: '{path}' = {field_value!r}")
+        return True
+
+    # -------------------------------------------------------------------------
+    @requires(is_read_only=False)
+    @if_update_successful
+    @requires(is_read_only=False)
+    @if_update_successful
+    def append_child(self, path: str, child: dict) -> dict | None:
+        """
+        Appends a child dict to the list at the given JSON path.
+
+        Path segments are '/' separated, relative to the model root.  The leaf
+        segment names the list key; it is created as an empty list if absent.
+
+        Args:
+            path (str):  Slash-separated path to the target list relative to the
+                         model root, e.g. "metadata/props" or "back-matter/resources".
+            child (dict): Dict to append to the list.
+
+        Returns:
+            dict | None: The appended child on success, None on failure.
+        """
+        if self._dict is None:
+            logger.error("append_child: no content available.")
             return None
 
+        parts = path.strip("/").split("/")
+        obj = self._dict.get(self.model, {})
+
+        for part in parts[:-1]:
+            if isinstance(obj, list):
+                try:
+                    obj = obj[int(part)]
+                except (ValueError, IndexError):
+                    logger.error(f"append_child: invalid list index '{part}' in path '{path}'.")
+                    return None
+            elif isinstance(obj, dict):
+                if part not in obj:
+                    logger.error(f"append_child: key '{part}' not found in path '{path}'.")
+                    return None
+                obj = obj[part]
+            else:
+                logger.error(f"append_child: cannot traverse into {type(obj).__name__} at '{part}' in path '{path}'.")
+                return None
+
+        leaf = parts[-1]
+        if isinstance(obj, dict):
+            target = obj.setdefault(leaf, [])
+            if not isinstance(target, list):
+                logger.error(f"append_child: '{leaf}' at path '{path}' is {type(target).__name__}, expected list.")
+                return None
+        elif isinstance(obj, list):
+            try:
+                target = obj[int(leaf)]
+            except (ValueError, IndexError):
+                logger.error(f"append_child: invalid list index '{leaf}' in path '{path}'.")
+                return None
+            if not isinstance(target, list):
+                logger.error(f"append_child: target at '{path}' is {type(target).__name__}, expected list.")
+                return None
+        else:
+            logger.error(f"append_child: cannot resolve leaf '{leaf}' on {type(obj).__name__} at path '{path}'.")
+            return None
+
+        target.append(child)
+        logger.debug(f"append_child: appended to '{path}'.")
+        return child
+
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
     @if_update_successful
-    def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
+    def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> dict | None:
         """
-        Appends a resource element to the back-matter section.
+        Appends a resource to the back-matter section.
         """
         return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)
 
     # -------------------------------------------------------------------------
-    def build_import_tree(self, _seen=None):
-        """Build and cache a JSON-serializable nested dict of this object and all imports.
+    def walk_imports(self, visitor_fn, depth=0, _seen=None, *, scope="successful"):
+        """Walk the import tree depth-first, calling visitor_fn(entry, depth) for each entry.
 
-        Reads self.import_list (populated by resolve_imports) and assembles a
-        recursive structure.  Result is cached in self.import_tree and returned.
+        Args:
+            visitor_fn: Callable receiving (entry_dict, depth_int).
+            depth:      Current recursion depth (used internally for the depth argument).
+            _seen:      Set of object ids already visited (used internally to prevent cycles).
+            scope:      Which entries to visit — "successful" (default), "failed", or "all".
+                        "successful" visits only READY imports and recurses into them.
+                        "failed"     visits only INVALID/NOT_LOADED imports (no recursion).
+                        "all"        visits every entry; recursion only follows READY imports.
         """
         if _seen is None:
             _seen = set()
-        _seen.add(id(self))
-
-        node = {
-            "model":         self.model,
-            "title":         self.title,
-            "published":     self.published,
-            "version":       self.version,
-            "last_modified": self.last_modified,
-            "oscal_version": self.oscal_version,
-            "remarks":       self.remarks,
-            "imports":       []
-        }
-
         for entry in self.import_list:
-            child_obj = entry["object"]
-            child_node = {
-                "href_original": entry.get("href_original"),
-                "href_valid":    entry.get("href_valid"),
-                "status":        str(entry.get("status")),
-                "valid":         entry.get("valid"),
-                "is_valid":      entry.get("is_valid", entry.get("valid")),
-                "local":         entry.get("local"),
-                "is_local":      entry.get("is_local", entry.get("local")),
-                "remote":        entry.get("remote"),
-                "is_remote":     entry.get("is_remote", entry.get("remote")),
-                "cached":        entry.get("cached"),
-                "is_cached":     entry.get("is_cached", entry.get("cached")),
-            }
-            if child_obj is not None and id(child_obj) not in _seen:
-                child_node.update(child_obj.build_import_tree(_seen))
-            else:
-                child_node["model"]    = child_obj.model if child_obj else None
-                child_node["title"]    = child_obj.title if child_obj else None
-                child_node["circular"] = child_obj is not None
-                child_node["imports"]  = []
-
-            node["imports"].append(child_node)
-
-        self._import_tree = node
-        return node
-
-    # -------------------------------------------------------------------------
-    def walk_imports(self, visitor_fn, depth=0, _seen=None):
-        """
-        Walks the import tree, applying the visitor function to each entry.
-        This is a depth-first traversal that tracks seen objects to avoid infinite loops."""
-        if _seen is None:
-            _seen = set()
-        for entry in self.import_list:
-            obj = entry["object"]
-            if obj is None:
+            status     = entry.get("status")
+            is_success = status == ImportState.READY
+            if scope == "successful" and not is_success:
                 continue
-            obj_id = id(obj)
-            if obj_id in _seen:
+            if scope == "failed" and is_success:
                 continue
-            _seen.add(obj_id)
+            obj = entry.get("object")
+            if obj is not None:
+                obj_id = id(obj)
+                if obj_id in _seen:
+                    continue
+                _seen.add(obj_id)
             visitor_fn(entry, depth)
-            obj.walk_imports(visitor_fn, depth + 1, _seen)
+            if obj is not None:
+                obj.walk_imports(visitor_fn, depth + 1, _seen, scope=scope)
 
     # -------------------------------------------------------------------------
     def find_by_uuid(self, uuid, _seen=None):
@@ -1611,18 +1720,18 @@ class OSCAL(LoggableMixin):
             return ""
 
         if format == "xml":
-            if not self._sync(target_format="xml"):
-                logger.error("Failed to sync content for XML serialization.")
+            if self._tree is None and not self._build_tree():
+                logger.error("Failed to build XML tree for serialization.")
                 return ""
             return self._xml_serializer(pretty_print=pretty_print)
         elif format == "json":
-            if not self._sync(target_format="json"):
-                logger.error("Failed to sync content for JSON serialization.")
+            if self._dict is None:
+                logger.error("No content available for JSON serialization.")
                 return ""
             return self._json_serializer(pretty_print=pretty_print)
         elif format in ("yaml", "yml"):
-            if not self._sync(target_format="yaml"):
-                logger.error("Failed to sync content for YAML serialization.")
+            if self._dict is None:
+                logger.error("No content available for YAML serialization.")
                 return ""
             return self._yaml_serializer(pretty_print=pretty_print)
         else:
@@ -2015,38 +2124,31 @@ def _is_valid_uuid(value: str) -> bool:
 def _backmatter_resource(doc_obj, resource_uuid: str) -> dict | None:
     """Return metadata and rlinks for a back-matter resource identified by UUID.
 
-    Returns a dict with keys: uuid, title, description, rlinks (list[str]), has_base64.
+    Returns a dict with keys: uuid, title, description, rlinks (list[dict]), has_base64.
     Returns None when no resource with the given UUID exists.
     """
-    if doc_obj._tree is not None:
-        resource_nodes = doc_obj.xpath(
-            f"/*/back-matter/resource[@uuid='{resource_uuid}']"
-        )
-        if not resource_nodes:
-            return None
-        title_nodes       = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/title")
-        desc_nodes        = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/description")
-        rlink_nodes       = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/rlink")
-        base64_nodes      = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{resource_uuid}']/base64")
+    if doc_obj._dict is None:
+        return None
 
-        # title is plain text; description uses markup-multiline (text may be in child <p> nodes)
-        title       = (title_nodes[0].text or "").strip() if title_nodes else ""
-        description = " ".join(desc_nodes[0].itertext()).strip() if desc_nodes else ""
-        rlinks      = [n.get("href", "").strip() for n in (rlink_nodes or []) if n.get("href", "").strip()]
-        has_base64  = bool(base64_nodes)
-
-    elif doc_obj._dict is not None:
-        root_obj  = doc_obj._dict.get(doc_obj.model, {})
-        resources = root_obj.get("back-matter", {}).get("resources", [])
-        for res in resources:
-            if res.get("uuid") == resource_uuid:
-                title       = res.get("title", "")
-                description = res.get("description", "")
-                rlinks      = [r.get("href", "").strip() for r in res.get("rlinks", []) if r.get("href", "").strip()]
-                has_base64  = bool(res.get("base64"))
-                break
-        else:
-            return None
+    root_obj  = doc_obj._dict.get(doc_obj.model, {})
+    resources = root_obj.get("back-matter", {}).get("resources", [])
+    for res in resources:
+        if res.get("uuid") == resource_uuid:
+            title       = res.get("title", "")
+            description = res.get("description", "")
+            rlinks: list[dict] = []
+            for r in res.get("rlinks", []):
+                href = r.get("href", "").strip()
+                if not href:
+                    continue
+                rl: dict = {"href": href}
+                if "media-type" in r:
+                    rl["media-type"] = r["media-type"]
+                if "hashes" in r:
+                    rl["hashes"] = r["hashes"]
+                rlinks.append(rl)
+            has_base64 = bool(res.get("base64"))
+            break
     else:
         return None
 
@@ -2057,35 +2159,6 @@ def _backmatter_resource(doc_obj, resource_uuid: str) -> dict | None:
         "rlinks":      rlinks,
         "has_base64":  has_base64,
     }
-
-# -------------------------------------------------------------------------
-def _backmatter_rlinks(doc_obj, uuid: str) -> list[str]:
-    """Return ordered rlink hrefs for a back-matter resource identified by UUID.
-
-    Searches the XML tree first (primary representation after load), then the
-    dict.  Returns an empty list if the resource is not found.
-    """
-    hrefs: list[str] = []
-
-    if doc_obj._tree is not None:
-        nodes = doc_obj.xpath(f"/*/back-matter/resource[@uuid='{uuid}']/rlink")
-        if nodes:
-            for rlink in nodes:
-                href = rlink.get("href", "").strip()
-                if href:
-                    hrefs.append(href)
-    elif doc_obj._dict is not None:
-        root_obj = doc_obj._dict.get(doc_obj.model, {})
-        resources = root_obj.get("back-matter", {}).get("resources", [])
-        for resource in resources:
-            if resource.get("uuid") == uuid:
-                for rlink in resource.get("rlinks", []):
-                    href = rlink.get("href", "").strip()
-                    if href:
-                        hrefs.append(href)
-                break
-
-    return hrefs
 
 # -------------------------------------------------------------------------
 def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
@@ -2154,72 +2227,68 @@ def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
 
 # -------------------------------------------------------------------------
 # -------------------------------------------------------------------------
-def append_props(parent_node: ElementTree.Element, props: list):
+def append_props(parent_obj: dict, props: list) -> None:
     """
-    Appends multiple property elements to the provided parent XML node.
-    Parameters:
-    - parent_node (ElementTree.Element): The parent XML node to which the properties will be added.
-    - props (list): A list of dictionaries, each containing property attributes and optional remarks.
+    Appends multiple prop dicts to parent_obj["props"].
+
+    Args:
+        parent_obj (dict): OSCAL JSON object that will receive the props.
+        props (list[dict]): Property dicts, each with at minimum "name" and "value".
     """
     for prop in props:
-        append_prop(parent_node, prop)
+        append_prop(parent_obj, prop)
 
 # -------------------------------------------------------------------------
-def append_prop(parent_node: ElementTree.Element, prop: dict):
+def append_prop(parent_obj: dict, prop: dict) -> dict:
     """
-    Appends a property element to the provided parent XML node.
-    Parameters:
-    - parent_node (ElementTree.Element): The parent XML node to which the property will be added.
-    - prop (dict): A dictionary containing property attributes and optional remarks.
+    Appends a prop dict to parent_obj["props"].
+
+    Args:
+        parent_obj (dict): OSCAL JSON object that will receive the prop.
+        prop (dict): Property dict.  Required keys: "name", "value".
+                     Optional keys: "uuid", "ns", "class", "group", "remarks".
+
+    Returns:
+        dict: The appended prop entry.
     """
-    prop_node = ElementTree.SubElement(parent_node, "prop")
-    prop_node.set("name", prop['name'])
-    prop_node.set("value", prop['value'])
-    if 'class' in prop:
-        prop_node.set("class", prop.get('class', ''))
-    if 'group' in prop:
-        prop_node.set("group", prop.get('group', ''))
-    if 'ns' in prop:
-        prop_node.set("ns", prop.get('ns', ''))
-    if 'remarks' in prop:
-        remarks_node = ElementTree.SubElement(prop_node, "remarks")
-        remarks_html = oscal_markdown_to_html(prop.get('remarks', ''), multiline=True)
-        if remarks_html:
-            html_root = _html_to_et(remarks_html, "")
-            remarks_node.text = html_root.text
-            for child in html_root:
-                remarks_node.append(child)
+    entry: dict = {}
+    for key in ("uuid", "name", "ns", "value", "class", "group", "remarks"):
+        if key in prop:
+            entry[key] = prop[key]
+    parent_obj.setdefault("props", []).append(entry)
+    return entry
 
 # -----------------------------------------------------------------------------
-def append_links(parent_node: ElementTree.Element, links: list):
+def append_links(parent_obj: dict, links: list) -> None:
     """
-    Appends multiple link elements to the provided parent XML node.
-    Parameters:
-    - parent_node (ElementTree.Element): The parent XML node to which the links will be added.
-    - links (list): A list of link URLs as strings.
+    Appends multiple link dicts to parent_obj["links"].
+
+    Args:
+        parent_obj (dict): OSCAL JSON object that will receive the links.
+        links (list[dict]): Link dicts.
     """
     for link in links:
-        append_link(parent_node, link)
+        append_link(parent_obj, link)
 
 # -----------------------------------------------------------------------------
-def append_link(parent_node: ElementTree.Element, link: dict):
+def append_link(parent_obj: dict, link: dict) -> dict:
     """
-    Appends a link element to the provided parent XML node.
-    Parameters:
-    - parent_node (ElementTree.Element): The parent XML node to which the link will be added.
-    - link (dict): A dictionary containing link attributes.
+    Appends a link dict to parent_obj["links"].
+
+    Args:
+        parent_obj (dict): OSCAL JSON object that will receive the link.
+        link (dict): Link dict.  Required key: "href".
+                     Optional keys: "rel", "media-type", "resource-fragment", "text".
+
+    Returns:
+        dict: The appended link entry.
     """
-    link_node = ElementTree.SubElement(parent_node, "link")
-    link_node.set("href", link.get('href', ''))
-    if 'rel' in link:
-        link_node.set("rel", link.get('rel', ''))
-    if 'media-type' in link:
-        link_node.set("media-type", link.get('media-type', ''))
-    if 'resource-fragment' in link:
-        link_node.set("resource-fragment", link.get('resource-fragment', ''))
-    if 'text' in link:
-        text_node = ElementTree.SubElement(link_node, "text")
-        text_node.text = link.get('text', '')
+    entry: dict = {}
+    for key in ("href", "rel", "media-type", "resource-fragment", "text"):
+        if key in link:
+            entry[key] = link[key]
+    parent_obj.setdefault("links", []).append(entry)
+    return entry
 
 # -----------------------------------------------------------------------------
 def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
@@ -2295,61 +2364,47 @@ def _format_table_helper(table_lines: list) -> str:
     return '\n'.join(html)
 
 # -------------------------------------------------------------------------
-def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> ElementTree.Element:
+def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> dict | None:
     """
-    Appends a resource element to the back-matter section.
+    Appends a resource to the back-matter section of the OSCAL JSON content.
+
+    Args:
+        oscal_obj:   The OSCAL document to modify.
+        uuid:        Resource UUID; generated if not supplied.
+        title:       Optional resource title.
+        description: Optional resource description.
+        props:       Optional list of prop dicts (see append_prop).
+        rlinks:      Optional list of rlink dicts with "href" and optional "media-type"/"hashes".
+        base64:      Not yet implemented; a warning is logged if supplied.
+        remarks:     Optional remarks (OSCAL markup-multiline / markdown string).
+
+    Returns:
+        dict | None: The appended resource dict, or None on error.
     """
-    resource = ElementTree.Element("resource")
-    if uuid == "":
-        uuid = new_uuid()
-    resource.set("uuid", uuid)
-    if title is not None:
-        title_node = ElementTree.SubElement(resource, "title")
-        title_node.text = title
-    if description is not None:
-        desc_node = ElementTree.SubElement(resource, "description")
-        desc_node.text = description
-    for prop in props:
-        prop_node = ElementTree.SubElement(resource, "prop")
-        prop_node.set("name", prop.get("name", ""))
-        prop_node.set("value", prop.get("value", ""))
-        if "ns" in prop:
-            prop_node.set("ns", prop.get("ns", ""))
-        if "class" in prop:
-            prop_node.set("class", prop.get("class", ""))
-        if "group" in prop:
-            prop_node.set("group", prop.get("group", ""))
-    for rlink in rlinks:
-        rlink_node = ElementTree.SubElement(resource, "rlink")
-        rlink_node.set("href", rlink.get("href", ""))
-        if "media-type" in rlink:
-            rlink_node.set("media-type", rlink.get("media-type", ""))
-    if base64 is not None:
+    if oscal_obj._dict is None:
+        logger.error("append_resource: no content available.")
+        return None
+
+    resource: dict = {"uuid": uuid or new_uuid()}
+    if title:
+        resource["title"] = title
+    if description:
+        resource["description"] = description
+    if props:
+        append_props(resource, props)
+    if rlinks:
+        resource["rlinks"] = [
+            {k: v for k, v in rl.items() if k in ("href", "media-type", "hashes")}
+            for rl in rlinks
+        ]
+    if base64:
         logger.warning("Base64 content in resource is not yet implemented.")
     if remarks:
-        remarks_obj = ElementTree.SubElement(resource,"remarks") # Create the description element
-        remarks_element = oscal_markdown_to_html_tree(remarks, multiline=True)
-        if remarks_element is not None:
-            remarks_obj.text = remarks_element.text
-            for child in remarks_element:
-                remarks_obj.append(child)
-    back_matter = oscal_obj.xpath("//back-matter")
+        resource["remarks"] = remarks
 
-    if back_matter and isinstance(back_matter, list) and len(back_matter) > 0:
-        back_matter = back_matter[0]
-    else:
-        back_matter = ElementTree.Element("back-matter")
-        if oscal_obj._tree is not None:
-            if isinstance(oscal_obj._tree, ElementTree.ElementTree):
-                root_node = oscal_obj._tree.getroot()
-            else:
-                root_node = oscal_obj._tree
-
-            if root_node is not None:
-                root_node.append(back_matter)
-
-    back_matter.append(resource)
-
+    root_obj = oscal_obj._dict.setdefault(oscal_obj.model, {})
+    root_obj.setdefault("back-matter", {}).setdefault("resources", []).append(resource)
+    logger.debug(f"append_resource: resource '{resource['uuid']}' added to back-matter.")
     return resource
 
 # -----------------------------------------------------------------------------

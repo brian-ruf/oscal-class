@@ -70,10 +70,17 @@ def _profile_xml(href: str, back_matter_xml: str = "") -> str:
 
 def _resource_xml(res_uuid: str, rlinks: list = [], title: str = "",
                   description: str = "", has_base64: bool = False) -> str:
-    title_el   = f"<title>{title}</title>" if title else ""
-    desc_el    = f"<description><p>{description}</p></description>" if description else ""
-    rlink_els  = "".join(f'<rlink href="{r}"/>' for r in rlinks)
-    base64_el  = '<base64 filename="d.xml">dGVzdA==</base64>' if has_base64 else ""
+    title_el  = f"<title>{title}</title>" if title else ""
+    desc_el   = f"<description><p>{description}</p></description>" if description else ""
+    base64_el = '<base64 filename="d.xml">dGVzdA==</base64>' if has_base64 else ""
+
+    def _rlink_el(r):
+        if isinstance(r, tuple):
+            href, mt = r
+            return f'<rlink href="{href}" media-type="{mt}"/>'
+        return f'<rlink href="{r}"/>'
+
+    rlink_els = "".join(_rlink_el(r) for r in rlinks)
     return (f'<resource uuid="{res_uuid}">'
             f"{title_el}{desc_el}{rlink_els}{base64_el}</resource>")
 
@@ -152,7 +159,13 @@ class TestBackmatterResource:
         doc = self._doc_with_resources(
             _resource_xml(_RLINK_UUID, rlinks=["/tmp/a.xml", "/tmp/b.xml"]))
         result = _backmatter_resource(doc, _RLINK_UUID)
-        assert result["rlinks"] == ["/tmp/a.xml", "/tmp/b.xml"]
+        assert result["rlinks"] == [{"href": "/tmp/a.xml"}, {"href": "/tmp/b.xml"}]
+
+    def test_returns_rlinks_with_media_type(self):
+        doc = self._doc_with_resources(
+            _resource_xml(_RLINK_UUID, rlinks=[("/tmp/a.json", "application/json")]))
+        result = _backmatter_resource(doc, _RLINK_UUID)
+        assert result["rlinks"] == [{"href": "/tmp/a.json", "media-type": "application/json"}]
 
     def test_returns_has_base64_true(self):
         doc = self._doc_with_resources(_resource_xml(_RLINK_UUID, has_base64=True))
@@ -600,3 +613,240 @@ class TestEntryFailureField:
         obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
         assert obj.imports_resolved is True
         assert obj.content_state == ContentState.IMPORTS_RESOLVED
+
+
+# ===========================================================================
+# href_list structure
+# ===========================================================================
+
+class TestHrefList:
+    def test_direct_href_has_original_true(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        entry = obj.import_list[0]
+        assert entry["href_list"][0]["original"] is True
+
+    def test_direct_href_list_starts_with_raw_href(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        entry = obj.import_list[0]
+        assert entry["href_list"][0]["href"] == "/tmp/_oscal_test_nonexistent.xml"
+
+    def test_failed_item_gets_status_invalid(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        entry = obj.import_list[0]
+        # At least one item in href_list must have been tried and stamped INVALID
+        statuses = [item.get("status") for item in entry["href_list"] if "status" in item]
+        assert ImportState.INVALID in statuses
+
+    def test_fragment_initial_item_is_raw_href(self):
+        bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_nonexistent.xml"])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        entry = obj.import_list[0]
+        assert entry["href_list"][0]["href"] == f"#{_RLINK_UUID}"
+        assert entry["href_list"][0]["original"] is True
+
+    def test_fragment_rlinks_appended_with_original_true(self):
+        bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/a.xml", "/tmp/b.xml"])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        entry = obj.import_list[0]
+        rlink_hrefs = [item["href"] for item in entry["href_list"][1:]]
+        assert "/tmp/a.xml" in rlink_hrefs
+        assert "/tmp/b.xml" in rlink_hrefs
+        for item in entry["href_list"][1:]:
+            assert item.get("original") is True
+
+    def test_fragment_initial_item_has_no_status(self):
+        """The #uuid placeholder is skipped — it never gets a status stamped on it."""
+        bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_nonexistent.xml"])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        entry = obj.import_list[0]
+        assert "status" not in entry["href_list"][0]
+
+    def test_successful_item_gets_status_ready(self):
+        bm = _resource_xml(_RLINK_UUID, rlinks=[_CATALOG_PATH])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        entry = obj.import_list[0]
+        rlink_items = [i for i in entry["href_list"] if not i["href"].startswith("#")]
+        assert any(i.get("status") == ImportState.READY for i in rlink_items)
+
+    def test_items_after_first_success_have_no_status(self):
+        """href_list items that were never attempted carry no status key."""
+        bm = _resource_xml(_RLINK_UUID, rlinks=[_CATALOG_PATH, "/tmp/never_tried.xml"])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        entry = obj.import_list[0]
+        # Find the never-tried item (last rlink)
+        last_item = [i for i in entry["href_list"] if "/tmp/never_tried.xml" in i["href"]]
+        assert len(last_item) == 1
+        assert "status" not in last_item[0]
+
+
+# ===========================================================================
+# retry_import — href_list and href_valid behaviour
+# ===========================================================================
+
+class TestRetryImport:
+    def test_retry_success_appends_to_href_list(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        entry = obj.import_list[0]
+        hrefs = [i["href"] for i in entry["href_list"]]
+        assert _CATALOG_PATH in hrefs
+
+    def test_retry_success_item_has_original_false(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        entry = obj.import_list[0]
+        retry_items = [i for i in entry["href_list"] if not i.get("original", True)]
+        assert len(retry_items) == 1
+        assert retry_items[0]["status"] == ImportState.READY
+
+    def test_retry_success_sets_status_ready(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        result = obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert result is True
+        assert obj.import_list[0]["status"] == ImportState.READY
+
+    def test_retry_failure_clears_href_valid(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        assert obj.import_list[0]["href_valid"] == ""
+
+    def test_retry_failure_appends_invalid_item(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        entry = obj.import_list[0]
+        retry_items = [i for i in entry["href_list"] if not i.get("original", True)]
+        assert len(retry_items) == 1
+        assert retry_items[0]["status"] == ImportState.INVALID
+
+    def test_retry_unknown_href_returns_false(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        result = obj.retry_import("/tmp/completely_unknown.xml", _CATALOG_PATH)
+        assert result is False
+
+    def test_retry_matches_by_href_list_item(self):
+        """retry_import should find entry when failed_href matches an href_list item."""
+        bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_rlink_nonexistent.xml"])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        # Match against the rlink href rather than href_original
+        result = obj.retry_import("/tmp/_oscal_test_rlink_nonexistent.xml", _CATALOG_PATH)
+        assert result is True
+
+
+# ===========================================================================
+# import_tree — root node href_list
+# ===========================================================================
+
+class TestImportTreeRootNode:
+    def test_root_node_has_href_list(self):
+        obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
+        assert "href_list" in obj.import_tree
+
+    def test_root_href_list_contains_working_href(self):
+        obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
+        hrefs = [i["href"] for i in obj.import_tree["href_list"]]
+        assert obj.href in hrefs or obj.href_original in hrefs
+
+    def test_root_href_list_working_href_has_status_ready(self):
+        obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
+        tree = obj.import_tree
+        ready_items = [i for i in tree["href_list"] if i.get("status") == ImportState.READY]
+        assert len(ready_items) >= 1
+
+    def test_root_href_list_items_have_original_true(self):
+        obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
+        for item in obj.import_tree["href_list"]:
+            assert item.get("original") is True
+
+    def test_root_href_list_single_item_when_hrefs_match(self):
+        """When href and href_original are the same, only one item in the list."""
+        obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
+        if obj.href == obj.href_original:
+            assert len(obj.import_tree["href_list"]) == 1
+
+
+# ===========================================================================
+# walk_imports — scope parameter
+# ===========================================================================
+
+class TestWalkImports:
+    def _two_import_profile(self) -> OSCAL:
+        """Profile with one successful and one failing import."""
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-000000000004">
+  <metadata>
+    <title>Walk Test Profile</title>
+    <last-modified>2026-04-28T00:00:00Z</last-modified>
+    <version>1.0</version>
+    <oscal-version>1.2.1</oscal-version>
+  </metadata>
+  <import href="{_CATALOG_PATH}"><include-all/></import>
+  <import href="/tmp/_oscal_test_walk_nonexistent.xml"><include-all/></import>
+  <merge><combine method="keep"/><as-is>true</as-is></merge>
+</profile>"""
+        return OSCAL.loads(xml)
+
+    def test_default_scope_visits_only_successful(self):
+        obj = self._two_import_profile()
+        visited = []
+        obj.walk_imports(lambda e, d: visited.append(e["status"]))
+        assert all(s == ImportState.READY for s in visited)
+
+    def test_scope_failed_visits_only_failed(self):
+        obj = self._two_import_profile()
+        visited = []
+        obj.walk_imports(lambda e, d: visited.append(e["status"]), scope="failed")
+        assert len(visited) >= 1
+        assert all(s == ImportState.INVALID for s in visited)
+
+    def test_scope_all_visits_both(self):
+        obj = self._two_import_profile()
+        visited = []
+        obj.walk_imports(lambda e, d: visited.append(e["status"]), scope="all")
+        statuses = set(visited)
+        assert ImportState.READY in statuses
+        assert ImportState.INVALID in statuses
+
+    def test_scope_all_count_matches_import_list(self):
+        obj = self._two_import_profile()
+        visited = []
+        obj.walk_imports(lambda e, d: visited.append(1), scope="all")
+        # Top level: 2 imports; successful one may recurse into its own imports
+        assert len(visited) >= 2
+
+    def test_successful_scope_does_not_visit_failed(self):
+        obj = self._two_import_profile()
+        visited_hrefs = []
+        obj.walk_imports(lambda e, d: visited_hrefs.append(e.get("href_original", "")))
+        assert "/tmp/_oscal_test_walk_nonexistent.xml" not in visited_hrefs
+
+    def test_failed_scope_does_not_visit_successful(self):
+        obj = self._two_import_profile()
+        visited_hrefs = []
+        obj.walk_imports(
+            lambda e, d: visited_hrefs.append(e.get("href_original", "")),
+            scope="failed",
+        )
+        assert _CATALOG_PATH not in visited_hrefs
+
+    def test_walk_provides_depth(self):
+        obj = OSCAL.load(os.path.join(_IMPORTS_DIR, "test_profile_direct.xml"))
+        depths = []
+        obj.walk_imports(lambda e, d: depths.append(d))
+        assert all(d == 0 for d in depths)  # direct imports are depth 0
+
+
+# ===========================================================================
+# Non-fragment failure rlinks_tried
+# ===========================================================================
+
+class TestNonFragmentRlinksTried:
+    def test_direct_href_failure_has_rlinks_tried(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent_XYZ.xml")
+        failure = obj.import_list[0]["failure"]
+        assert failure is not None
+        assert len(failure.rlinks_tried) >= 1
+
+    def test_direct_href_failure_rlinks_tried_contains_attempted_path(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent_XYZ.xml")
+        failure = obj.import_list[0]["failure"]
+        assert any("_oscal_test_nonexistent_XYZ" in r for r in failure.rlinks_tried)

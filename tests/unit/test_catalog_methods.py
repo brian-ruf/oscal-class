@@ -8,7 +8,7 @@ Unit tests for Catalog and Profile content methods:
     - Profile.control()
 """
 import os
-from xml.etree import ElementTree
+import tempfile
 
 import pytest
 
@@ -48,26 +48,24 @@ def cat_with_group():
 # ===========================================================================
 class TestCreateControlGroup:
 
-    def test_returns_element(self, empty_cat):
-        """create_control_group() returns an ElementTree.Element."""
+    def test_returns_dict(self, empty_cat):
+        """create_control_group() returns a dict."""
         result = empty_cat.create_control_group("[root]", "ac", title="Access Control")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_group_has_id_attribute(self, empty_cat):
-        """create_control_group() sets the id attribute on the group element."""
+    def test_group_has_id(self, empty_cat):
+        """create_control_group() sets the id key on the group dict."""
         result = empty_cat.create_control_group("[root]", "si", title="System and Info")
         assert result.get("id") == "si"
 
-    def test_group_has_title_child(self, empty_cat):
-        """create_control_group() adds a <title> child when title is provided."""
+    def test_group_has_title(self, empty_cat):
+        """create_control_group() stores title when provided."""
         result = empty_cat.create_control_group("[root]", "ac", title="Access Control")
-        title_nodes = [c for c in result if "title" in c.tag]
-        assert len(title_nodes) == 1
-        assert "Access Control" in title_nodes[0].text
+        assert result.get("title") == "Access Control"
 
     def test_group_without_title(self, empty_cat):
-        """create_control_group() with no title still returns an element."""
+        """create_control_group() with no title still returns a dict."""
         result = empty_cat.create_control_group("[root]", "cm")
         assert result is not None
         assert result.get("id") == "cm"
@@ -75,8 +73,8 @@ class TestCreateControlGroup:
     def test_group_with_label(self, empty_cat):
         """create_control_group() adds a label prop when label is provided."""
         result = empty_cat.create_control_group("[root]", "pe", label="PE")
-        prop_nodes = [c for c in result if "prop" in c.tag]
-        label_props = [p for p in prop_nodes if p.get("name") == "label"]
+        props = result.get("props", [])
+        label_props = [p for p in props if p.get("name") == "label"]
         assert len(label_props) == 1
         assert label_props[0].get("value") == "PE"
 
@@ -103,10 +101,10 @@ class TestCreateControlGroup:
         assert found is not None
 
     def test_group_with_overview(self, empty_cat):
-        """create_control_group() adds a <part name='overview'> when overview is provided."""
+        """create_control_group() adds a part with name='overview' when overview is provided."""
         result = empty_cat.create_control_group("[root]", "sa", overview="System and Services.")
-        part_nodes = [c for c in result if "part" in c.tag]
-        overview_parts = [p for p in part_nodes if p.get("name") == "overview"]
+        parts = result.get("parts", [])
+        overview_parts = [p for p in parts if p.get("name") == "overview"]
         assert len(overview_parts) == 1
 
 
@@ -115,50 +113,47 @@ class TestCreateControlGroup:
 # ===========================================================================
 class TestCreateControl:
 
-    def test_returns_element(self, cat_with_group):
-        """create_control() returns an ElementTree.Element."""
+    def test_returns_dict(self, cat_with_group):
+        """create_control() returns a dict."""
         result = cat_with_group.create_control("ac", "ac-1", title="Access Control Policy")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_control_has_id_attribute(self, cat_with_group):
-        """create_control() sets the id attribute."""
+    def test_control_has_id(self, cat_with_group):
+        """create_control() sets the id key."""
         result = cat_with_group.create_control("ac", "ac-2", title="Account Management")
         assert result.get("id") == "ac-2"
 
     def test_control_has_title(self, cat_with_group):
-        """create_control() includes a <title> child."""
+        """create_control() stores the title."""
         result = cat_with_group.create_control("ac", "ac-3", title="Access Enforcement")
-        title_nodes = [c for c in result if "title" in c.tag]
-        assert len(title_nodes) == 1
-        assert "Access Enforcement" in title_nodes[0].text
+        assert "Access Enforcement" in result.get("title", "")
 
     def test_title_defaults_to_id(self, cat_with_group):
         """create_control() uses the id as title when title is empty."""
         result = cat_with_group.create_control("ac", "ac-99")
-        title_nodes = [c for c in result if "title" in c.tag]
-        assert title_nodes[0].text == "ac-99"
+        assert result.get("title") == "ac-99"
 
     def test_control_with_label(self, cat_with_group):
         """create_control() adds a label prop when label is provided."""
         result = cat_with_group.create_control("ac", "ac-4", label="AC-4")
-        prop_nodes = [c for c in result if "prop" in c.tag]
-        label_props = [p for p in prop_nodes if p.get("name") == "label"]
+        props = result.get("props", [])
+        label_props = [p for p in props if p.get("name") == "label"]
         assert len(label_props) == 1
         assert label_props[0].get("value") == "AC-4"
 
     def test_control_with_overview(self, cat_with_group):
-        """create_control() adds a part[@name='overview'] when overview is provided."""
+        """create_control() adds a part with name='overview' when overview is provided."""
         result = cat_with_group.create_control("ac", "ac-5", overview="Overview text.")
-        part_nodes = [c for c in result if "part" in c.tag]
-        overview_parts = [p for p in part_nodes if p.get("name") == "overview"]
+        parts = result.get("parts", [])
+        overview_parts = [p for p in parts if p.get("name") == "overview"]
         assert len(overview_parts) == 1
 
     def test_control_with_guidance(self, cat_with_group):
-        """create_control() adds a part[@name='guidance'] when guidance is provided."""
+        """create_control() adds a part with name='guidance' when guidance is provided."""
         result = cat_with_group.create_control("ac", "ac-6", guidance="Guidance text.")
-        part_nodes = [c for c in result if "part" in c.tag]
-        guidance_parts = [p for p in part_nodes if p.get("name") == "guidance"]
+        parts = result.get("parts", [])
+        guidance_parts = [p for p in parts if p.get("name") == "guidance"]
         assert len(guidance_parts) == 1
 
     def test_invalid_parent_returns_none(self, cat_with_group):
@@ -183,14 +178,14 @@ class TestCreateControl:
 # ===========================================================================
 class TestGetControlById:
 
-    def test_returns_element_for_known_control(self, loaded_cat):
+    def test_returns_dict_for_known_control(self, loaded_cat):
         """get_control_by_id() finds a known control from a loaded catalog."""
         result = loaded_cat.get_control_by_id("ac-1")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_returned_element_has_matching_id(self, loaded_cat):
-        """get_control_by_id() returns the element whose @id matches."""
+    def test_returned_dict_has_matching_id(self, loaded_cat):
+        """get_control_by_id() returns the dict whose id matches."""
         result = loaded_cat.get_control_by_id("ac-2")
         assert result is not None
         assert result.get("id") == "ac-2"
@@ -211,14 +206,14 @@ class TestGetControlById:
 # ===========================================================================
 class TestGetGroupById:
 
-    def test_returns_element_for_known_group(self, loaded_cat):
+    def test_returns_dict_for_known_group(self, loaded_cat):
         """get_group_by_id() finds a known group from a loaded catalog."""
         result = loaded_cat.get_group_by_id("ac")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_returned_element_has_matching_id(self, loaded_cat):
-        """get_group_by_id() returns the element whose @id matches."""
+    def test_returned_dict_has_matching_id(self, loaded_cat):
+        """get_group_by_id() returns the dict whose id matches."""
         result = loaded_cat.get_group_by_id("ac")
         assert result.get("id") == "ac"
 
@@ -248,11 +243,11 @@ class TestGetControlList:
         result = loaded_cat.get_control_list()
         assert len(result) > 0
 
-    def test_each_item_is_element(self, loaded_cat):
-        """Each item returned by get_control_list() is an ElementTree.Element."""
+    def test_each_item_is_dict(self, loaded_cat):
+        """Each item returned by get_control_list() is a dict."""
         controls = loaded_cat.get_control_list()
         for c in controls[:5]:  # sample first 5
-            assert isinstance(c, ElementTree.Element)
+            assert isinstance(c, dict)
 
     def test_empty_catalog_returns_empty_list(self, empty_cat):
         """get_control_list() returns [] when there are no controls."""
@@ -285,3 +280,194 @@ class TestProfileControl:
             profile.control("ac-1")
         except Exception:
             pytest.fail("Profile.control() raised unexpectedly on unresolved profile")
+
+
+# ===========================================================================
+# Validity after programmatic edits
+# ===========================================================================
+class TestCatalogEditValidity:
+    """Verify that a catalog remains OSCAL-valid after groups and controls are added."""
+
+    @pytest.fixture
+    def edited_cat(self):
+        """Fresh catalog with one group and two controls."""
+        c = Catalog.new("Validity Test Catalog")
+        c.create_control_group("[root]", "ac", title="Access Control", label="AC", sort_id="ac")
+        c.create_control("ac", "ac-1", title="AC Policy", label="AC-1",
+                         sort_id="ac-01",
+                         statements=["Establish and maintain an access control policy."],
+                         guidance="Include scope and responsibilities.")
+        c.create_control("ac", "ac-2", title="Account Management", label="AC-2",
+                         sort_id="ac-02",
+                         statements=["Manage information system accounts."])
+        return c
+
+    def test_valid_after_add_group(self):
+        """Catalog passes validate() immediately after create_control_group()."""
+        c = Catalog.new("Validity Test")
+        c.create_control_group("[root]", "si", title="System and Information Integrity")
+        assert c.validate() is True
+        assert c.is_valid is True
+
+    def test_valid_after_add_control(self, edited_cat):
+        """Catalog passes validate() after controls are added."""
+        assert edited_cat.validate() is True
+        assert edited_cat.is_valid is True
+
+    def test_validation_errors_empty_after_valid(self, edited_cat):
+        """validation_errors is empty when validate() passes."""
+        edited_cat.validate()
+        assert edited_cat.validation_errors == []
+
+    def test_group_found_after_add(self, edited_cat):
+        """get_group_by_id() finds the added group."""
+        result = edited_cat.get_group_by_id("ac")
+        assert result is not None
+        assert result.get("id") == "ac"
+
+    def test_controls_found_after_add(self, edited_cat):
+        """get_control_by_id() finds each added control."""
+        assert edited_cat.get_control_by_id("ac-1") is not None
+        assert edited_cat.get_control_by_id("ac-2") is not None
+
+    def test_control_count(self, edited_cat):
+        """__len__ returns the total control count after edits."""
+        assert len(edited_cat) == 2
+
+
+# ===========================================================================
+# JSON round-trip: edit → dump JSON → reload → verify
+# ===========================================================================
+class TestCatalogJsonRoundtrip:
+    """Verify group/control data and OSCAL validity survive a JSON save/reload cycle."""
+
+    @pytest.fixture
+    def roundtrip(self, tmp_path):
+        """
+        Build a catalog with one group and one control, save as JSON, reload,
+        and return (original, reloaded) as a tuple.
+        """
+        src = Catalog.new("Roundtrip Test")
+        src.create_control_group("[root]", "ac", title="Access Control", label="AC")
+        src.create_control("ac", "ac-1", title="AC Policy", label="AC-1",
+                           guidance="Implement an AC policy.")
+        assert src.validate() is True, "Source catalog must be valid before dump"
+
+        path = str(tmp_path / "catalog.json")
+        assert src.dump(path, format="json") is True, "dump() must succeed"
+
+        reloaded = Catalog.load(path)
+        return src, reloaded
+
+    def test_reloaded_is_valid_after_load(self, roundtrip):
+        """Reloaded catalog has is_valid True immediately after load."""
+        _, reloaded = roundtrip
+        assert reloaded.is_valid is True
+
+    def test_reloaded_passes_validate(self, roundtrip):
+        """Reloaded catalog passes an explicit validate() call."""
+        _, reloaded = roundtrip
+        assert reloaded.validate() is True
+
+    def test_group_survives_json_roundtrip(self, roundtrip):
+        """get_group_by_id() finds the group in the reloaded catalog."""
+        _, reloaded = roundtrip
+        group = reloaded.get_group_by_id("ac")
+        assert group is not None
+        assert group.get("id") == "ac"
+        assert group.get("title") == "Access Control"
+
+    def test_control_survives_json_roundtrip(self, roundtrip):
+        """get_control_by_id() finds the control in the reloaded catalog."""
+        _, reloaded = roundtrip
+        ctrl = reloaded.get_control_by_id("ac-1")
+        assert ctrl is not None
+        assert ctrl.get("id") == "ac-1"
+        assert ctrl.get("title") == "AC Policy"
+
+    def test_props_survive_json_roundtrip(self, roundtrip):
+        """Label props added to the control survive the JSON round-trip."""
+        _, reloaded = roundtrip
+        ctrl = reloaded.get_control_by_id("ac-1")
+        props = ctrl.get("props", [])
+        label_props = [p for p in props if p.get("name") == "label"]
+        assert len(label_props) == 1
+        assert label_props[0].get("value") == "AC-1"
+
+    def test_control_count_preserved(self, roundtrip):
+        """len() on the reloaded catalog matches the original."""
+        src, reloaded = roundtrip
+        assert len(reloaded) == len(src)
+
+    def test_reloaded_is_not_read_only(self, roundtrip):
+        """Reloaded catalog is editable (not read-only)."""
+        _, reloaded = roundtrip
+        assert reloaded.is_read_only is False
+
+
+# ===========================================================================
+# XML round-trip: load XML → validate → dump XML → reload → verify
+# ===========================================================================
+class TestCatalogXmlRoundtrip:
+    """Verify that a catalog loaded from XML survives an XML save/reload cycle."""
+
+    @pytest.fixture(scope="class")
+    def xml_roundtrip(self, tmp_path_factory):
+        """
+        Load the FedRAMP LOW catalog from XML, dump to a new XML file, reload,
+        and return (original, reloaded) as a tuple.
+        """
+        src = Catalog.load(_XML_CATALOG)
+        assert src.is_valid, "Source XML catalog must be valid before dump"
+
+        path = str(tmp_path_factory.mktemp("xml") / "catalog_rt.xml")
+        assert src.dump(path, format="xml") is True, "dump() must succeed"
+
+        reloaded = Catalog.load(path)
+        return src, reloaded
+
+    def test_source_passes_validate_before_dump(self, xml_roundtrip):
+        """Loaded XML catalog is OSCAL-valid before serialization."""
+        src, _ = xml_roundtrip
+        assert src.validate() is True
+        assert src.is_valid is True
+
+    def test_reloaded_is_valid_after_load(self, xml_roundtrip):
+        """Reloaded XML catalog has is_valid True immediately after load."""
+        _, reloaded = xml_roundtrip
+        assert reloaded.is_valid is True
+
+    def test_reloaded_passes_validate(self, xml_roundtrip):
+        """Reloaded XML catalog passes an explicit validate() call."""
+        _, reloaded = xml_roundtrip
+        assert reloaded.validate() is True
+
+    def test_reloaded_model_is_catalog(self, xml_roundtrip):
+        """Reloaded content is identified as a catalog."""
+        _, reloaded = xml_roundtrip
+        assert reloaded.model == "catalog"
+
+    def test_known_group_survives_xml_roundtrip(self, xml_roundtrip):
+        """A known group ('ac') is still findable after XML round-trip."""
+        _, reloaded = xml_roundtrip
+        group = reloaded.get_group_by_id("ac")
+        assert group is not None
+        assert group.get("id") == "ac"
+
+    def test_known_control_survives_xml_roundtrip(self, xml_roundtrip):
+        """A known control ('ac-1') is still findable after XML round-trip."""
+        _, reloaded = xml_roundtrip
+        ctrl = reloaded.get_control_by_id("ac-1")
+        assert ctrl is not None
+        assert ctrl.get("id") == "ac-1"
+
+    def test_control_count_preserved(self, xml_roundtrip):
+        """Control count is unchanged after XML round-trip."""
+        src, reloaded = xml_roundtrip
+        assert len(reloaded) == len(src)
+
+    def test_control_list_all_dicts(self, xml_roundtrip):
+        """Every control in the reloaded catalog is a dict."""
+        _, reloaded = xml_roundtrip
+        for ctrl in reloaded.get_control_list():
+            assert isinstance(ctrl, dict)

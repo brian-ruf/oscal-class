@@ -3,24 +3,47 @@ Functions specific to OSCAL control objects. (Catalog, Profile, and Mapping)
 """
 from loguru import logger
 from datetime import datetime, timezone
-from typing import Optional
-from xml.etree import ElementTree
+from typing import Any, Optional, cast
 from enum import Enum
 
-from .oscal_content import OSCAL, requires, if_update_successful, OSCAL_DEFAULT_XML_NAMESPACE, append_props, append_links
-from .oscal_converters import oscal_markdown_to_html
+from .oscal_content import OSCAL, requires, if_update_successful, append_props, append_links
 
-"""
-PROFILES **** <<<<====---- ****
-- Instantiate a catalog object in the profile to represent the resolved 
-    catalog, and use it to manage the resolved controls
-- Keep in dict (JSON/YAML)
-- Define the same read-only methods in profiles as for catalogs, but pass 
-    them through to the resolved catalog object
-- Every profile maintains an import tree that tracks the status of each import, 
-    and a controls tree that tracks the resolved controls and their sources.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Dict navigation helpers
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-"""
+def _find_group(groups: list, group_id: str) -> Optional[dict]:
+    """Recursively find a group dict by id within a list of groups."""
+    for g in groups or []:
+        if g.get("id") == group_id:
+            return g
+        found = _find_group(g.get("groups", []), group_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_control(container: dict, control_id: str) -> Optional[dict]:
+    """Recursively find a control dict by id within a catalog or group dict."""
+    for ctrl in container.get("controls", []):
+        if ctrl.get("id") == control_id:
+            return ctrl
+    for grp in container.get("groups", []):
+        found = _find_control(grp, control_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _all_controls(container: dict) -> list:
+    """Recursively collect all control dicts from a catalog or group dict."""
+    result = []
+    for ctrl in container.get("controls", []):
+        result.append(ctrl)
+    for grp in container.get("groups", []):
+        result.extend(_all_controls(grp))
+    return result
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Catalog(OSCAL):
@@ -28,256 +51,207 @@ class Catalog(OSCAL):
     Inherits read-only catalog functionality from CatalogBase and adds
     methods for creating and managing controls and control groups.
 
-    self._state: 
-        - "editable", "read-only", or "locked" 
+    self._state:
+        - "editable", "read-only", or "locked"
         - controls whether modifications are allowed
-    self.control_tree: 
+    self.control_tree:
         - A cached structure representing the hierarchy of controls and groups.
         - Contains control IDs, titles, labels, and parent-child relationships.
         - No control details are stored here.
         - Enables fast lookups without needing to query the catalog repeatedly.
     """
     def _init_common(self):
-        super()._init_common()        # run OSCAL's common init first
-        
+        super()._init_common()
+
+    # -------------------------------------------------------------------------
+    def _catalog_root(self) -> dict[str, Any]:
+        """Return the catalog root dict from _dict."""
+        if not isinstance(self._dict, dict):
+            return {}
+        catalog = self._dict.get("catalog")
+        return catalog if isinstance(catalog, dict) else {}
 
     # -------------------------------------------------------------------------
     def __len__(self):
-        """Return the number of top-level controls in the catalog."""
-        controls = self.xpath("//control")
-        return len(controls) if controls else 0
+        """Return the total number of controls in the catalog at all levels."""
+        return len(_all_controls(self._catalog_root()))
+
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
     @if_update_successful
-    def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = ""):
+    def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = "") -> Optional[dict]:
         """
-            Creates a new control under the specified parent group.
-            Parameters:
-            - parent_id (str): The id of the parent group to which this new control will be added.
-            - id (str): The id of the new control.
-            - title (str): The title of the new control.
-            - params (array): A dictionary of parameters to add to the control.
-            - props (array): A dictionary of properties to add to the control.
-            - links (array): A dictionary of links to add to the control.
-            - overview (str): An overview of the control.
-            - statements (dict): The control's requirement statement.
-            - guidance (str): Guidance for understanding the new control.
-            - objectives (array): A list of assessment objectives for the new control.
-            - objects (array): A dictionary of assessment objects to add to the control.
-            - methods (array): A dictionary of assessment methods to add to the control.
-            - remarks (str): The remarks of the new control.
+        Creates a new control under the specified parent group.
+        Parameters:
+        - parent_id (str): The id of the parent group to add the control to.
+        - id (str): The id of the new control.
+        - title (str): The title of the new control.
+        - params (list): Parameters to add to the control.
+        - props (list): Properties to add to the control.
+        - links (list): Links to add to the control.
+        - label (str): Label prop value.
+        - sort_id (str): sort-id prop value.
+        - alt_identifier (str): alt-identifier prop value.
+        - overview (str): Overview part prose (markdown).
+        - statements (list): Statement items — strings or {'id':..., 'prose':...} dicts.
+        - guidance (str): Guidance part prose (markdown).
+        - example (str): Example part prose (markdown).
+        - remarks (str): Remarks prose (markdown).
+        Returns the new control dict, or None on failure.
         """
-        logger.info(f"Creating new control with id '{id}' under parent group '{parent_id}'")
-        status = False
-        control = None
+        logger.info(f"Creating new control '{id}' under parent group '{parent_id}'")
         try:
-            parent_xpath = f"//group[@id='{parent_id}']"
-            logger.debug(f"Creating control under parent id: {parent_id}")
+            parent = _find_group(self._catalog_root().get("groups", []), parent_id)
+            if parent is None:
+                logger.warning(f"CREATE CONTROL: Unable to find parent group with id '{parent_id}'")
+                return None
 
-            parent_nodes = self.xpath(parent_xpath)
-            parent_node = parent_nodes[0] if parent_nodes else None
-            if parent_node is not None:
-                logger.debug("TAG: " + parent_node.tag)
-                control = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}control")
-                control.set("id", id)
+            control: dict[str, Any] = {"id": id}
 
-                title_node = ElementTree.SubElement(control, "title")
-                if title == "":
-                    if label != "":
-                        title = label
-                    else:
-                        title = id
-                title_node.text = title
+            if title == "":
+                title = label if label else id
+            control["title"] = title
 
-                if label != "":
-                    label_node = ElementTree.SubElement(control, "prop")
-                    label_node.set("name", "label")
-                    label_node.set("value", label)
+            # Inline props for label / sort-id / alt-identifier
+            inline_props = []
+            if label:
+                inline_props.append({"name": "label", "value": label})
+            if sort_id:
+                inline_props.append({"name": "sort-id", "value": sort_id})
+            if alt_identifier:
+                inline_props.append({"name": "alt-identifier", "value": alt_identifier})
 
-                if sort_id != "":
-                    sort_id_node = ElementTree.SubElement(control, "prop")
-                    sort_id_node.set("name", "sort-id")
-                    sort_id_node.set("value", sort_id)
-
-                if alt_identifier != "":
-                    alt_id_node = ElementTree.SubElement(control, "prop")
-                    alt_id_node.set("name", "alt-identifier")
-                    alt_id_node.set("value", alt_identifier)
-
-                for param in params:
-                    param_node = ElementTree.SubElement(control, "param")
-                    param_node.set("id", param)
-
-                append_props(control, props)
+            all_props = inline_props + list(props)
+            if all_props:
+                append_props(control, all_props)
+            if links:
                 append_links(control, links)
 
-                if overview != "":
-                    overview_node = ElementTree.SubElement(control, "part")
-                    overview_node.set("name", "overview")
-                    self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
+            if params:
+                control["params"] = [{"id": p} if isinstance(p, str) else p for p in params]
 
-                if len(statements) > 0:
-                    statement_node = ElementTree.SubElement(control, "part")
-                    statement_node.set("name", "statement")
-                    statement_node.set("id", f"{id}_smt")
-                    logger.debug(f"STATEMENTS TYPE: {type(statements)} with {len(statements)} items.")
-                    if len(statements) == 1:
-                        if isinstance(statements[0], str):
-                            logger.debug("Single statement without id detected.")
-                            self.assign_html_string_to_node(statement_node, oscal_markdown_to_html(statements[0], True))
-                        elif isinstance(statements[0], dict):
-                            logger.debug("Single statement with id detected.")
-                            statement_item = statements[0]
-                            item_node = ElementTree.SubElement(statement_node, "part")
-                            item_node.set("name", "item")
-                            if statement_item.get('id', "") != "":
-                                item_node.set("id", f"{id}_smt_01")
-                            self.assign_html_string_to_node(item_node, oscal_markdown_to_html(statement_item['prose'], True))
-                    else:
-                        smt_cntr = 0
-                        for item in statements:
-                            smt_cntr += 1
-                            statement_child_node = ElementTree.SubElement(statement_node, "part")
-                            statement_child_node.set("name", "item")
-                            if item.get('id', "") != "":
-                                statement_child_node.set("id", f"{id}_smt_{smt_cntr:02d}")
-                            self.assign_html_string_to_node(statement_child_node, oscal_markdown_to_html(item['prose'], True))
+            # Parts
+            parts: list[dict[str, Any]] = []
+            if overview:
+                parts.append({"name": "overview", "prose": overview})
 
-                if guidance != "":
-                    guidance_node = ElementTree.SubElement(control, "part")
-                    guidance_node.set("name", "guidance")
-                    self.assign_html_string_to_node(guidance_node, oscal_markdown_to_html(guidance, True))
+            if statements:
+                if len(statements) == 1 and isinstance(statements[0], str):
+                    parts.append({"name": "statement", "id": f"{id}_smt", "prose": statements[0]})
+                else:
+                    smt_parts: list[dict[str, Any]] = []
+                    for i, item in enumerate(statements, 1):
+                        if isinstance(item, str):
+                            smt_parts.append({"name": "item", "prose": item})
+                        else:
+                            part = {"name": "item", "prose": item.get("prose", "")}
+                            if item.get("id"):
+                                part["id"] = f"{id}_smt_{i:02d}"
+                            smt_parts.append(part)
+                    parts.append({"name": "statement", "id": f"{id}_smt", "parts": smt_parts})
 
-                if example != "":
-                    example_node = ElementTree.SubElement(control, "part")
-                    example_node.set("name", "example")
-                    self.assign_html_string_to_node(example_node, oscal_markdown_to_html(example, True))
+            if guidance:
+                parts.append({"name": "guidance", "prose": guidance})
+            if example:
+                parts.append({"name": "example", "prose": example})
 
-                if remarks != "":
-                    remarks_node = ElementTree.SubElement(control, "remarks")
-                    self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
-                parent_node.append(control)
-                status = True
-            else:
-                logger.warning(f"CREATE CONTROL: Unable to find parent group with id {parent_id}")
+            if parts:
+                control["parts"] = parts
+
+            if remarks:
+                control["remarks"] = remarks
+
+            parent.setdefault("controls", []).append(control)
+            return control
+
         except Exception as error:
-            logger.error(f"Error creating control ({id}): {type(error).__name__} - {str(error)}")
-
-        if not status:
-            control = None
-
-        return control
+            logger.error(f"Error creating control '{id}': {type(error).__name__} - {error}")
+            return None
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
     @if_update_successful
-    def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = ""):
+    def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = "") -> Optional[dict]:
         """
         Creates a new catalog group.
         Parameters:
-        - parent_id (str): The id of the parent group to which this new group will be added.
-                           Use '[root]' (case sensitive) to add to the top level of the catalog.
+        - parent_id (str): The id of the parent group, or '[root]' for the catalog top level.
         - id (str): The id of the new group.
         - title (str): The title of the new group.
-        - params (dict): A dictionary of parameters to add to the group.
-        - props (dict): A dictionary of properties to add to the group.
-        - links (dict): A dictionary of links to add to the group.
-        - label (str): The label of the new group.
-        - sort_id (str): The sort-id of the new group.
-        - alt_identifier (str): The alt-identifier of the new group.
-        - overview (str): The overview of the new group.
-        - instruction (str): The instruction of the new group.
-        - remarks (str): The remarks of the new group.
+        - props (list): Properties to add to the group.
+        - links (list): Links to add to the group.
+        - label (str): Label prop value.
+        - sort_id (str): sort-id prop value.
+        - alt_identifier (str): alt-identifier prop value.
+        - overview (str): Overview part prose (markdown).
+        - instruction (str): Instruction part prose (markdown).
+        - remarks (str): Remarks prose (markdown).
+        Returns the new group dict, or None on failure.
         """
-        status = False
-        group = None
         if parent_id == "":
             parent_id = "[root]"
         try:
-            if parent_id == "[root]":
-                logger.debug("Creating group at root level")
-                parent_xpath = "/*"
-            else:
-                parent_xpath = f"//group[@id='{parent_id}']"
-                logger.debug(f"Creating group under parent id: {parent_id}")
+            group: dict[str, Any] = {"id": id}
 
-            parent_nodes = self.xpath(parent_xpath)
-            if isinstance(parent_nodes, list) and len(parent_nodes) > 0:
-                logger.debug(f"PARENT NODES LEN: {len(parent_nodes)}")
-                parent_node = parent_nodes[0]
+            if title:
+                group["title"] = title
 
-                logger.debug("TAG: " + parent_node.tag)
-                group = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}group")
-                group.set("id", id)
+            inline_props = []
+            if label:
+                inline_props.append({"name": "label", "value": label})
+            if sort_id:
+                inline_props.append({"name": "sort-id", "value": sort_id})
+            if alt_identifier:
+                inline_props.append({"name": "alt-identifier", "value": alt_identifier})
 
-                if title != "":
-                    title_node = ElementTree.SubElement(group, "title")
-                    title_node.text = title
-
-                if label != "":
-                    label_node = ElementTree.SubElement(group, "prop")
-                    label_node.set("name", "label")
-                    label_node.set("value", label)
-
-                if sort_id != "":
-                    sort_id_node = ElementTree.SubElement(group, "prop")
-                    sort_id_node.set("name", "sort-id")
-                    sort_id_node.set("value", sort_id)
-
-                if alt_identifier != "":
-                    alt_id_node = ElementTree.SubElement(group, "prop")
-                    alt_id_node.set("name", "alt-identifier")
-                    alt_id_node.set("value", alt_identifier)
-
-                append_props(group, props)
+            all_props = inline_props + list(props)
+            if all_props:
+                append_props(group, all_props)
+            if links:
                 append_links(group, links)
 
-                if overview != "":
-                    overview_node = ElementTree.SubElement(group, "part")
-                    overview_node.set("name", "overview")
-                    self.assign_html_string_to_node(overview_node, oscal_markdown_to_html(overview, True))
+            parts: list[dict[str, Any]] = []
+            if overview:
+                parts.append({"name": "overview", "prose": overview})
+            if instruction:
+                parts.append({"name": "instruction", "prose": instruction})
+            if parts:
+                group["parts"] = parts
 
-                if instruction != "":
-                    instruction_node = ElementTree.SubElement(group, "part")
-                    instruction_node.set("name", "instruction")
-                    self.assign_html_string_to_node(instruction_node, oscal_markdown_to_html(instruction, True))
+            if remarks:
+                group["remarks"] = remarks
 
-                if remarks != "":
-                    remarks_node = ElementTree.SubElement(group, "remarks")
-                    self.assign_html_string_to_node(remarks_node, oscal_markdown_to_html(remarks, True))
-
-                parent_node.append(group)
-                status = True
+            if parent_id == "[root]":
+                self._catalog_root().setdefault("groups", []).append(group)
             else:
-                logger.warning(f"CREATE GROUP: Unable to find parent group with id {parent_id}")
+                parent = _find_group(self._catalog_root().get("groups", []), parent_id)
+                if parent is None:
+                    logger.warning(f"CREATE GROUP: Unable to find parent group with id '{parent_id}'")
+                    return None
+                parent.setdefault("groups", []).append(group)
+
+            return group
+
         except Exception as error:
-            logger.error(f"Error creating group ({id}): {type(error).__name__} - {str(error)}")
-
-        if not status:
-            group = None
-
-        return group
+            logger.error(f"Error creating group '{id}': {type(error).__name__} - {error}")
+            return None
 
     # -------------------------------------------------------------------------
-    def get_control_by_id(self, control_id: str) -> Optional[ElementTree.Element]:
-        """Retrieve a control element by its ID."""
-        controls = self.xpath(f"//control[@id='{control_id}']")
-        return controls[0] if isinstance(controls, list) and len(controls) > 0 else None
+    def get_control_by_id(self, control_id: str) -> Optional[dict]:
+        """Retrieve a control dict by its ID."""
+        return _find_control(self._catalog_root(), control_id)
 
     # -------------------------------------------------------------------------
-    def get_group_by_id(self, group_id: str) -> Optional[ElementTree.Element]:
-        """Retrieve a group element by its ID."""
-        groups = self.xpath(f"//group[@id='{group_id}']")
-        return groups[0] if isinstance(groups, list) and len(groups) > 0 else None
+    def get_group_by_id(self, group_id: str) -> Optional[dict]:
+        """Retrieve a group dict by its ID."""
+        return _find_group(self._catalog_root().get("groups", []), group_id)
 
     # -------------------------------------------------------------------------
     def get_control_list(self) -> list:
-        """Return a list of all controls in the catalog."""
-        controls = self.xpath("//control")
-        return controls if isinstance(controls, list) else []
+        """Return a flat list of all control dicts in the catalog."""
+        return _all_controls(self._catalog_root())
 
-
-    def _build_controls_tree(self): 
+    def _build_controls_tree(self):
         """Internal method to cache the structure of controls for efficient access.
         Placeholder for caching logic.
         """
@@ -290,131 +264,30 @@ class Profile(OSCAL):
     for managing imports and control selections.
     """
     def _init_common(self):
-        super()._init_common()        # run OSCAL's common init first
-        self.catalog = Catalog.new("catalog")
+        super()._init_common()
+        self.catalog: Catalog = cast(Catalog, Catalog.new("catalog"))
 
-        self.resolution_state = "unresolved"  # "unresolved", "resolving", "resolved", "blocked", "error"
-
+        self.resolution_state = "unresolved"
         self.resolution_status = ResolutionStatus.UNRESOLVED
         self.resolved_datetime = datetime.now(timezone.utc)
-        self.resolution_ttl = 0 # 
+        self.resolution_ttl = 0
         self.controls_tree = []
 
         self._build_controls_tree()
+
     # -------------------------------------------------------------------------
-    # -------------------------------------------------------------------------
-    def _build_controls_tree(self): 
+    def _build_controls_tree(self):
         """Internal method to cache the structure of controls for efficient access.
         Placeholder for caching logic.
         """
 
     # -------------------------------------------------------------------------
-    def control(self, control_id: str, with_history: bool = False) -> dict:
+    def control(self, control_id: str, with_history: bool = False) -> Optional[dict]:
         """Retrieve a control by its ID from the resolved catalog."""
         if self.resolution_status != ResolutionStatus.RESOLVED:
             logger.warning(f"Attempting to access control '{control_id}' before profile is resolved.")
             return None
         return self.catalog.get_control_by_id(control_id)
-    # -------------------------------------------------------------------------
-    # @requires(is_read_only=False)
-    # @if_update_successful
-    # def add_or_update_import(self, href: str, include_all: bool = False, include_ids=[], include_with_child=False, exclude_ids=[], exclude_with_child=False):
-    #     """
-    #     If an import with the provided href already exists, updates it with the
-    #         provided include details.
-    #     If an import with the provided href does not exist, but an import with an
-    #         empty href (href='#'), updates it with the provided href and include details.
-    #     Otherwise, adds a new import statement with the provided href and include details.
-
-    #     Parameters:
-    #     - href (str): The href of the profile to import.
-    #     - include_all (bool): Whether to include all controls from the imported profile.
-    #     - include_ids (list): List of control IDs to include.
-    #     - include_with_child (bool): Whether to include child controls.
-    #     - exclude_ids (list): List of control IDs to exclude.
-    #     - exclude_with_child (bool): Whether to exclude child controls.
-    #     """
-    #     logger.debug(f"Adding or updating profile import for href '{href}' with include_all={include_all} and import_ids={include_ids}")
-
-    #     import_matches = self.xpath(f"/*/import[@href='{href}']")
-    #     import_obj: Optional[ElementTree.Element] = None
-    #     if isinstance(import_matches, list) and len(import_matches) > 0:
-    #         logger.debug(f"Found existing import for href '{href}'. Updating it.")
-    #         if isinstance(import_matches[0], ElementTree.Element):
-    #             import_obj = import_matches[0]
-    #     else:
-    #         import_matches = self.xpath("/*/import[@href='#']")
-    #         if isinstance(import_matches, list) and len(import_matches) > 0:
-    #             logger.debug(f"Found existing import with empty href. Updating it to '{href}'.")
-    #             if isinstance(import_matches[0], ElementTree.Element):
-    #                 import_obj = import_matches[0]
-    #         else:
-    #             logger.debug(f"No existing import found for href '{href}'. Creating new import element.")
-    #             import_obj = ElementTree.Element(f"{{{OSCAL_DEFAULT_XML_NAMESPACE}}}import")
-
-    #     if import_obj is None:
-    #         logger.error(f"Unable to create or update import for href '{href}'.")
-    #         return False
-
-    #     if import_obj.get("href", "") != href:
-    #         logger.debug(f"Setting import href to '{href}'.")
-    #         import_obj.set("href", href)
-
-    #     include_obj = import_obj.find("include-controls")
-    #     if include_obj is not None:
-    #         logger.debug("Removing existing include-controls element")
-    #         import_obj.remove(include_obj)
-
-    #     include_all_obj = import_obj.find("include-all")
-    #     if include_all and include_all_obj:
-    #         logger.debug("Include-all already present.")
-    #     elif not include_all and include_all_obj:
-    #         logger.debug("Removing existing include-all element")
-    #         import_obj.remove(include_all_obj)
-    #     elif include_all and not include_all_obj:
-    #         logger.debug("Adding include-all element.")
-    #         include_obj = ElementTree.SubElement(import_obj, "include-all")
-
-    #     if not include_all and len(include_ids) > 0:
-    #         include_obj = ElementTree.SubElement(import_obj, "include-controls")
-    #         if include_with_child:
-    #             include_obj.set("with-child-controls", "yes")
-    #         for control_id in include_ids:
-    #             with_id_obj = ElementTree.SubElement(include_obj, "with-id")
-    #             with_id_obj.text = control_id
-
-    #     if include_all and len(exclude_ids) > 0:
-    #         exclude_obj = ElementTree.SubElement(import_obj, "exclude-controls")
-    #         if exclude_with_child:
-    #             exclude_obj.set("with-child-controls", "yes")
-    #         for control_id in include_ids:
-    #             with_id_obj = ElementTree.SubElement(exclude_obj, "with-id")
-    #             with_id_obj.text = control_id
-
-    #     return True
-
-    # # -------------------------------------------------------------------------
-    # @requires(is_read_only=False)
-    # @if_update_successful
-    # def append_with_id(self, href: str, control_ids: list = []) -> bool:
-    #     """
-    #     Adds with-id element to a profile's import statement.
-    #     """
-    #     status = False
-    #     import_matches = self.xpath(f"/*/import[@href='{href}']")
-    #     if isinstance(import_matches, list) and len(import_matches) > 0 and isinstance(import_matches[0], ElementTree.Element):
-    #         import_obj = import_matches[0]
-    #         include_obj = import_obj.find("include-controls")
-    #         if include_obj is None:
-    #             include_obj = ElementTree.SubElement(import_obj, "include-controls")
-    #             status = True
-    #         for control_id in control_ids:
-    #             with_id_obj = ElementTree.SubElement(include_obj, "with-id")
-    #             with_id_obj.text = control_id
-    #     else:
-    #         logger.error(f"Unable to find import for href '{href}'. Cannot append control IDs.")
-
-    #     return status
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Mapping(OSCAL):
@@ -424,16 +297,16 @@ class Mapping(OSCAL):
     for managing mappings between controls and other objects.
     """
     def _init_common(self):
-        super()._init_common()        # run OSCAL's common init first
+        super()._init_common()
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 class ResolutionStatus(str, Enum):
-    UNRESOLVED   = "unresolved"   # The content has not been processed for resolution
-    RESOLVING    = "resolving"    # The content is currently being processed for resolution
-    RESOLVED     = "resolved"     # The content has been successfully resolved
-    BLOCKED      = "blocked"      # The content cannot be resolved due to missing dependencies
-    EXPIRED      = "expired"      # The content is valid, but cached copy has expired
+    UNRESOLVED   = "unresolved"
+    RESOLVING    = "resolving"
+    RESOLVED     = "resolved"
+    BLOCKED      = "blocked"
+    EXPIRED      = "expired"
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':
