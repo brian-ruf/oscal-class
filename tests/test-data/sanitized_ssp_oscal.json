@@ -45,7 +45,6 @@
         "description" : ""
       },
       "security-sensitivity-level" : "[not-specified]",
-      "system-name" : "Sample",
       "system-information" : {
         "information-types" : [ {
           "title" : "None",

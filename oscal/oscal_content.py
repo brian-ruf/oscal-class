@@ -326,6 +326,7 @@ class OSCAL(LoggableMixin):
             "structure":      None,  # all required fields and hierarchy are present
             "data-types":     None,  # every field/flag value matches its declared OSCAL datatype
             "allowed-values": None,  # every constrained value is within its enumerated set
+            "cardinality":    None,  # all arrays satisfy their min-occurs/max-occurs bounds
         }
         self.validation_errors: list[dict] = []  # structured errors from the most recent validate() call
         self.errors = {} # A dictionary to hold any acquisition, validation or importing errors encountered during processing
@@ -1170,7 +1171,7 @@ class OSCAL(LoggableMixin):
 
         Returns True only when every phase passes (content_state reaches VALID).
         """
-        for phase in ("structure", "data-types", "allowed-values"):
+        for phase in ("structure", "data-types", "allowed-values", "cardinality"):
             self.validation_status[phase] = None
         self.validation_errors = []
 
@@ -1185,7 +1186,7 @@ class OSCAL(LoggableMixin):
         index = self._support.get_metaschema_index(self.oscal_version, self.model)
         if index is None:
             logger.warning("Metaschema index unavailable; treating all validation phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -1197,7 +1198,7 @@ class OSCAL(LoggableMixin):
 
         if not isinstance(model_instance, dict) or model_nodes is None:
             logger.warning("Cannot locate model root or index nodes; treating all phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -1208,13 +1209,15 @@ class OSCAL(LoggableMixin):
         errors: list[dict] = []
         self._walk_instance(model_instance, model_nodes, errors, f"/{self.model}")
 
-        struct_errors = [e for e in errors if e["error-type"] == "missing-required"]
-        dtype_errors  = [e for e in errors if e["error-type"] == "invalid-type"]
-        av_errors     = [e for e in errors if e["error-type"] == "allowed-values"]
+        struct_errors      = [e for e in errors if e["error-type"] == "missing-required"]
+        dtype_errors       = [e for e in errors if e["error-type"] == "invalid-type"]
+        av_errors          = [e for e in errors if e["error-type"] == "allowed-values"]
+        cardinality_errors = [e for e in errors if e["error-type"] == "cardinality"]
 
-        self.validation_status["structure"]      = (len(struct_errors) == 0)
-        self.validation_status["data-types"]     = (len(dtype_errors)  == 0)
-        self.validation_status["allowed-values"] = (len(av_errors)     == 0)
+        self.validation_status["structure"]      = (len(struct_errors)      == 0)
+        self.validation_status["data-types"]     = (len(dtype_errors)       == 0)
+        self.validation_status["allowed-values"] = (len(av_errors)          == 0)
+        self.validation_status["cardinality"]    = (len(cardinality_errors) == 0)
         self.validation_errors = errors
 
         for e in errors:
@@ -1223,13 +1226,14 @@ class OSCAL(LoggableMixin):
                 f"field={e.get('field', '')} value={e.get('value')!r}"
             )
 
-        all_passed = all(self.validation_status[p] for p in ("structure", "data-types", "allowed-values"))
+        _phases = ("structure", "data-types", "allowed-values", "cardinality")
+        all_passed = all(self.validation_status[p] for p in _phases)
         if all_passed:
             self.content_state = ContentState.VALID
             logger.debug("All validation phases passed.")
         else:
             self.content_state = ContentState.WELL_FORMED
-            failed = [p for p in ("structure", "data-types", "allowed-values") if not self.validation_status[p]]
+            failed = [p for p in _phases if not self.validation_status[p]]
             logger.info(f"Validation failed phases: {failed} ({len(errors)} total error(s))")
 
         if self.is_valid and self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -1251,8 +1255,9 @@ class OSCAL(LoggableMixin):
           ``missing-required``  – a required field or flag is absent
           ``invalid-type``      – a value does not match its declared OSCAL datatype pattern
           ``allowed-values``    – a value is not in its enumerated allowed-values set
+          ``cardinality``       – an array has fewer items than min-occurs or more than max-occurs
 
-        All three error types are collected in a single pass so that ``validate()`` can
+        All four error types are collected in a single pass so that ``validate()`` can
         partition them by phase after the walk completes.
 
         Args:
@@ -1300,7 +1305,7 @@ class OSCAL(LoggableMixin):
             for constraint in flag_node.get("constraints", []):
                 if constraint.get("type") != "allowed-values":
                     continue
-                if constraint.get("allow-others", False):
+                if constraint.get("allow-other", False):
                     continue
                 if not _constraint_conditions_met(constraint, instance):
                     continue
@@ -1330,9 +1335,11 @@ class OSCAL(LoggableMixin):
             if not child_name:
                 continue
 
-            json_key  = child_node.get("group-as") or child_name
-            child_val = instance.get(json_key)
-            required  = child_node.get("min-occurs") == "1"
+            json_key   = child_node.get("group-as") or child_name
+            child_val  = instance.get(json_key)
+            min_occurs = child_node.get("min-occurs", "0")
+            max_occurs = child_node.get("max-occurs", "unbounded")
+            required   = min_occurs == "1"
 
             if child_val is None:
                 if required:
@@ -1357,6 +1364,18 @@ class OSCAL(LoggableMixin):
 
             # Recurse into assemblies and grouped fields
             if isinstance(child_val, list):
+                min_int = int(min_occurs)
+                max_int = None if max_occurs == "unbounded" else int(max_occurs)
+                actual  = len(child_val)
+                if actual < min_int or (max_int is not None and actual > max_int):
+                    errors.append({
+                        "error-type": "cardinality",
+                        "location":   location,
+                        "field":      child_name,
+                        "value":      actual,
+                        "min":        min_int,
+                        "max":        max_int,
+                    })
                 for i, item in enumerate(child_val):
                     if isinstance(item, dict):
                         self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]")

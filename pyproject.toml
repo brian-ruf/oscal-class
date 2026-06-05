@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oscal"
-version = "2.0.0"
+version = "3.0.0"
 description = "Python class to validate, convert and manage OSCAL content."
 requires-python = ">=3.9"
 authors = [{ name = "Brian Ruf", email = "Brian@RufRisk.com" }]
@@ -28,13 +28,11 @@ keywords = ["oscal", "nist", "security", "compliance", "automation", "ssp", "fed
 
 dependencies = [
     "loguru          >= 0.7.3",
-    "saxonche        == 12.9.0",
     "jsonschema_rs   >= 0.26.1",
     "jsonpath-python >= 1.1.5",
     "xmlschema       >= 3.4.3",
     "PyYAML          >= 6.0",
     "markdown        >= 3.0.0",
-    # "ruf_common @ file://../common/ruf_common"
     "ruf-common      >= 2.1.0",
 ]
 
@@ -47,6 +45,9 @@ Issues = "https://github.com/brian-ruf/oscal-class/issues"
 [project.optional-dependencies]
 dev = [
     "pytest >= 8.0",
+    "pytest-cov",
+    "pytest-asyncio",
+    "hypothesis",
 ]
 
 [tool.ruff]

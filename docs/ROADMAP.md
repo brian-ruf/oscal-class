@@ -29,7 +29,7 @@ The sequencing of releases may change in response to client needs and other exte
 
 ## Next
 
-### Importing Dependency Chain
+### Version 3.0.x: Import Dependency Chain
 
 - [ ] Top level imports 
     - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]

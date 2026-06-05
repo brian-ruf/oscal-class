@@ -607,7 +607,7 @@ class MetaschemaParser:
         metaschema_rule["default"] = None
         metaschema_rule["pattern"] = None
         metaschema_rule["allowed-values"] = {}
-        metaschema_rule["allow-others"] = None
+        metaschema_rule["allow-other"] = None
         metaschema_rule["extensible"] = None
         metaschema_rule["test"] = None
         metaschema_rule["message"] = None
@@ -1269,7 +1269,7 @@ class MetaschemaParser:
         For target='@flag-name': applies to the named flag child.
         For complex Metapath targets: stored with unresolved-target preserved.
 
-        Multiple allowed-values sets for the same target are cumulative; allow-others
+        Multiple allowed-values sets for the same target are cumulative; allow-other
         conflicts are resolved with 'yes' winning, and a warning is emitted.
         """
         logger.debug(f"Handling constraints for {structure_type} {name}")
@@ -1338,7 +1338,7 @@ class MetaschemaParser:
     def _parse_allowed_values_elem(self, av_elem):
         """Parse a single <allowed-values> XML element into a constraint dict."""
         av_id    = av_elem.attrib.get("id", "")
-        allow_others_str = av_elem.attrib.get("allow-others", "no")
+        allow_others_str = av_elem.attrib.get("allow-other", "no")
         target   = av_elem.attrib.get("target", ".").strip() or "."
 
         enums = []
@@ -1361,7 +1361,7 @@ class MetaschemaParser:
             "type": "allowed-values",
             "id": av_id,
             "target": target,
-            "allow-others": allow_others_str == "yes",
+            "allow-other": allow_others_str == "yes",
             "values": enums,
         }
 
@@ -1370,7 +1370,7 @@ class MetaschemaParser:
         """Merge a list of allowed-values dicts for the same target.
 
         Values are cumulative (additive, deduped by value key).
-        allow-others: 'yes' wins; warns when contradictory inputs disagree.
+        allow-other: 'yes' wins; warns when contradictory inputs disagree.
         """
         if len(av_list) == 1:
             return av_list[0]
@@ -1382,7 +1382,7 @@ class MetaschemaParser:
         first_target = av_list[0].get("target", ".")
 
         for av in av_list:
-            allow_others_seen.add(av.get("allow-others", False))
+            allow_others_seen.add(av.get("allow-other", False))
             for v in av.get("values", []):
                 key = v.get("value", "")
                 if key and key not in seen_values:
@@ -1390,13 +1390,13 @@ class MetaschemaParser:
                     seen_values.add(key)
 
         if True in allow_others_seen and False in allow_others_seen:
-            logger.warning(f"Contradictory allow-others values for allowed-values in {context}: treating as allow-others=yes")
+            logger.warning(f"Contradictory allow-other values for allowed-values in {context}: treating as allow-other=yes")
 
         result = {
             "type": "allowed-values",
             "id": first_id,
             "target": first_target,
-            "allow-others": True in allow_others_seen,
+            "allow-other": True in allow_others_seen,
             "values": merged_values,
         }
         conditions = next((av["conditions"] for av in av_list if "conditions" in av), None)
