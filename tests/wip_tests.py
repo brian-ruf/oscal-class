@@ -7,11 +7,13 @@ from oscal import OSCAL, Catalog
 
 TEST_FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-data")
 
-TEST_DATA = [f"{TEST_FILES_DIR}/bad_test.xml", 
-             f"{TEST_FILES_DIR}/test.xml",
-             f"{TEST_FILES_DIR}/json/FedRAMP_rev5_catalog_tailoring_profile.json",
-             "https://raw.githubusercontent.com/OSCAL-Foundation/fedramp-resources/refs/heads/main/baselines/rev5/json/FedRAMP_rev5_LOW-baseline_profile.json"
-             ]
+TEST_DATA = [
+    
+    f"{TEST_FILES_DIR}/bad_import.xml", 
+    f"{TEST_FILES_DIR}/test.xml",
+    f"{TEST_FILES_DIR}/json/FedRAMP_rev5_catalog_tailoring_profile.json",
+    "https://raw.githubusercontent.com/OSCAL-Foundation/fedramp-resources/refs/heads/main/baselines/rev5/json/FedRAMP_rev5_LOW-baseline_profile.json"
+]
 
 def hold():
     oscal_catalog_obj = Catalog.new("Test Catalog", version="DRAFT-1.0", published="2026-03-02T00:00:00Z")
@@ -56,6 +58,7 @@ def hold():
 
 def test_load():
     for test_file in TEST_DATA:
+        print("\n\n\n" + "=" * 50)
         logger.info(f"Testing load() with file: {test_file}")
         obj = OSCAL.open(test_file)
         if obj:

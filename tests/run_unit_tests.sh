@@ -10,7 +10,7 @@ clear
 if [ -z "$VIRTUAL_ENV" ]; then
     if [ ! -d ".venv" ]; then
         echo "No virtual environment found. Running local_venv.sh to set it up..."
-        bash "${SCRIPT_DIR}/local_venv.sh"
+        source "${SCRIPT_DIR}/local_venv.sh"
         if [ $? -ne 0 ]; then
             echo "ERROR: local_venv.sh failed. Cannot run tests."
             exit 1
