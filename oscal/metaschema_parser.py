@@ -218,6 +218,53 @@ def parse_metaschema_specific(support, oscal_version):
 
     return all_ok
 # --------------------------------------------------------------------------
+def _rebuild_model_index(support, oscal_version: str, model: str) -> dict | None:
+    """Parse and store the metaschema index for a single model/version pair.
+
+    Lighter-weight alternative to ``parse_metaschema_specific`` when only one
+    model's index needs to be refreshed (e.g. lazy migration on first access).
+
+    Returns the freshly-built model_index dict on success, or ``None`` on failure.
+    """
+    global global_counter, global_stop_here
+    logger.info(f"Rebuilding metaschema index for {oscal_version}/{model}.")
+
+    model_metaschema = support.asset(oscal_version, model, "metaschema")
+    if not model_metaschema:
+        logger.error(f"_rebuild_model_index: no raw metaschema for {oscal_version}/{model}.")
+        return None
+
+    global_counter = 0
+    global_stop_here = False
+
+    parser = MetaschemaParser.create(model_metaschema, support, oscal_version=oscal_version)
+    if not parser.top_pass():
+        logger.error(f"_rebuild_model_index: top_pass failed for {oscal_version}/{model}.")
+        return None
+
+    model_index = parser.build_metaschema_tree()
+    if not model_index:
+        logger.error(f"_rebuild_model_index: build_metaschema_tree returned nothing for {oscal_version}/{model}.")
+        return None
+
+    model_index = {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        **model_index,
+    }
+
+    stored = support.add_asset(
+        oscal_version, model, "processed",
+        json.dumps(model_index, indent=2),
+        filename=f"{model}.json",
+    )
+    if not stored:
+        logger.warning(f"_rebuild_model_index: failed to store rebuilt index for {oscal_version}/{model}.")
+
+    logger.info(f"Rebuilt metaschema index for {oscal_version}/{model}.")
+    return model_index
+
+
+# --------------------------------------------------------------------------
 def clean_none_values_recursive(dictionary):
     """
     Recursively remove all key/value pairs where the value is None from dictionaries,
@@ -1952,6 +1999,30 @@ def _compute_json_paths(node: dict, parent_json: str, _seen: set | None = None) 
 
     for child in node.get("children", []):
         _compute_json_paths(child, json_path, _seen)
+
+def _index_uses_stale_allow_other_key(node: dict, _seen: set | None = None) -> bool:
+    """Return True if any constraint in the subtree uses the deprecated 'allow-others' key.
+
+    Indexes built by older parser versions stored the allow-other flag under the
+    plural key 'allow-others'.  The current parser and validator both use the
+    singular 'allow-other'.  When the old key is present the stored value may also
+    be incorrect, so the whole index must be rebuilt rather than simply renamed.
+    """
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        return False
+    _seen.add(node_id)
+
+    for c in node.get("constraints", []):
+        if "allow-others" in c:
+            return True
+    for child in node.get("children", []):
+        if isinstance(child, dict) and _index_uses_stale_allow_other_key(child, _seen):
+            return True
+    return False
+
 
 def _collect_unresolved_targets(node: dict, results: list | None = None, _seen: set | None = None) -> list:
     """Walk the index tree and return all constraints that still have unresolved-target.

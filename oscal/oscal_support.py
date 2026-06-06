@@ -620,9 +620,32 @@ class OSCALSupport:
             from .metaschema_parser import (
                 _annotate_ns_conditions,
                 _compute_json_paths,
+                _index_uses_stale_allow_other_key,
                 _migrate_flags_to_children,
                 _reroute_unresolved_constraints,
             )
+
+            # Detect indexes built by an older parser that stored "allow-others" (plural)
+            # instead of the current "allow-other" key.  The stored value may also be
+            # incorrect (e.g. False when the metaschema says allow-other="yes").
+            # Rebuild only this model's index from the raw metaschema XML.
+            if _index_uses_stale_allow_other_key(nodes):
+                logger.info(
+                    f"Stale metaschema index for {version}/{model} "
+                    "(deprecated 'allow-others' key) — rebuilding from raw metaschema."
+                )
+                from .metaschema_parser import _rebuild_model_index
+                fresh_index = _rebuild_model_index(self, version, model)
+                if fresh_index is not None:
+                    _metaschema_index_cache.pop(key, None)
+                    model_index = fresh_index
+                    nodes = model_index.get("nodes")
+                else:
+                    logger.warning(
+                        f"Rebuild failed for {version}/{model} — continuing with stale index. "
+                        "Allowed-values constraints may be overly strict."
+                    )
+
             _migrate_flags_to_children(nodes)
             _reroute_unresolved_constraints(nodes)
             _annotate_ns_conditions(nodes)

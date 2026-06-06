@@ -713,12 +713,15 @@ class OSCAL(LoggableMixin):
             )
         target_entry.setdefault("href_list", []).append(retry_item)
 
-        self._import_tree = None
+        self._import_tree = None  # force rebuild on next access
         has_invalid = any(e.get("status") == ImportState.INVALID for e in self.import_list)
         if self.is_valid and not has_invalid:
             self.content_state = ContentState.IMPORTS_RESOLVED
+        elif self.content_state >= ContentState.IMPORTS_RESOLVED:
+            # A retry that fails must revert the state — imports are no longer fully resolved.
+            self.content_state = ContentState.VALID
 
-        return True
+        return target_entry["status"] == ImportState.READY
 
     # -------------------------------------------------------------------------
     def retry_imports(self, failed_href: str, replacement_href: str) -> bool:

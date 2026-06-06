@@ -699,11 +699,47 @@ class TestRetryImport:
         assert len(retry_items) == 1
         assert retry_items[0]["status"] == ImportState.READY
 
-    def test_retry_success_sets_status_ready(self):
+    def test_retry_success_returns_true(self):
         obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
         result = obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
         assert result is True
+
+    def test_retry_success_sets_status_ready(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
         assert obj.import_list[0]["status"] == ImportState.READY
+
+    def test_retry_success_clears_failure(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert obj.import_list[0]["failure"] is None
+
+    def test_retry_success_sets_href_valid(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert obj.import_list[0]["href_valid"] != ""
+
+    def test_retry_success_populates_object(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert obj.import_list[0]["object"] is not None
+
+    def test_retry_success_advances_content_state(self):
+        """A successful retry that resolves the last failed import must advance content_state."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        assert obj.content_state == ContentState.VALID
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert obj.content_state == ContentState.IMPORTS_RESOLVED
+
+    def test_retry_success_sets_imports_resolved(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert obj.imports_resolved is True
+
+    def test_retry_failure_returns_false(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        result = obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        assert result is False
 
     def test_retry_failure_clears_href_valid(self):
         obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
@@ -718,6 +754,55 @@ class TestRetryImport:
         assert len(retry_items) == 1
         assert retry_items[0]["status"] == ImportState.INVALID
 
+    def test_retry_failure_sets_status_invalid(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        assert obj.import_list[0]["status"] == ImportState.INVALID
+
+    def test_retry_failure_sets_new_failure(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        assert obj.import_list[0]["failure"] is not None
+
+    def test_retry_failure_does_not_advance_content_state(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        assert obj.content_state == ContentState.VALID
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        assert obj.content_state == ContentState.VALID
+
+    def test_retry_failure_reverts_imports_resolved_state(self):
+        """If a retry causes a previously IMPORTS_RESOLVED state to break, state reverts to VALID."""
+        # Start with a fully resolved profile
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        assert obj.content_state == ContentState.IMPORTS_RESOLVED
+        # Now retry with a bad path — the import goes INVALID again
+        obj.retry_import(_CATALOG_PATH, "/tmp/_now_bad.xml")
+        assert obj.content_state == ContentState.VALID
+        assert obj.imports_resolved is False
+
+    def test_partial_retry_success_does_not_advance_state(self):
+        """Fixing one of two failed imports must not advance to IMPORTS_RESOLVED."""
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-000000000005">
+  <metadata>
+    <title>Partial Retry Profile</title>
+    <last-modified>2026-04-28T00:00:00Z</last-modified>
+    <version>1.0</version>
+    <oscal-version>1.2.1</oscal-version>
+  </metadata>
+  <import href="/tmp/_oscal_partial_retry_a.xml"><include-all/></import>
+  <import href="/tmp/_oscal_partial_retry_b.xml"><include-all/></import>
+  <merge><combine method="keep"/><as-is>true</as-is></merge>
+</profile>"""
+        obj = OSCAL.loads(xml)
+        assert obj.content_state == ContentState.VALID
+        # Fix only the first import
+        obj.retry_import("/tmp/_oscal_partial_retry_a.xml", _CATALOG_PATH)
+        # Second import still invalid — must not advance to IMPORTS_RESOLVED
+        assert obj.content_state == ContentState.VALID
+        assert obj.imports_resolved is False
+
     def test_retry_unknown_href_returns_false(self):
         obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
         result = obj.retry_import("/tmp/completely_unknown.xml", _CATALOG_PATH)
@@ -727,9 +812,71 @@ class TestRetryImport:
         """retry_import should find entry when failed_href matches an href_list item."""
         bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_rlink_nonexistent.xml"])
         obj = _load_profile(f"#{_RLINK_UUID}", bm)
-        # Match against the rlink href rather than href_original
         result = obj.retry_import("/tmp/_oscal_test_rlink_nonexistent.xml", _CATALOG_PATH)
         assert result is True
+
+
+# ===========================================================================
+# retry_import — import_tree reflects updated status
+# ===========================================================================
+
+class TestRetryImportTree:
+    def test_tree_reflects_success_status(self):
+        """import_tree must show READY after a successful retry."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        tree_entry = obj.import_tree["imports"][0]
+        assert tree_entry["status"] == ImportState.READY
+
+    def test_tree_reflects_success_clears_failure(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        tree_entry = obj.import_tree["imports"][0]
+        assert tree_entry["failure"] is None
+
+    def test_tree_reflects_success_has_child_imports(self):
+        """A successfully retried import must expose its own import subtree."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        tree_entry = obj.import_tree["imports"][0]
+        assert "imports" in tree_entry
+
+    def test_tree_reflects_failure_status(self):
+        """import_tree must show INVALID after a failed retry."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        tree_entry = obj.import_tree["imports"][0]
+        assert tree_entry["status"] == ImportState.INVALID
+
+    def test_tree_reflects_failure_carries_failure_object(self):
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        tree_entry = obj.import_tree["imports"][0]
+        assert isinstance(tree_entry["failure"], ImportFailure)
+
+    def test_tree_reflects_failure_empty_imports(self):
+        """A failed import entry must have an empty imports list in the tree."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", "/tmp/_still_nonexistent.xml")
+        tree_entry = obj.import_tree["imports"][0]
+        assert tree_entry["imports"] == []
+
+    def test_tree_is_rebuilt_after_retry(self):
+        """Each retry must force a fresh tree; stale cached tree must not be returned."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        # Access tree before retry to populate the cache
+        _ = obj.import_tree
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        # Tree must now reflect the new status, not the pre-retry snapshot
+        assert obj.import_tree["imports"][0]["status"] == ImportState.READY
+
+    def test_tree_href_list_includes_retry_item(self):
+        """The retry href must appear in the import entry's href_list within the tree."""
+        obj = _load_profile("/tmp/_oscal_test_nonexistent.xml")
+        obj.retry_import("/tmp/_oscal_test_nonexistent.xml", _CATALOG_PATH)
+        tree_entry = obj.import_tree["imports"][0]
+        retry_hrefs = [i["href"] for i in tree_entry.get("href_list", [])]
+        assert any(_CATALOG_PATH in h for h in retry_hrefs)
 
 
 # ===========================================================================
