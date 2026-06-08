@@ -68,11 +68,15 @@ class TestSetField:
         result = cat._OSCAL__set_field("metadata/roles/5/title", "x")
         assert result is False
 
-    def test_no_dict_returns_false(self, cat):
-        """__set_field() returns False when _dict is None."""
+    def test_no_dict_returns_none(self, cat):
+        """__set_field() returns None when _dict is None (guard failure via _can_mutate).
+
+        None — not False — so the @if_update_successful decorator does not wrongly
+        flag the content as unsaved on a guard failure.
+        """
         cat._dict = None
         result = cat._OSCAL__set_field("metadata/title", "x")
-        assert result is False
+        assert result is None
 
     def test_returns_true_on_success(self, cat):
         """__set_field() returns True when the write succeeds."""
@@ -407,3 +411,80 @@ class TestAppendResourceFunction:
         cat._dict = None
         result = append_resource(cat, title="Should Fail")
         assert result is None
+
+
+# ===========================================================================
+# OSCAL._can_mutate()  — shared mutation precondition gate
+# ===========================================================================
+class TestCanMutate:
+    def test_returns_true_for_writable_loaded_content(self, cat):
+        """A freshly created catalog is writable with a loaded dict."""
+        cat.is_read_only = False
+        assert cat._can_mutate("test") is True
+
+    def test_returns_false_when_dict_is_none(self, cat):
+        cat._dict = None
+        assert cat._can_mutate("test") is False
+
+    def test_returns_false_when_read_only(self, cat):
+        cat.is_read_only = True
+        assert cat._can_mutate("test") is False
+
+    def test_dict_none_takes_priority_over_read_only(self, cat):
+        """When both fail, the method still returns False (order is irrelevant to result)."""
+        cat._dict = None
+        cat.is_read_only = True
+        assert cat._can_mutate("test") is False
+
+    def test_operation_label_is_optional(self, cat):
+        """_can_mutate() works without an operation name argument."""
+        cat.is_read_only = False
+        assert cat._can_mutate() is True
+
+
+# ===========================================================================
+# Mutation guard behavior — read-only must not flag content unsaved
+# ===========================================================================
+class TestMutationGuardsDoNotFlagUnsaved:
+    """A rejected mutation must never set is_unsaved (the @if_update_successful
+    decorator only fires when the wrapped method returns a non-None value)."""
+
+    def test_set_metadata_read_only_returns_none(self, cat):
+        cat.is_read_only = True
+        assert cat.set_metadata({"title": "x"}) is None
+
+    def test_set_metadata_read_only_not_flagged_unsaved(self, cat):
+        cat.is_read_only = True
+        cat.is_unsaved = False
+        cat.set_metadata({"title": "x"})
+        assert cat.is_unsaved is False
+
+    def test_set_field_read_only_returns_none(self, cat):
+        cat.is_read_only = True
+        assert cat._OSCAL__set_field("metadata/title", "x") is None
+
+    def test_set_field_read_only_not_flagged_unsaved(self, cat):
+        cat.is_read_only = True
+        cat.is_unsaved = False
+        cat._OSCAL__set_field("metadata/title", "x")
+        assert cat.is_unsaved is False
+
+    def test_append_child_read_only_returns_none(self, cat):
+        cat.is_read_only = True
+        assert cat.append_child("metadata/props", {"name": "x", "value": "y"}) is None
+
+    def test_append_child_read_only_not_flagged_unsaved(self, cat):
+        cat.is_read_only = True
+        cat.is_unsaved = False
+        cat.append_child("metadata/props", {"name": "x", "value": "y"})
+        assert cat.is_unsaved is False
+
+    def test_append_resource_read_only_returns_none(self, cat):
+        cat.is_read_only = True
+        assert cat.append_resource(title="x") is None
+
+    def test_append_resource_read_only_not_flagged_unsaved(self, cat):
+        cat.is_read_only = True
+        cat.is_unsaved = False
+        cat.append_resource(title="x")
+        assert cat.is_unsaved is False

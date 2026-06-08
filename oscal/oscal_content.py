@@ -630,8 +630,41 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     @property
     def failed_imports(self) -> list[dict]:
-        """Return import_list entries that failed, each carrying a populated 'failure' field."""
+        """Return import_list entries that failed, each carrying a populated 'failure' field.
+
+        These are blocking: while any failed import remains, content_state stays
+        at VALID and imports_resolved is False.
+        """
         return [e for e in self.import_list if e.get("failure") is not None]
+
+    # -------------------------------------------------------------------------
+    @property
+    def duplicate_imports(self) -> list[dict]:
+        """Return import_list entries detected as duplicates of an earlier import.
+
+        Duplicates are non-blocking — they do NOT prevent imports_resolved from
+        becoming True — but they remain available for the caller to act on via
+        retry_import (supply a different source), ignore_import, or remove_import.
+        """
+        return [e for e in self.import_list if e.get("status") == ImportState.DUPLICATE]
+
+    # -------------------------------------------------------------------------
+    @property
+    def unresolved_imports(self) -> list[dict]:
+        """Return import_list entries that still warrant user attention.
+
+        Includes failed imports (INVALID) and duplicates (DUPLICATE).  Excludes
+        READY (resolved) and IGNORED (explicitly dismissed by the caller).
+
+        This is the signal a UI should use to decide whether to keep showing
+        import-resolution affordances.  It stays non-empty while there is still
+        something the user can act on — even when ``imports_resolved`` is already
+        True because the only remaining items are non-blocking duplicates.
+        Once every entry is READY or IGNORED, this list is empty and the
+        resolution UI can close.
+        """
+        actionable = (ImportState.INVALID, ImportState.DUPLICATE)
+        return [e for e in self.import_list if e.get("status") in actionable]
 
     # -------------------------------------------------------------------------
     def retry_import(self, failed_href: str, replacement_href: str) -> bool:
@@ -644,22 +677,11 @@ class OSCAL(LoggableMixin):
             logger.warning("retry_import requires both failed_href and replacement_href.")
             return False
 
-        target_entry = None
-        for entry in self.import_list:
-            failure = entry.get("failure")
-            failure_uri = failure.uri if isinstance(failure, ImportFailure) else ""
-            if (
-                entry.get("href_original") == failed_href
-                or entry.get("href_valid") == failed_href
-                or failure_uri == failed_href
-                or any(item.get("href") == failed_href for item in entry.get("href_list", []))
-            ):
-                target_entry = entry
-                break
-
-        if target_entry is None:
+        candidates = _find_import_candidates(self.import_list, failed_href)
+        if not candidates:
             logger.warning(f"Failed import href '{failed_href}' not found. Cannot retry.")
             return False
+        target_entry = _pick_import_target(candidates)
 
         src = self.href or self.href_original
         if src:
@@ -673,6 +695,34 @@ class OSCAL(LoggableMixin):
 
         resolved = _resolve_href(base_path, replacement_href)
         logger.info(f"Retrying import '{failed_href}' with replacement '{resolved}'")
+
+        # Reject immediately if the replacement resolves to a file already held by a
+        # different READY import.  The target_entry itself is excluded from the check
+        # so that retrying with the same file that was previously successful (e.g.
+        # restoring an entry after it was accidentally overwritten) is not blocked.
+        already_loaded: set[str] = {
+            e["href_valid"]
+            for e in self.import_list
+            if e.get("status") == ImportState.READY
+            and e is not target_entry
+            and e.get("href_valid")
+        }
+        if resolved in already_loaded:
+            retry_item: dict = {"href": resolved, "original": False, "status": ImportState.INVALID}
+            target_entry["href_valid"] = ""
+            target_entry["object"]     = None
+            target_entry["is_valid"]   = False
+            target_entry["status"]     = ImportState.INVALID
+            target_entry["failure"]    = ImportFailure(
+                code=ImportFailureCode.ALREADY_IMPORTED,
+                href_original=target_entry.get("href_original", failed_href),
+                uri=resolved,
+                message=f"'{resolved}' is already loaded by another import in this document.",
+            )
+            target_entry.setdefault("href_list", []).append(retry_item)
+            self._import_tree = None
+            self._refresh_content_state()
+            return False
 
         retry_item: dict = {"href": resolved, "original": False}
         try:
@@ -712,21 +762,137 @@ class OSCAL(LoggableMixin):
                 message=str(exc),
             )
         target_entry.setdefault("href_list", []).append(retry_item)
-
-        self._import_tree = None  # force rebuild on next access
-        has_invalid = any(e.get("status") == ImportState.INVALID for e in self.import_list)
-        if self.is_valid and not has_invalid:
-            self.content_state = ContentState.IMPORTS_RESOLVED
-        elif self.content_state >= ContentState.IMPORTS_RESOLVED:
-            # A retry that fails must revert the state — imports are no longer fully resolved.
-            self.content_state = ContentState.VALID
-
+        self._import_tree = None
+        self._refresh_content_state()
         return target_entry["status"] == ImportState.READY
 
     # -------------------------------------------------------------------------
     def retry_imports(self, failed_href: str, replacement_href: str) -> bool:
         """Compatibility alias for callers using the plural method name."""
         return self.retry_import(failed_href, replacement_href)
+
+    # -------------------------------------------------------------------------
+    def _refresh_content_state(self) -> None:
+        """Recompute content_state after import_list has been mutated.
+
+        Advances to IMPORTS_RESOLVED when no INVALID entries remain.
+        Reverts to VALID when an entry that was previously resolved has become INVALID.
+        DUPLICATE and IGNORED entries are treated as non-blocking.
+        """
+        has_invalid = any(e.get("status") == ImportState.INVALID for e in self.import_list)
+        if self.is_valid and not has_invalid:
+            self.content_state = ContentState.IMPORTS_RESOLVED
+        elif self.content_state >= ContentState.IMPORTS_RESOLVED:
+            self.content_state = ContentState.VALID
+
+    # -------------------------------------------------------------------------
+    def ignore_import(self, href: str) -> bool:
+        """Mark an import as intentionally ignored.
+
+        The entry remains in import_list with status IGNORED.  Like DUPLICATE,
+        IGNORED entries are treated as non-blocking: once all remaining entries
+        are READY, DUPLICATE, or IGNORED, content_state advances to
+        IMPORTS_RESOLVED.
+
+        Typical use: the caller presents a DUPLICATE entry to the user and the
+        user explicitly chooses to ignore it rather than supply a replacement.
+
+        The same priority ordering used by retry_import applies when multiple
+        entries share the same href — DUPLICATE and INVALID are preferred over
+        READY.
+
+        Args:
+            href: Any href that identifies the entry (href_original, href_valid,
+                  failure.uri, or an href_list item href).
+
+        Returns:
+            True if an entry was found and updated, False if no match was found.
+        """
+        candidates = _find_import_candidates(self.import_list, href)
+        if not candidates:
+            logger.warning(f"ignore_import: href '{href}' not found in import_list.")
+            return False
+
+        target = _pick_import_target(candidates)
+        target["status"]  = ImportState.IGNORED
+        target["failure"] = None
+
+        # Update the cached tree node in-place rather than discarding the tree.
+        # import_list[i] corresponds to import_tree["imports"][i], so the index
+        # is the reliable key.
+        if self._import_tree is not None:
+            idx = self.import_list.index(target)
+            tree_imports = self._import_tree.get("imports", [])
+            if idx < len(tree_imports):
+                tree_imports[idx]["status"]  = ImportState.IGNORED
+                tree_imports[idx]["failure"] = None
+
+        self._refresh_content_state()
+        logger.info(f"ignore_import: '{href}' marked as IGNORED.")
+        return True
+
+    # -------------------------------------------------------------------------
+    def remove_import(self, href: str) -> bool:
+        """Remove an import entry from both import_list and the document content.
+
+        The import *statement* is deleted from ``self._dict``, placing the
+        document in an edited and unsaved state.  Any back-matter resource
+        referenced by the import via a URI fragment (``href="#uuid"``) is
+        intentionally preserved — only the import element itself is removed.
+
+        The cached import_tree is updated in-place (same object, one node
+        shorter).  content_state is recomputed: if the removed entry was the
+        last thing blocking resolution, content_state advances to
+        IMPORTS_RESOLVED.
+
+        The same priority ordering used by retry_import applies when multiple
+        entries share the same href — DUPLICATE and IGNORED are preferred over
+        INVALID which is preferred over READY — so the problematic entry is
+        always targeted.
+
+        Args:
+            href: Any href that identifies the entry (href_original, href_valid,
+                  failure.uri, or an href_list item href).
+
+        Returns:
+            True if an entry was found and removed, False if not found or the
+            content is read-only.
+        """
+        if not self._can_mutate("remove_import"):
+            return False
+
+        candidates = _find_import_candidates(self.import_list, href)
+        if not candidates:
+            logger.warning(f"remove_import: href '{href}' not found in import_list.")
+            return False
+
+        target = _pick_import_target(candidates)
+        idx = self.import_list.index(target)
+
+        # Remove the import statement from the dict first, while import_list
+        # is still intact so _remove_import_from_dict can count preceding
+        # entries to identify which dict occurrence to remove.
+        dict_removed = _remove_import_from_dict(self._dict, self.model, self.import_list, target)
+        if not dict_removed:
+            logger.warning(
+                f"remove_import: import statement for '{target.get('href_original')}' "
+                "could not be located in document content."
+            )
+
+        # Update the cached tree in-place before removing from import_list.
+        if self._import_tree is not None:
+            tree_imports = self._import_tree.get("imports", [])
+            if idx < len(tree_imports):
+                tree_imports.pop(idx)
+
+        self.import_list.remove(target)
+
+        if dict_removed:
+            self.is_unsaved = True
+
+        self._refresh_content_state()
+        logger.info(f"remove_import: '{target.get('href_original')}' removed.")
+        return True
 
     # -------------------------------------------------------------------------
     def resolve_imports(self, base_path: str = "") -> list:
@@ -790,6 +956,7 @@ class OSCAL(LoggableMixin):
             return self.import_list
 
         # --- load each referenced document (shared for both branches) ---
+        loaded_hrefs: set[str] = set()  # tracks resolved hrefs already loaded this pass
         for raw_href in raw_hrefs:
             entry: dict = {
                 "href_original": raw_href,
@@ -926,6 +1093,24 @@ class OSCAL(LoggableMixin):
                     f"resolve_imports: all candidates for '{raw_href}' failed. "
                     f"Tried: {rlinks_tried}"
                 )
+
+            else:
+                # Loaded successfully — check whether this resolved href was already loaded
+                # by an earlier import in this same document.  If so, mark DUPLICATE and
+                # release the object rather than holding a second reference.
+                if entry["href_valid"] in loaded_hrefs:
+                    entry["status"]    = ImportState.DUPLICATE
+                    entry["object"]    = None
+                    entry["is_valid"]  = False
+                    entry["is_local"]  = None
+                    entry["is_remote"] = None
+                    entry["is_cached"] = False
+                    logger.info(
+                        f"resolve_imports: '{raw_href}' resolves to already-imported "
+                        f"'{entry['href_valid']}' — marking DUPLICATE."
+                    )
+                else:
+                    loaded_hrefs.add(entry["href_valid"])
 
             self.import_list.append(entry)
 
@@ -1433,7 +1618,38 @@ class OSCAL(LoggableMixin):
         return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
 
     # -------------------------------------------------------------------------
-    @requires(is_read_only=False)
+    def _can_mutate(self, operation: str = "") -> bool:
+        """Shared precondition gate for every method that mutates the in-memory dict.
+
+        Verifies the typical circumstances required to allow a mutation:
+          - dict content is loaded (``_dict`` is not None)
+          - content is not read-only
+          - (future) account-specific access control permits the operation
+
+        Mutation methods should call this at the top and abort when it returns
+        False, before making any change to ``self._dict``.
+
+        Args:
+            operation: Optional name of the calling operation, used only to make
+                       log messages clearer.
+
+        Returns:
+            True when mutation is permitted, False otherwise (with a logged reason).
+        """
+        label = f"{operation}: " if operation else ""
+        if self._dict is None:
+            logger.error(f"{label}no dict content available to mutate.")
+            return False
+        if self.is_read_only:
+            logger.error(f"{label}content is read-only; mutation not permitted.")
+            return False
+        # Future: account-specific access control checks belong here, e.g.
+        #   if not self._access_control_allows(operation):
+        #       logger.error(f"{label}operation not permitted for current account.")
+        #       return False
+        return True
+
+    # -------------------------------------------------------------------------
     @if_update_successful
     def set_metadata(self, content: dict = {}) -> bool:
         """
@@ -1441,10 +1657,8 @@ class OSCAL(LoggableMixin):
         Args:
             content (dict): A dictionary containing metadata fields to set.
         """
-        success = False
-        if self._dict is None:
-            logger.error("No content available to set metadata.")
-            return success
+        if not self._can_mutate("set_metadata"):
+            return None
         model_obj = self._dict.setdefault(self.model, {})
         if "metadata" not in model_obj:
             logger.warning("No metadata section found in content. Creating.")
@@ -1536,7 +1750,6 @@ class OSCAL(LoggableMixin):
         return results[0] if results else default
 
     # -------------------------------------------------------------------------
-    @requires(is_read_only=False)
     @if_update_successful
     def __set_field(self, path: str, field_value) -> bool:
         """
@@ -1551,11 +1764,10 @@ class OSCAL(LoggableMixin):
             field_value: Value to set at the target path (any JSON-compatible type).
 
         Returns:
-            bool: True on success, False on any error.
+            bool: True on success, None/False on any error.
         """
-        if self._dict is None:
-            logger.error("__set_field: no content available.")
-            return False
+        if not self._can_mutate("__set_field"):
+            return None
 
         parts = path.strip("/").split("/")
         obj = self._dict.get(self.model, {})
@@ -1593,9 +1805,6 @@ class OSCAL(LoggableMixin):
         return True
 
     # -------------------------------------------------------------------------
-    @requires(is_read_only=False)
-    @if_update_successful
-    @requires(is_read_only=False)
     @if_update_successful
     def append_child(self, path: str, child: dict) -> dict | None:
         """
@@ -1612,8 +1821,7 @@ class OSCAL(LoggableMixin):
         Returns:
             dict | None: The appended child on success, None on failure.
         """
-        if self._dict is None:
-            logger.error("append_child: no content available.")
+        if not self._can_mutate("append_child"):
             return None
 
         parts = path.strip("/").split("/")
@@ -1659,12 +1867,13 @@ class OSCAL(LoggableMixin):
         return child
 
     # -------------------------------------------------------------------------
-    @requires(is_read_only=False)
     @if_update_successful
     def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> dict | None:
         """
         Appends a resource to the back-matter section.
         """
+        if not self._can_mutate("append_resource"):
+            return None
         return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)
 
     # -------------------------------------------------------------------------
@@ -1831,10 +2040,12 @@ class OSCAL(LoggableMixin):
 # Data Classes
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ImportState(str, Enum):
-    READY        = "ready"        # The content is valid
+    READY        = "ready"        # The content is valid and loaded
     NOT_LOADED   = "not-loaded"   # The content has not been loaded
-    INVALID      = "invalid"      # The content is not valid
+    INVALID      = "invalid"      # The content could not be loaded or failed validation
     EXPIRED      = "expired"      # The content is valid, but cached copy has expired
+    DUPLICATE    = "duplicate"    # The resolved href is already loaded by an earlier import
+    IGNORED      = "ignored"      # Caller explicitly chose to ignore this import (duplicate or otherwise)
 
 # -------------------------------------------------------------------------
 class ImportFailureCode(str, Enum):
@@ -1850,6 +2061,8 @@ class ImportFailureCode(str, Enum):
     # Content failures (source responded, but content is unusable)
     CONTENT_EMPTY              = "content-empty"               # Source returned no content
     CONTENT_INVALID            = "content-invalid"             # Content is not valid OSCAL
+    # Duplicate / retry failures
+    ALREADY_IMPORTED           = "already-imported"            # Retry href resolves to a file already loaded by another import
 
 # -------------------------------------------------------------------------
 class ImportLoadError(Exception):
@@ -1907,6 +2120,150 @@ class OscalRef:
         return f"OscalRef({self.href!r})"
 
         # {"href": "<original_href>", "media-type": "<media_type>", "valid": True/False, "error": "<error_message_if_invalid>"}
+
+# -------------------------------------------------------------------------
+# Import-resolution shared helpers
+# Placed after the data classes so ImportState and ImportFailure are available.
+# -------------------------------------------------------------------------
+
+# Priority order for selecting which entry to target when multiple import_list
+# entries match the same href.  Non-READY statuses are preferred so that
+# ignore/remove/retry operations act on the problematic entry, not the working one.
+_IMPORT_RETRY_PRIORITY: tuple = (
+    ImportState.DUPLICATE,
+    ImportState.IGNORED,
+    ImportState.INVALID,
+    ImportState.NOT_LOADED,
+    ImportState.EXPIRED,
+    ImportState.READY,
+)
+
+
+def _find_import_candidates(import_list: list, href: str) -> list:
+    """Return all import_list entries whose href matches in any of the tracked fields.
+
+    Matches against: href_original, href_valid, failure.uri, or any href_list item href.
+    """
+    candidates = []
+    for entry in import_list:
+        failure = entry.get("failure")
+        failure_uri = failure.uri if isinstance(failure, ImportFailure) else ""
+        if (
+            entry.get("href_original") == href
+            or entry.get("href_valid") == href
+            or failure_uri == href
+            or any(item.get("href") == href for item in entry.get("href_list", []))
+        ):
+            candidates.append(entry)
+    return candidates
+
+
+def _pick_import_target(candidates: list) -> dict | None:
+    """Return the highest-priority candidate from a list of matching import_list entries."""
+    if not candidates:
+        return None
+    for status in _IMPORT_RETRY_PRIORITY:
+        hit = next((e for e in candidates if e.get("status") == status), None)
+        if hit is not None:
+            return hit
+    return candidates[0]
+
+
+def _remove_import_from_dict(
+    doc_dict: dict,
+    model: str,
+    import_list: list,
+    target: dict,
+) -> bool:
+    """Remove the import *statement* corresponding to *target* from *doc_dict*.
+
+    Only the import element itself is removed.  If the import referenced a
+    back-matter resource via a URI fragment (``href="#uuid"``), that resource
+    is left intact.
+
+    When multiple import statements share the same ``href_original`` (the
+    duplicate scenario), the preceding-entry count is used to determine which
+    occurrence in the array to remove, preserving the others.
+
+    Returns True if the element was located and removed, False otherwise.
+    """
+    href = target.get("href_original", "")
+    root = doc_dict.get(model, {})
+    if not isinstance(root, dict):
+        return False
+
+    # Count import_list entries that precede *target* and share the same
+    # href_original.  That count tells us how many occurrences of this href
+    # to skip in the dict array before removing.
+    target_idx = import_list.index(target)
+    n_to_keep = sum(
+        1 for e in import_list[:target_idx]
+        if e.get("href_original") == href
+    )
+
+    def _pop_nth(arr: list, key: str) -> bool:
+        """Remove the (n_to_keep)-th element in *arr* whose *key* equals *href*."""
+        kept = 0
+        for i, item in enumerate(arr):
+            if isinstance(item, dict) and item.get(key) == href:
+                if kept >= n_to_keep:
+                    arr.pop(i)
+                    return True
+                kept += 1
+        return False
+
+    if model == "profile":
+        return _pop_nth(root.get("imports", []), "href")
+
+    elif model == "component-definition":
+        # Top-level import-component-definitions
+        if _pop_nth(root.get("import-component-definitions", []), "href"):
+            return True
+        # Nested control-implementation sources within components
+        for comp in root.get("components", []):
+            if isinstance(comp, dict):
+                if _pop_nth(comp.get("control-implementations", []), "source"):
+                    return True
+        # Nested control-implementation sources within capabilities
+        for cap in root.get("capabilities", []):
+            if isinstance(cap, dict):
+                if _pop_nth(cap.get("control-implementations", []), "source"):
+                    return True
+        return False
+
+    elif model == "system-security-plan":
+        if "import-profile" in root:
+            del root["import-profile"]
+            return True
+        return False
+
+    elif model in ("assessment-plan", "plan-of-action-and-milestones"):
+        if "import-ssp" in root:
+            del root["import-ssp"]
+            return True
+        return False
+
+    elif model == "assessment-results":
+        if "import-assessment-plan" in root:
+            del root["import-assessment-plan"]
+            return True
+        return False
+
+    elif model == "mapping-collection":
+        for mapping in root.get("mappings", []):
+            if isinstance(mapping, dict):
+                src = mapping.get("source-resource", {})
+                if isinstance(src, dict) and src.get("href") == href:
+                    del mapping["source-resource"]
+                    return True
+                tgt = mapping.get("target-resource", {})
+                if isinstance(tgt, dict) and tgt.get("href") == href:
+                    del mapping["target-resource"]
+                    return True
+        return False
+
+    return False
+
 
 # -------------------------------------------------------------------------
 def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
