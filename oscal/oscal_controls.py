@@ -1,5 +1,14 @@
 """
-Functions specific to OSCAL control objects. (Catalog, Profile, and Mapping)
+oscal_controls — OSCAL control-layer model classes.
+
+Provides the editable model classes for the OSCAL control models: ``Catalog``
+(defines controls), ``Profile`` (selects and tailors controls into baselines),
+and ``Mapping`` (relates controls across frameworks). Each class subclasses
+``OSCAL`` from ``oscal_content`` and adds model-specific navigation and
+mutation helpers.
+
+Module constants:
+    (none exported)
 """
 from loguru import logger
 from datetime import datetime, timezone
@@ -47,18 +56,11 @@ def _all_controls(container: dict) -> list:
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Catalog(OSCAL):
-    """Class representing an editable OSCAL Catalog object.
-    Inherits read-only catalog functionality from CatalogBase and adds
-    methods for creating and managing controls and control groups.
+    """Editable OSCAL Catalog model.
 
-    self._state:
-        - "editable", "read-only", or "locked"
-        - controls whether modifications are allowed
-    self.control_tree:
-        - A cached structure representing the hierarchy of controls and groups.
-        - Contains control IDs, titles, labels, and parent-child relationships.
-        - No control details are stored here.
-        - Enables fast lookups without needing to query the catalog repeatedly.
+    Subclasses ``OSCAL`` and adds methods for creating and navigating controls
+    and control groups. Read-only guards apply to mutation methods when the
+    instance state is not editable.
     """
     def _init_common(self):
         super()._init_common()
@@ -81,23 +83,32 @@ class Catalog(OSCAL):
     @if_update_successful
     def create_control(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", statements: list = [], guidance: str = "", example: str = "", objectives: list = [], objects: list = [], methods: list = [], remarks: str = "") -> Optional[dict]:
         """
-        Creates a new control under the specified parent group.
-        Parameters:
-        - parent_id (str): The id of the parent group to add the control to.
-        - id (str): The id of the new control.
-        - title (str): The title of the new control.
-        - params (list): Parameters to add to the control.
-        - props (list): Properties to add to the control.
-        - links (list): Links to add to the control.
-        - label (str): Label prop value.
-        - sort_id (str): sort-id prop value.
-        - alt_identifier (str): alt-identifier prop value.
-        - overview (str): Overview part prose (markdown).
-        - statements (list): Statement items — strings or {'id':..., 'prose':...} dicts.
-        - guidance (str): Guidance part prose (markdown).
-        - example (str): Example part prose (markdown).
-        - remarks (str): Remarks prose (markdown).
-        Returns the new control dict, or None on failure.
+        Create a new control under the specified parent group.
+
+        Args:
+            parent_id (str, required): ID of the parent group to add the control to.
+            id (str, required): ID of the new control.
+            title (str, optional): Title of the new control. Defaults to the label,
+                or the id, when empty.
+            params (list, optional): Parameters to add. Items may be parameter id
+                strings or full parameter dicts.
+            props (list, optional): Additional property dicts to add.
+            links (list, optional): Link dicts to add.
+            label (str, optional): Value for the inline ``label`` property.
+            sort_id (str, optional): Value for the inline ``sort-id`` property.
+            alt_identifier (str, optional): Value for the inline ``alt-identifier`` property.
+            overview (str, optional): Prose (markdown) for the ``overview`` part.
+            statements (list, optional): Statement items — strings or
+                ``{'id':..., 'prose':...}`` dicts.
+            guidance (str, optional): Prose (markdown) for the ``guidance`` part.
+            example (str, optional): Prose (markdown) for the ``example`` part.
+            objectives (list, optional): Assessment objective items.
+            objects (list, optional): Assessment object items.
+            methods (list, optional): Assessment method items.
+            remarks (str, optional): Remarks prose (markdown).
+
+        Returns:
+            Optional[dict]: The newly created control dict, or None on failure.
         """
         logger.info(f"Creating new control '{id}' under parent group '{parent_id}'")
         try:
@@ -173,20 +184,25 @@ class Catalog(OSCAL):
     @if_update_successful
     def create_control_group(self, parent_id: str, id: str, title: str = "", params: list = [], props: list = [], links: list = [], label: str = "", sort_id: str = "", alt_identifier: str = "", overview: str = "", instruction: str = "", remarks: str = "") -> Optional[dict]:
         """
-        Creates a new catalog group.
-        Parameters:
-        - parent_id (str): The id of the parent group, or '[root]' for the catalog top level.
-        - id (str): The id of the new group.
-        - title (str): The title of the new group.
-        - props (list): Properties to add to the group.
-        - links (list): Links to add to the group.
-        - label (str): Label prop value.
-        - sort_id (str): sort-id prop value.
-        - alt_identifier (str): alt-identifier prop value.
-        - overview (str): Overview part prose (markdown).
-        - instruction (str): Instruction part prose (markdown).
-        - remarks (str): Remarks prose (markdown).
-        Returns the new group dict, or None on failure.
+        Create a new catalog group.
+
+        Args:
+            parent_id (str, required): ID of the parent group, or ``'[root]'`` (or an
+                empty string) for the catalog top level.
+            id (str, required): ID of the new group.
+            title (str, optional): Title of the new group.
+            params (list, optional): Parameters to add to the group.
+            props (list, optional): Additional property dicts to add.
+            links (list, optional): Link dicts to add.
+            label (str, optional): Value for the inline ``label`` property.
+            sort_id (str, optional): Value for the inline ``sort-id`` property.
+            alt_identifier (str, optional): Value for the inline ``alt-identifier`` property.
+            overview (str, optional): Prose (markdown) for the ``overview`` part.
+            instruction (str, optional): Prose (markdown) for the ``instruction`` part.
+            remarks (str, optional): Remarks prose (markdown).
+
+        Returns:
+            Optional[dict]: The newly created group dict, or None on failure.
         """
         if parent_id == "":
             parent_id = "[root]"
@@ -238,17 +254,35 @@ class Catalog(OSCAL):
 
     # -------------------------------------------------------------------------
     def get_control_by_id(self, control_id: str) -> Optional[dict]:
-        """Retrieve a control dict by its ID."""
+        """Retrieve a control dict by its ID, searching all groups recursively.
+
+        Args:
+            control_id (str, required): The ``id`` of the control to find.
+
+        Returns:
+            Optional[dict]: The matching control dict, or None if not found.
+        """
         return _find_control(self._catalog_root(), control_id)
 
     # -------------------------------------------------------------------------
     def get_group_by_id(self, group_id: str) -> Optional[dict]:
-        """Retrieve a group dict by its ID."""
+        """Retrieve a group dict by its ID, searching nested groups recursively.
+
+        Args:
+            group_id (str, required): The ``id`` of the group to find.
+
+        Returns:
+            Optional[dict]: The matching group dict, or None if not found.
+        """
         return _find_group(self._catalog_root().get("groups", []), group_id)
 
     # -------------------------------------------------------------------------
     def get_control_list(self) -> list:
-        """Return a flat list of all control dicts in the catalog."""
+        """Return a flat list of every control dict in the catalog, at all levels.
+
+        Returns:
+            list: All control dicts found across the catalog and its groups.
+        """
         return _all_controls(self._catalog_root())
 
     def _build_controls_tree(self):
@@ -283,7 +317,18 @@ class Profile(OSCAL):
 
     # -------------------------------------------------------------------------
     def control(self, control_id: str, with_history: bool = False) -> Optional[dict]:
-        """Retrieve a control by its ID from the resolved catalog."""
+        """Retrieve a control by its ID from the resolved catalog.
+
+        The profile must be resolved first; returns None with a warning otherwise.
+
+        Args:
+            control_id (str, required): The ``id`` of the control to retrieve.
+            with_history (bool, optional): Reserved for including tailoring history.
+                Defaults to False.
+
+        Returns:
+            Optional[dict]: The control dict, or None if unresolved or not found.
+        """
         if self.resolution_status != ResolutionStatus.RESOLVED:
             logger.warning(f"Attempting to access control '{control_id}' before profile is resolved.")
             return None
@@ -302,6 +347,15 @@ class Mapping(OSCAL):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 class ResolutionStatus(str, Enum):
+    """Lifecycle state of a Profile's control resolution.
+
+    Members:
+        UNRESOLVED (str): "unresolved" — imports have not yet been resolved.
+        RESOLVING (str): "resolving" — resolution is in progress.
+        RESOLVED (str): "resolved" — the resolved catalog is available.
+        BLOCKED (str): "blocked" — resolution could not complete (e.g. missing import).
+        EXPIRED (str): "expired" — a previously resolved catalog is stale.
+    """
     UNRESOLVED   = "unresolved"
     RESOLVING    = "resolving"
     RESOLVED     = "resolved"

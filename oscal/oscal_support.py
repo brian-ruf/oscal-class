@@ -1,15 +1,43 @@
 """
-OSCAL Support Class
+oscal_support — OSCAL support-file database and singleton accessor.
 
-Provides support for NIST-published OSCAL support files for all versions of OSCAL.
+Manages the local SQLite database of NIST-published OSCAL support files
+(metaschemas and XML/JSON schemas) for every OSCAL version and model, and
+provides the ``OSCALSupport`` class along with helpers for validation and
+format conversion.
 
-Always instantiate using the `get_support` function. 
-This ensures that only one instance of the support class exists within the application, and is shared across the application for access to OSCAL support files and information.
-
-The OSCAL content classes rely on this class to perform validation and conversion.
+Always obtain the shared instance via ``get_support()`` (optionally configured
+first with ``configure_support()`` / ``setup_support()``). This ensures a single
+support instance is shared across the application. The OSCAL content classes rely
+on this instance to perform validation and conversion.
 
 More information: https://github.com/brian-ruf/oscal-class/blob/main/docs/SUPPORT_MODULE.md
 
+Module constants:
+    SUPPORT_DATABASE_DEFAULT_FILE (str): Default path to the support DB
+        (``"./support/oscal_support.db"``), resolved relative to the runtime CWD.
+    SUPPORT_DATABASE_DEFAULT_TYPE (str): Default database backend (``"sqlite3"``).
+    COMPRESS_SUPPORT_FILES_IN_DATABASE (bool): Whether support files are stored
+        compressed in the database.
+    OSCAL_DEFAULT_XML_NAMESPACE (str): The NIST OSCAL XML namespace URI.
+    NIST_OSCAL_EXTENSION_NAMESPACE (str): The NIST OSCAL property/extension namespace URI.
+    NIST_RMF_EXTENSION_NAMESPACE (str): The NIST RMF extension namespace URI.
+    OSCAL_FORMATS (list): Supported serialization formats
+        (``["xml", "json", "yaml", "yml"]``).
+    DEFAULT_EXCLUDE_VERSIONS (list): OSCAL release tags excluded by default
+        (release candidates and milestones).
+    METASCHEMA_MIN_VERSION (str): Earliest version with NIST-published resolved
+        metaschema files (``"v1.1.1"``).
+    INDEX_REFRESH (int): Seconds before a cached metaschema index entry is stale
+        (86400 = 24 hours).
+    METASCHEMA_FILE_PATTERNS (dict): Filename-suffix → support-type map for
+        metaschema files.
+    SCHEMA_FILE_PATTERNS (dict): Filename-suffix → support-type map for XML/JSON
+        schema files.
+    OSCAL_SUPPORT_TABLES (dict): Schema definitions for the support database tables
+        (``oscal_versions``, ``oscal_support``, ``filecache``).
+    OSCAL_DATA_TYPES (dict): Data-type registry populated at runtime from parsed
+        metaschemas.
 """
 import json
 import os
@@ -137,9 +165,24 @@ def configure_support(
     init_mode: Optional[str] = None,
 ):
     """
-    Configure the OSCAL support system with the specified settings. 
-    This should be called before get_support() and before any OSCAL 
-    content is loaded if you want to use settings other than the defaults.
+    Configure and create the shared OSCAL support instance.
+
+    Call this before ``get_support()`` and before any OSCAL content is loaded when
+    non-default settings are needed. If the shared instance already exists, it is
+    returned unchanged.
+
+    Args:
+        support_file (str, optional): Path to the support database file.
+            Defaults to ``SUPPORT_DATABASE_DEFAULT_FILE``.
+        db_init_mode (str, optional): Database initialization mode — ``"auto"``,
+            ``"extract"``, or ``"create"``. Defaults to ``"auto"``.
+        db_path (str, optional): Keyword-only alias for ``support_file``; overrides
+            it when provided.
+        init_mode (str, optional): Keyword-only alias for ``db_init_mode``;
+            overrides it when provided.
+
+    Returns:
+        OSCALSupport: The shared support instance.
     """
     if db_path is not None:
         support_file = db_path
@@ -172,9 +215,13 @@ def configure_support(
 # -------------------------------------------------------------------------
 def get_support():
     """
-    Get the shared instance of the OSCAL support system.
-    Will create the instance if it does not already exist, 
-    using default settings.
+    Return the shared OSCAL support instance, creating it if necessary.
+
+    Creates the instance with default settings (via ``configure_support()``) if it
+    does not already exist.
+
+    Returns:
+        OSCALSupport: The shared support instance.
     """
     logger.debug("Fetching the support object instance.")
     global support
@@ -186,22 +233,51 @@ def get_support():
 
 
 def setup_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
-    """Compatibility helper for update utility scripts."""
+    """Compatibility wrapper around ``configure_support()`` for update utility scripts.
+
+    Args:
+        support_file (str, optional): Path to the support database file.
+            Defaults to ``SUPPORT_DATABASE_DEFAULT_FILE``.
+        db_init_mode (str, optional): Database initialization mode
+            (``"auto"``, ``"extract"``, or ``"create"``). Defaults to ``"auto"``.
+
+    Returns:
+        OSCALSupport: The shared support instance.
+    """
     return configure_support(support_file=support_file, db_init_mode=db_init_mode)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCALSupport:
+    """Access layer for the local OSCAL support-file database.
+
+    Manages a SQLite database of NIST-published support files (metaschemas and
+    XML/JSON schemas) for every OSCAL version and model, and exposes methods for
+    querying supported versions/models, retrieving assets, building metaschema
+    indexes, and updating content from NIST's GitHub releases.
+
+    Prefer the module-level ``get_support()`` accessor over instantiating this
+    class directly, so a single instance is shared across the application.
+
+    Note:
+        ``OSCAL_support`` is a backward-compatible alias for this class.
+    """
     def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto", db_compress_files=COMPRESS_SUPPORT_FILES_IN_DATABASE):
         """
-        Initialize OSCAL Support.
+        Initialize OSCAL support and run startup (table checks / population).
 
         Args:
-            db_conn: Database connection string or path
-            db_type: Database type (sqlite3, mysql, etc.)
-            db_init_mode: Database initialization mode:
-                - "auto": Extract from resources if file missing/empty, otherwise create empty
-                - "extract": Always try to extract from resources, create empty if extraction fails
-                - "create": Always create empty database from scratch
+            db_conn (str, optional): Database connection string or file path.
+                Defaults to ``SUPPORT_DATABASE_DEFAULT_FILE``.
+            db_type (str, optional): Database backend type (e.g. "sqlite3").
+                Defaults to ``SUPPORT_DATABASE_DEFAULT_TYPE``.
+            db_init_mode (str, optional): Database initialization mode. Defaults to "auto".
+                - "auto": Extract from packaged resources if the file is missing/empty,
+                  otherwise use the existing file.
+                - "extract": Always try to extract from resources; create empty if that fails.
+                - "create": Always create an empty database from scratch.
+            db_compress_files (bool, optional): Whether to store support files
+                compressed in the database. Defaults to
+                ``COMPRESS_SUPPORT_FILES_IN_DATABASE``.
         """
         self.ready      = False     # Is the support capability available?
         self.db_conn    = db_conn   # The support database connection string or path and filename
@@ -399,6 +475,19 @@ class OSCALSupport:
         """
         Perform startup tasks required to provide OSCAL support.
 
+        Ensures the support database has the required tables and data, populating
+        it from NIST's GitHub releases when empty, and sets ``self.ready``.
+
+        Args:
+            check_for_updates (bool, optional): Reserved flag to check for newer
+                OSCAL versions during startup. Defaults to False.
+            refresh_all (bool, optional): Reserved flag to force a full refresh of
+                all support content. Defaults to False.
+
+        Returns:
+            bool: True if the support capability is ready, False otherwise.
+
+        Process:
         1 Check for tables
           - If tables do not exist:
             - create tables
@@ -450,16 +539,16 @@ class OSCALSupport:
     # -------------------------------------------------------------------------
     def update(self, mode="new", fetch=None): # , backend=None):
         """
-        Update OSCAL support content based on the fetch directive.
-        - "all": Clears all re-fetches all OSCAL versions and support files.
-        - "latest": Check for new OSCAL versions and fetch if found.
-        - "vX.Y.Z": Clear and re-fetch a specific OSCAL version and its support files.
+        Update OSCAL support content based on a fetch directive.
+
         Args:
-            fetch (str): The directive for fetching OSCAL versions.
-                         - "all" for all versions
-                         - "latest" for the latest version
-                         - "vX.Y.Z" for a specific version
-            backend (Optional[Any]): Optional backend object for status updates.
+            mode (str, optional): The fetch directive. Defaults to "new".
+                - "all": Clear and re-fetch all OSCAL versions and support files.
+                - "latest"/"new": Check for new OSCAL versions and fetch any found.
+                - "vX.Y.Z": Clear and re-fetch a specific OSCAL version.
+            fetch (str, optional): Legacy alias for ``mode``; when provided it
+                overrides ``mode``. Defaults to None.
+
         Returns:
             bool: True if the update was successful, False otherwise.
         """
@@ -548,7 +637,16 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def asset(self, oscal_version, model_name, asset_type):
-        """Backward-compatible wrapper for get_asset()."""
+        """Backward-compatible wrapper for :meth:`get_asset`.
+
+        Args:
+            oscal_version (str, required): The OSCAL version (e.g. "v1.0.0").
+            model_name (str, required): The OSCAL model name (e.g. "system-security-plan").
+            asset_type (str, required): The asset type (e.g. "xml-schema", "json-schema").
+
+        Returns:
+            Any: The asset content if found, otherwise None.
+        """
         return self.get_asset(oscal_version, model_name, asset_type)
 
     # -------------------------------------------------------------------------
@@ -663,8 +761,17 @@ class OSCALSupport:
     # -------------------------------------------------------------------------
     def supported(self, oscal_version, assets):
         """
-        Currently not implemented.
-        Checks if the specified OSCAL version and assets are supported.
+        Check whether the specified OSCAL version and assets are supported.
+
+        Note:
+            Currently not implemented; always returns False.
+
+        Args:
+            oscal_version (str, required): The OSCAL version to check (e.g. "v1.0.0").
+            assets (list, required): The asset types to check for.
+
+        Returns:
+            bool: True if the version and assets are supported, False otherwise.
         """
         status = False
 
@@ -689,7 +796,16 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def is_model_valid(self, model_name, version="all") -> bool:
-        """Backward-compatible wrapper for is_valid_model()."""
+        """Backward-compatible wrapper for :meth:`is_valid_model`.
+
+        Args:
+            model_name (str, required): The OSCAL model name to check.
+            version (str, optional): The OSCAL version to check against, or "all".
+                Defaults to "all".
+
+        Returns:
+            bool: True if the model is valid for the version, False otherwise.
+        """
         return self.is_valid_model(model_name, version)
 
     # -------------------------------------------------------------------------
@@ -733,7 +849,15 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def enumerate_models(self, version: str = "all") -> list[str]:
-        """Backward-compatible wrapper for list_models()."""
+        """Backward-compatible wrapper for :meth:`list_models`.
+
+        Args:
+            version (str, optional): The OSCAL version to enumerate models for, or
+                "all". Defaults to "all".
+
+        Returns:
+            list[str]: Supported model-name strings (may be empty).
+        """
         return self.list_models(version)
 
     # -------------------------------------------------------------------------
@@ -744,10 +868,13 @@ class OSCALSupport:
         If the content is a string, it will be converted to bytes.
         If the content is already in bytes, it will be used as is.
         Args:
-            oscal_version (str): The OSCAL version (e.g., "v1.0.0").
-            model_name (str): The OSCAL model name (e.g., "system-security-plan").
-            asset_type (str): The type of asset to add (e.g., "xml-schema", "json-schema").
-            content (Any): The content of the asset to add.
+            oscal_version (str, required): The OSCAL version (e.g. "v1.0.0").
+            model_name (str, required): The OSCAL model name (e.g. "system-security-plan").
+            asset_type (str, required): The asset type (e.g. "xml-schema", "json-schema").
+            content (str | bytes, required): The asset content; strings are encoded
+                to UTF-8 bytes.
+            filename (str, optional): Filename to record for the cached asset.
+                Defaults to ``"{model_name}_{asset_type}"``.
         Returns:
             bool: True if the asset was added successfully, False otherwise.
         """
@@ -857,7 +984,12 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def latest_version(self):
-        """Returns the latest supported OSCAL version."""
+        """Return the latest supported OSCAL version.
+
+        Returns:
+            Optional[str]: The highest OSCAL version tag available in the support
+                database, or None if none are loaded.
+        """
         latest_version = None
         if self.versions:
             latest_version = sorted(self.versions.keys(), reverse=True)[0]
@@ -865,7 +997,11 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def get_latest_version(self):
-        """Backward-compatible wrapper for latest_version()."""
+        """Backward-compatible wrapper for :meth:`latest_version`.
+
+        Returns:
+            Optional[str]: The latest OSCAL version tag, or None if none are loaded.
+        """
         return self.latest_version()
     # -------------------------------------------------------------------------
     def __get_oscal_versions(self, fetch="latest"):
@@ -1160,9 +1296,12 @@ class OSCALSupport:
     # -------------------------------------------------------------------------
     def export_support_files(self, export_path="./support_files"):
         """
-        Export all support files to the specified directory.
+        Export all cached support files to a directory tree, grouped by version.
+
         Args:
-            export_path (str): The directory to export support files to.
+            export_path (str, optional): The directory to export support files to.
+                Defaults to "./support_files".
+
         Returns:
             bool: True if the export was successful, False otherwise.
         """
@@ -1357,7 +1496,18 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def load_file(self, name, binary=False, *, as_bytes=None):
-        """Load a schema XML file from package data."""
+        """Load a file bundled in the ``oscal.data`` package resources, with caching.
+
+        Args:
+            name (str, required): Filename of the resource within ``oscal.data``.
+            binary (bool, optional): If True, return raw bytes; otherwise return
+                UTF-8 decoded text. Defaults to False.
+            as_bytes (bool, optional): Keyword-only alias for ``binary``; overrides
+                it when provided. Defaults to None.
+
+        Returns:
+            str | bytes | None: The file contents (text or bytes), or None on failure.
+        """
         if as_bytes is not None:
             binary = as_bytes
 

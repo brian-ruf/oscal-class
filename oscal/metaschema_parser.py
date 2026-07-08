@@ -1,13 +1,37 @@
 """
-Metaschema Parser for OSCAL
-This module provides functionality to parse and process OSCAL metaschema XML files.
-This creates a dictionary representation of the metaschema structure, including attributes and child elements.
+metaschema_parser — parse NIST resolved-metaschema XML into a structural index.
 
-While there is some defensive coding, this module assumes metaschema files are valid.
-It is not intended to validate metaschema structure or content.
-It will ignore unexpected structures.
-It will issue a WARNING message if it encounteres expected, but unhandled structures.
+Parses OSCAL resolved-metaschema XML files into a dictionary representation of the
+metaschema structure (assemblies, fields, flags, attributes, child elements, and
+allowed-value constraints). The resulting index drives XML↔JSON conversion and
+validation elsewhere in the library.
 
+While there is some defensive coding, this module assumes metaschema files are
+valid; it does not validate metaschema structure or content. It ignores unexpected
+structures and logs a WARNING when it encounters expected but unhandled structures.
+
+Module constants:
+    SUPPRESS_XPATH_NOT_FOUND_WARNINGS (bool): Suppress warnings when an XPath yields
+        no match.
+    RUNAWAY_LIMIT (int): Maximum recursion/iteration count before aborting as a
+        runaway.
+    DEBUG_OBJECT (str): Name of a definition to trace for debugging ("" disables).
+    PRUNE_JSON (bool): Remove None values and empty arrays from the resolved JSON output.
+    OSCAL_DEFAULT_NAMESPACE (str): The NIST OSCAL namespace URI.
+    METASCHEMA_DEFAULT_NAMESPACE (str): The NIST Metaschema namespace URI.
+    METASCHEMA_TOP_IGNNORE (list): Top-level metaschema elements to ignore.
+    METASCHEMA_TOP_KEEP (list): Top-level metaschema elements to process.
+    METASCHEMA_PROPS_HANDLED (list): Metaschema ``prop`` names handled on definitions.
+    METASCHEMA_RULE_PROPS_HANDLED (list): Metaschema ``prop`` names handled on rules.
+    METASCHEMA_INDEX_PROPS_HANDLED (list): Metaschema ``prop`` names handled on indexes.
+    METASCHEMA_ROP_NAMESPACE (list): Recognized metaschema property namespace URIs.
+    METASCHEMA_ROOT_ELEMENT (str): Root element name of a metaschema document
+        ("METASCHEMA").
+    CONSTRAINT_ROOT_ELEMENT (str): Root element name of a meta-constraints document.
+    CONSTRAINT_TOP_IGNORE (list): Top-level constraint elements to ignore.
+    CONSTRAINT_TOP_KEEP (list): Top-level constraint elements to process.
+    GREEN, BLUE, YELLOW, RED, ORANGE, MAGENTA, CYAN, PURPLE, BOLD, RESET (str):
+        ANSI terminal escape codes used for colorized diagnostic output.
 """
 import sys
 import re
@@ -76,13 +100,17 @@ RESET   = "\033[0m"
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def parse_metaschema(support=None, oscal_version=None) -> int:
     """
-    Parse the OSCAL metaschema for a given version.
-    This function is used to parse the OSCAL metaschema for a given version.
-    Parameters:
-    - support (OSCAL_support): The OSCAL support object.
-    - oscal_version (str): The OSCAL version to parse. If None, all supported versions are processed.
+    Parse and store the OSCAL metaschema index for one or all supported versions.
+
+    Args:
+        support (OSCALSupport, optional): The OSCAL support object. Currently the
+            shared instance is fetched internally via ``get_support()`` regardless
+            of this argument. Defaults to None.
+        oscal_version (str, optional): The OSCAL version to parse. When None, all
+            supported versions are processed. Defaults to None.
+
     Returns:
-    - int: 0 if successful, 1 if there was an error.
+        int: 0 on success, 1 on error (process-style exit code).
     """
 
     status = False
@@ -127,15 +155,19 @@ def parse_metaschema(support=None, oscal_version=None) -> int:
 # --------------------------------------------------------------------------
 def parse_metaschema_specific(support, oscal_version):
     """
-    Parse a specific metaschema model for a given OSCAL version.
+    Parse and store every model index for a specific OSCAL version.
+
     Each model index is stored separately in the support database as
-    (version, model, "processed") and written to
-    support/<version>/<model>.json alongside the support database.
-    Parameters:
-    - support (OSCAL_support): The OSCAL support object.
-    - oscal_version (str): The OSCAL version to parse.
+    ``(version, model, "processed")`` and written to
+    ``support/<version>/<model>.json`` alongside the support database.
+
+    Args:
+        support (OSCALSupport, required): The OSCAL support object providing
+            metaschema assets and asset storage.
+        oscal_version (str, required): The OSCAL version to parse.
+
     Returns:
-    - bool: True if all models parsed and stored successfully.
+        bool: True if all models parsed and stored successfully, False otherwise.
     """
     import os
     global global_counter, global_stop_here
@@ -267,8 +299,16 @@ def _rebuild_model_index(support, oscal_version: str, model: str) -> dict | None
 # --------------------------------------------------------------------------
 def clean_none_values_recursive(dictionary):
     """
-    Recursively remove all key/value pairs where the value is None from dictionaries,
-    including nested dictionaries.
+    Recursively drop None values and empty containers from a dict.
+
+    Removes key/value pairs whose value is None, and prunes empty nested dicts and
+    lists (including dicts nested inside lists), returning a new cleaned dict.
+
+    Args:
+        dictionary (dict, required): The dictionary to clean.
+
+    Returns:
+        dict: A new dictionary with None values and empty containers removed.
     """
     result = {}
     for k, v in dictionary.items():
@@ -295,7 +335,25 @@ def clean_none_values_recursive(dictionary):
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class MetaschemaParser:
+    """Parses a single OSCAL resolved-metaschema XML document into a structural index.
+
+    Holds the parsed metaschema tree and namespace/model context, resolves imported
+    metaschemas, and walks assemblies, fields, and flags to build the nested index
+    (nodes, attributes, allowed-value constraints) consumed by the converter and
+    validator. Prefer the :meth:`create` classmethod to construct instances.
+    """
     def __init__(self, metaschema, support, import_inventory=[], oscal_version=""):
+        """Initialize a parser for one metaschema document.
+
+        Args:
+            metaschema (str, required): The resolved-metaschema XML content to parse.
+            support (OSCALSupport, required): The OSCAL support object used to fetch
+                imported metaschemas and store results.
+            import_inventory (list, optional): Names of metaschemas already being
+                processed, used to prevent circular imports. Defaults to [].
+            oscal_version (str, optional): The OSCAL version this metaschema belongs
+                to. Defaults to "".
+        """
         logger.debug("Initializing MetaschemaParser")
         self.content = metaschema
         self.valid_xml = False
@@ -315,6 +373,18 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     @classmethod
     def create(cls, metaschema, support, import_inventory=[], oscal_version=""):
+        """Construct a ``MetaschemaParser`` (preferred factory over direct instantiation).
+
+        Args:
+            metaschema (str, required): The resolved-metaschema XML content to parse.
+            support (OSCALSupport, required): The OSCAL support object.
+            import_inventory (list, optional): Names of metaschemas already being
+                processed, to prevent circular imports. Defaults to [].
+            oscal_version (str, optional): The OSCAL version. Defaults to "".
+
+        Returns:
+            MetaschemaParser: A new parser instance.
+        """
         logger.debug("Creating MetaschemaParser")
         ret_value = None
         ret_value = cls(metaschema, support, import_inventory, oscal_version)
@@ -333,7 +403,16 @@ class MetaschemaParser:
     
     # -------------------------------------------------------------------------
     def str_node(self, node):
-        """String representation of the MetaschemaParser."""
+        """Build a human-readable summary of a parsed metaschema index node.
+
+        Args:
+            node (dict, required): An index node produced by the parser, carrying
+                keys such as ``formal-name``, ``use-name``, ``min-occurs``,
+                ``max-occurs``, ``datatype``, ``children``, and ``constraints``.
+
+        Returns:
+            str: A multi-line, human-readable description of the node.
+        """
         ret_value = ""
         ret_value += f"{node['formal-name']}: {node['use-name']}"
         if node["name"] != node["use-name"]:
@@ -413,7 +492,14 @@ class MetaschemaParser:
 
     # -------------------------------------------------------------------------
     def top_pass(self):
-        """Perform the first pass of parsing."""
+        """Perform the first parsing pass: deserialize XML and read top-level metadata.
+
+        Parses the metaschema content, then extracts the model name, schema name,
+        OSCAL version, namespace, and JSON base URI, and sets up imports.
+
+        Returns:
+            bool: True if the XML was well-formed and parsed, False otherwise.
+        """
         logger.debug("Performing top pass")
 
         try:
@@ -449,7 +535,14 @@ class MetaschemaParser:
 
     # -------------------------------------------------------------------------
     def setup_imports(self):
-        """Identify import elements and set them up as import objects."""
+        """Identify ``import`` elements and load each as a nested ``MetaschemaParser``.
+
+        Imported metaschemas are fetched from the support database and stored in
+        ``self.imports`` keyed by model name for later cross-metaschema lookups.
+
+        Returns:
+            None
+        """
         logger.debug(f"Setting up imports for {self.oscal_model}")
         import_directives = xpath(self.tree, self.nsmap, '/./METASCHEMA/import/@href')
         logger.debug(f"Imports: {self.imports}")
@@ -493,17 +586,16 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def xpath_atomic(self, xExpr, context=None):
         """
-        Performs an xpath query either on the entire XML document
-        or on a context within the document.
-        Parameters:
-        - xExpr (str): An xpath expression
-        - context (obj)[optional]: Context object.
-        If the context object is present, the xpath expression is run against
-        that context. If absent, the xpath expression is run against the
-        entire document.
+        Run an XPath query and return the first result as a string.
+
+        Args:
+            xExpr (str, required): An XPath expression.
+            context (Element, optional): Node to evaluate the expression against.
+                When None, the expression runs against the whole document.
+                Defaults to None.
+
         Returns:
-        - an empty string if there is an error or if nothing is found.
-        - The first result of the xpath expression as a string.
+            str: The first matching result as a string, or "" on error / no match.
         """
 
         return xpath_atomic(self.tree, self.nsmap, xExpr, context)
@@ -511,38 +603,52 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def xpath(self, xExpr, context=None) -> ET.Element | list[ET.Element] | None:
         """
-        Performs an xpath query either on the entire XML document 
-        or on a context within the document.
+        Run an XPath query and return the matching element(s).
 
-        Parameters:
-        - xExpr (str): An xpath expression
-        - context (obj)[optional]: Context object.
-        If the context object is present, the xpath expression is run against
-        that context. If absent, the xpath expression is run against the 
-        entire document.
+        Args:
+            xExpr (str, required): An XPath expression.
+            context (Element, optional): Node to evaluate the expression against.
+                When None, the expression runs against the whole document.
+                Defaults to None.
 
-        Returns: 
-        - None if there is an error or if nothing is found.
-        - an element object or a list of element objects if the xpath expression
-        is successful.
+        Returns:
+            ET.Element | list[ET.Element] | None: A single element, a list of
+                elements, or None on error / no match.
         """
-        
+
 
         return cast(ET.Element | list[ET.Element] | None, xpath(self.tree, self.nsmap, xExpr, context))
 
     # -------------------------------------------------------------------------
     def get_markup_content(self, xExpr, context=None):
         """
-        Performs an xpath query where the response is expected to be either
-        just a string, or a node with HTML formatting.
-        Returns the content as a stirng either way.
+        Run an XPath query and return its markup content as a string.
+
+        Handles results that are either plain strings or nodes containing HTML
+        (markup) formatting, returning a string in either case.
+
+        Args:
+            xExpr (str, required): An XPath expression.
+            context (Element, optional): Node to evaluate the expression against.
+                Defaults to None (whole document).
+
+        Returns:
+            str: The matched content as a string (markup preserved as HTML).
         """
         return get_markup_content(self.tree, self.nsmap, xExpr, context)
 
     # -------------------------------------------------------------------------
     def build_metaschema_tree(self):
         """
-        Build the metaschema tree.
+        Build the full structural index for this metaschema's model.
+
+        Recursively walks the root assembly to produce the node tree, applies
+        constraints against a synthesized XML skeleton, prunes empty values, and
+        annotates namespace conditions and JSON paths.
+
+        Returns:
+            dict: The metaschema index — model metadata plus a ``nodes`` tree — or an
+                empty dict on error or when the root assembly cannot be found.
         """
         logger.debug(f"Resolving the metaschema tree for {self.oscal_model}")
         metaschema_tree = {}
@@ -593,9 +699,14 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def initialize_metaschema_node(self):
         """
-        Initialize a new node for the metaschema tree.
-        This function sets up the initial structure of a metaschema tree node.
-        It is called as each node is created, including the top level node.
+        Create a new, fully-keyed metaschema index node with default (empty) values.
+
+        Called as each node is created, including the top-level node, to guarantee a
+        consistent key set (path, name, datatype, cardinality, children, constraints,
+        handled props, etc.).
+
+        Returns:
+            dict: A new node dict with all expected keys initialized.
         """
 
         # Reset the metaschema tree
@@ -638,9 +749,14 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def initialize_metaschema_rule(self):
         """
-        Initialize a new metaschema rule.
-        This function sets up the initial structure of a metaschema rule.
-        It is called before each rule is created.
+        Create a new, fully-keyed metaschema rule with default (empty) values.
+
+        Called before each rule (e.g. an allowed-values constraint) is populated, to
+        guarantee a consistent key set (id, level, datatype, allowed-values,
+        allow-other, test, message, cardinality, etc.).
+
+        Returns:
+            dict: A new rule dict with all expected keys initialized.
         """
 
         # Reset the metaschema tree
@@ -680,9 +796,13 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def initialize_metaschema_index(self):
         """
-        Initialize a new metaschema index.
-        This function sets up the initial structure of a metaschema index.
-        It is called before each index is created.
+        Create a new, fully-keyed metaschema index-constraint dict with default values.
+
+        Called before each index constraint is populated, to guarantee a consistent
+        key set (id, level, name, target, handled props, etc.).
+
+        Returns:
+            dict: A new index dict with all expected keys initialized.
         """
 
         # Reset the metaschema tree
@@ -705,21 +825,34 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def recurse_metaschema(self, name, structure_type="define-assembly", parent="", ignore_local=False, already_searched=None, context=None, skip_children=False, use_name=None):
         """
-        Recursively build the metaschema tree.
-        This function processes the XML tree and extracts significant nodes
-        based on the defined rules. It creates a dictionary representation of the
-        metaschema structure, including attributes and child elements.
-        Parameters:
-        - oscal_model (str): The OSCAL model name.
-        - structure_type (str): The type of structure to process (define-assembly, define-field, define-flag, assembly-field-flag).
-        - ignore_local (bool): Flag to ignore local elements.
+        Recursively build a metaschema index node and its descendants.
+
+        Processes the XML definition for ``name`` and extracts a node dict describing
+        its attributes, flags, and child elements, recursing into referenced
+        definitions.
+
+        Args:
+            name (str, required): The definition/element name to process (e.g. a model
+                or field name).
+            structure_type (str, optional): The kind of definition — "define-assembly",
+                "define-field", "define-flag", or an inline assembly/field/flag.
+                Defaults to "define-assembly".
+            parent (str, optional): Name of the parent definition, for logging/paths.
+                Defaults to "".
+            ignore_local (bool, optional): When True, ignore local (non-exported)
+                definitions; set True when recursing into an imported metaschema so its
+                private locals are not exposed. Defaults to False.
+            already_searched (list | None, optional): Definition names already visited,
+                to prevent infinite recursion. Defaults to None.
+            context (Element, optional): XML context node to search within.
+                Defaults to None.
+            skip_children (bool, optional): When True, do not recurse into child
+                elements. Defaults to False.
+            use_name (str | None, optional): Override for the node's effective
+                (use-)name. Defaults to None.
+
         Returns:
-        - dict: A dictionary representation of the metaschema tree.
-
-
-        NOTE: ignore_local should be true when performing this function on an imported
-        metaschema. This is because the imported metaschema may have local elements
-        that are not intended to be exposed to the importing metaschema file. 
+            dict: The metaschema index node for ``name`` (with nested children).
         """
         if already_searched is None:
             already_searched = []
@@ -886,9 +1019,20 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def handle_group_as(self, metaschema_node, definition_obj: ET.Element, structure_type, name, parent):
         """
-        Handle the group-as element for the metaschema tree.
-        This function processes the group-as element and its attributes,
-        setting them in the metaschema tree.
+        Apply a definition's ``group-as`` element to a metaschema node.
+
+        Reads the ``group-as`` name and its ``in-xml``/``in-json`` grouping
+        attributes and records them (and XML wrapping) on the node.
+
+        Args:
+            metaschema_node (dict, required): The node being built; updated in place.
+            definition_obj (ET.Element, required): The XML definition element.
+            structure_type (str, required): The definition's structure type.
+            name (str, required): The definition name (for logging).
+            parent (str, required): The parent path (used to build wrapped paths).
+
+        Returns:
+            dict: The updated ``metaschema_node``.
         """
         logger.debug(f"Handling group-as for {structure_type} {name}")
 
@@ -921,8 +1065,20 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def graceful_accumulate(self, current_value, xExpr, context=None):
         """
-        Handle graceful accumulation for the metaschema tree where a field or assembly ref
-        values need to be added to any existing defined-field or define-assembly values.
+        Prepend a resolved markup value onto an accumulating list of values.
+
+        Used where a field/assembly reference's values must be added to (rather than
+        replace) any values already defined on the referenced define-field/assembly.
+
+        Args:
+            current_value (list, required): The existing accumulated values; wrapped in
+                a list if not already one.
+            xExpr (str, required): XPath expression yielding the markup value to add.
+            context (Element, optional): Node to evaluate against. Defaults to None.
+
+        Returns:
+            list: ``current_value`` with the resolved value inserted at the front (when
+                non-empty).
         """
         logger.debug(f"Handling graceful accumulation for {xExpr}")
 
@@ -937,8 +1093,19 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def graceful_override(self, current_value, xExpr, context=None):
         """
-        Handle graceful overrides for the metaschema tree where a field or assembly ref
-        values need to replace any existing defined-field or define-assembly values.
+        Return an overriding value when present, otherwise keep the current value.
+
+        Used where a field/assembly reference's value must replace any value already
+        defined on the referenced define-field/assembly.
+
+        Args:
+            current_value (Any, required): The existing value to keep if no override
+                is found.
+            xExpr (str, required): XPath expression yielding the overriding value.
+            context (Element, optional): Node to evaluate against. Defaults to None.
+
+        Returns:
+            Any: The resolved override value if non-empty, otherwise ``current_value``.
         """
         ret_value = None
         logger.debug("Handling graceful overrides")
@@ -953,9 +1120,21 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def set_default_values(self, metaschema_node, definition_obj, structure_type, name, parent):
         """
-        Set default values for the metaschema tree.
-        This function sets default values for various attributes in the metaschema tree
-        based on the structure type and other conditions.
+        Fill in default node values required by the metaschema specification.
+
+        Applies spec defaults for any unset attributes — datatype ("string"),
+        cardinality (0..1, or 1..1 for the root), ``json-collapsible``,
+        ``deprecated``, ``default``, and XML wrapping for fields/assemblies.
+
+        Args:
+            metaschema_node (dict, required): The node being built; updated in place.
+            definition_obj (ET.Element, required): The XML definition element.
+            structure_type (str, required): The definition's structure type.
+            name (str, required): The definition name.
+            parent (str, required): The parent path; an empty value marks the root node.
+
+        Returns:
+            dict: The updated ``metaschema_node``.
         """
         logger.debug("Setting default values")
         # Set default values for metaschema tree
@@ -990,9 +1169,21 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def look_in_imports(self, name, structure_type, parent="", ignore_local=False, already_searched=None):
         """
-        Look for a metaschema definition in the imported files.
-        This function searches through the imported metaschema files to find
-        a specific definition by name and structure type.
+        Search imported metaschemas for a definition by name and structure type.
+
+        Args:
+            name (str, required): The definition name to find.
+            structure_type (str, required): The structure type to match
+                (e.g. "define-assembly", "define-field", "define-flag").
+            parent (str, optional): Parent path for the resolved node. Defaults to "".
+            ignore_local (bool, optional): Passed through to recursion; ignore local
+                definitions in the imported metaschema. Defaults to False.
+            already_searched (list | None, optional): Definition names already visited,
+                to prevent cycles. Defaults to None.
+
+        Returns:
+            dict | None: The resolved node from the imported metaschema, or None if not
+                found.
         """
         if already_searched is None:
             already_searched = []
@@ -1024,7 +1215,22 @@ class MetaschemaParser:
 
     # -------------------------------------------------------------------------
     def handle_flags(self, metaschema_node, definition_obj, structure_type, name, parent):
-        """Handle Flags defined or referenced in the Field or Assembly"""
+        """Resolve the flags defined or referenced by a field or assembly.
+
+        Finds each ``define-flag``/``flag`` child, recurses to build its node, and
+        collects the results.
+
+        Args:
+            metaschema_node (dict, required): The parent node being built (used for
+                path context).
+            definition_obj (ET.Element, required): The field/assembly XML definition.
+            structure_type (str, required): The parent's structure type.
+            name (str, required): The parent definition name.
+            parent (str, required): The parent path.
+
+        Returns:
+            list: The resolved flag node dicts (empty when none are present).
+        """
         logger.debug(f"Handling flags for {structure_type} {name}")
         
         hold_flags = []
@@ -1061,9 +1267,22 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def handle_attributes(self, metaschema_node, definition_obj: ET.Element, structure_type, name, parent):
         """
-        Handle attributes for the metaschema tree.
-        This function processes the attributes of the given XML element and
-        updates the metaschema tree accordingly.
+        Map an XML definition's attributes onto a metaschema node.
+
+        Translates attributes such as ``as-type`` (datatype), ``required``,
+        ``min-occurs``/``max-occurs`` (cardinality), ``collapsible``, ``deprecated``,
+        ``default``, and ``in-xml`` (XML wrapping) into node fields. Unhandled
+        attributes are logged as warnings.
+
+        Args:
+            metaschema_node (dict, required): The node being built; updated in place.
+            definition_obj (ET.Element, required): The XML definition element.
+            structure_type (str, required): The definition's structure type.
+            name (str, required): The definition name.
+            parent (str, required): The parent path.
+
+        Returns:
+            dict: The updated ``metaschema_node``.
         """
         logger.debug("Handling attributes")
 
@@ -1119,14 +1338,21 @@ class MetaschemaParser:
     # -------------------------------------------------------------------------
     def handle_props(self, metaschema_node, definition_obj, structure_type, name, parent):
         """
-        Handle props for the metaschema tree.
-        This function processes the props of the given metaschema construct and
-        updates the current metaschema node accordingly.
-        Expected props are have their own node keys. Any unexpected prop is added
-        to the props array. 
+        Map a definition's ``prop`` elements onto a metaschema node.
 
-        metaschema_node["props"] = [{"name" : "", "value": "", "namespace": ""}, ...]
+        Recognized props (``METASCHEMA_PROPS_HANDLED`` in the OSCAL namespace) are
+        promoted to dedicated node keys; any other prop is appended to the node's
+        ``props`` list as ``{"name", "value", "namespace"}``.
 
+        Args:
+            metaschema_node (dict, required): The node being built; updated in place.
+            definition_obj (ET.Element, required): The XML definition element.
+            structure_type (str, required): The definition's structure type.
+            name (str, required): The definition name.
+            parent (str, required): The parent path.
+
+        Returns:
+            dict: The updated ``metaschema_node``.
         """
         logger.debug("Handling metaschema props")
         hold_props = metaschema_node.get("props", [])
@@ -1158,7 +1384,22 @@ class MetaschemaParser:
     
     # -------------------------------------------------------------------------
     def handle_children(self, name, structure_type, metaschema_node, context, handle_choice=0):
-        """Handle model specification for defined assemblies"""
+        """Resolve the child model of an assembly (fields, assemblies, choices, any).
+
+        Walks the assembly's ``model`` (or a specific ``choice`` group), recursing to
+        build each child node and constructing synthetic nodes for ``choice``/``any``.
+
+        Args:
+            name (str, required): The definition name being processed.
+            structure_type (str, required): "define-assembly" or "choice".
+            metaschema_node (dict, required): The parent node (provides path/source).
+            context (Element, required): The XML context to search within.
+            handle_choice (int, optional): 1-based index of the choice group to process
+                when ``structure_type`` is "choice". Defaults to 0.
+
+        Returns:
+            list: The resolved child node dicts.
+        """
         global global_unhandled_report, global_counter
         hold_children = metaschema_node.get("children", [])
         choice_count = 0
@@ -1310,14 +1551,23 @@ class MetaschemaParser:
 
     # -------------------------------------------------------------------------
     def handle_constraints(self, metaschema_node, definition_obj, structure_type, name, parent):
-        """Process <constraint><allowed-values> elements from a definition object.
+        """Process ``<constraint><allowed-values>`` elements from a definition object.
 
-        For target='.' or absent: applies to the current node.
-        For target='@flag-name': applies to the named flag child.
-        For complex Metapath targets: stored with unresolved-target preserved.
+        Targets are handled as follows: ``.`` or absent applies to the current node;
+        ``@flag-name`` applies to the named flag child; complex Metapath targets are
+        resolved against the XML skeleton (or stored with the unresolved target
+        preserved). Multiple allowed-values sets for the same target are cumulative;
+        ``allow-other`` conflicts resolve with 'yes' winning and emit a warning.
 
-        Multiple allowed-values sets for the same target are cumulative; allow-other
-        conflicts are resolved with 'yes' winning, and a warning is emitted.
+        Args:
+            metaschema_node (dict, required): The node being built; updated in place.
+            definition_obj (ET.Element, required): The XML definition element.
+            structure_type (str, required): The definition's structure type.
+            name (str, required): The definition name.
+            parent (str, required): The parent path.
+
+        Returns:
+            dict: The updated ``metaschema_node``.
         """
         logger.debug(f"Handling constraints for {structure_type} {name}")
 

@@ -411,8 +411,9 @@ class TestCatalogJsonRoundtrip:
 class TestCatalogXmlRoundtrip:
     """Verify that a catalog loaded from XML survives an XML save/reload cycle."""
 
+    @staticmethod
     @pytest.fixture(scope="class")
-    def xml_roundtrip(self, tmp_path_factory):
+    def xml_roundtrip(tmp_path_factory):
         """
         Load the FedRAMP LOW catalog from XML, dump to a new XML file, reload,
         and return (original, reloaded) as a tuple.

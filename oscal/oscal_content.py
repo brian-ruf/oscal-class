@@ -1,11 +1,23 @@
 """
-    OSCAL Class
+oscal_content — OSCAL base class and shared content operations.
 
-    A class for creation, manipulation, validation and format convertion of OSCAL content.
-    All published OSCAL versions, formats and models can be validated and converted.
-    Newly published versions can be "learned" by updating the OSCAL Support database.
-    See https://github.com/brian-ruf/oscal-class for more details.
+Defines the ``OSCAL`` base class used by all eight model classes for creating,
+loading, manipulating, validating, and format-converting OSCAL content. All
+published OSCAL versions, formats, and models can be validated and converted;
+newly published versions can be "learned" by updating the OSCAL Support
+database. This module also provides import-resolution machinery, dict-building
+helpers (props/links/resources), and Metapath/JSON query support.
 
+See https://github.com/brian-ruf/oscal-class for more details.
+
+Module constants:
+    INDENT (int): Number of spaces used for indentation in pretty-printed output.
+    OSCAL_DEFAULT_XML_NAMESPACE (str): The NIST OSCAL XML namespace URI
+        (re-exported from ``oscal_support``).
+    OSCAL_FORMATS (list): Supported serialization formats
+        (re-exported from ``oscal_support``).
+    OSCAL_DATATYPES (dict): OSCAL Metaschema data type definitions
+        (re-exported from ``oscal_datatypes``).
 """
 from __future__         import annotations
 import os
@@ -109,6 +121,16 @@ _IMPORT_PATTERNS_DICT: dict[str, list[dict]] = {
 
 # Conditional origin states — not progressive; freshness is time-based and computed on demand.
 class OriginState(Enum):
+    """Origin/freshness state of a document's source (not progressive).
+
+    Freshness is time-based and computed on demand rather than stored.
+
+    Members:
+        LOCAL (str): "local" — local file system source; always accessible.
+        REMOTE_UNCACHED (str): "remote-uncached" — remote source with no local cache copy.
+        REMOTE_FRESH (str): "remote-fresh" — remote source cached and within its TTL.
+        REMOTE_STALE (str): "remote-stale" — remote source cached but past its TTL.
+    """
     LOCAL           = "local"           # Local file system — always accessible
     REMOTE_UNCACHED = "remote-uncached" # Remote content, no local cache copy
     REMOTE_FRESH    = "remote-fresh"    # Remote content, cached and within TTL
@@ -176,6 +198,16 @@ def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
 
 # Progressive content validation states. Each level implies all prior levels passed.
 class ContentState(IntEnum):
+    """Progressive content-processing state; each level implies all prior levels passed.
+
+    Members (ordered by increasing progress):
+        NONE (int): -1 — no content / uninitialized.
+        NOT_AVAILABLE (int): 0 — content could not be acquired.
+        ACQUIRED (int): 1 — content was acquired (non-empty string).
+        WELL_FORMED (int): 2 — content is well-formed XML, JSON, or YAML.
+        VALID (int): 3 — content passes OSCAL schema validation (minimum for view/edit).
+        IMPORTS_RESOLVED (int): 4 — all imported OSCAL documents resolved successfully.
+    """
     NONE             = -1  # No content / uninitialized
     NOT_AVAILABLE    = 0  # Unable to acquire content
     ACQUIRED         = 1  # Content was acquired (non-empty string)
@@ -189,17 +221,28 @@ class _ReadableSource(Protocol):
     """Protocol for file-like objects that provide read()."""
 
     def read(self, size: int = -1) -> Any:
+        """Read up to ``size`` bytes/characters from the source (``-1`` reads all)."""
         ...
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Factory Methods and Initializers
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def requires(**conditions):
-    """Gate a method on boolean instance attributes or properties.
+    """Decorator factory gating a method on instance attribute/property values.
 
-    Usage:
-        @requires(writable=True)
-        @requires(is_remote=True, is_cached=True)
+    The wrapped method runs only when every ``attr == expected`` condition holds
+    on ``self``; otherwise it logs an error and returns None.
+
+    Args:
+        **conditions: Mapping of instance attribute/property name to its required
+            value (e.g. ``writable=True``, ``is_remote=True``).
+
+    Returns:
+        Callable: A decorator that wraps the target method with the guard.
+
+    Example:
+        >>> @requires(is_read_only=False)
+        ... def mutate(self): ...
     """
     def decorator(fn):
         @wraps(fn)
@@ -215,7 +258,18 @@ def requires(**conditions):
 
 # -----------------------------------------------------------------------------
 def requires_state(min_state: ContentState):
-    """Gate a method on a minimum ContentState level."""
+    """Decorator factory gating a method on a minimum ``ContentState`` level.
+
+    The wrapped method runs only when ``self.content_state >= min_state``;
+    otherwise it logs an error and returns None.
+
+    Args:
+        min_state (ContentState, required): Minimum content state required to run
+            the method.
+
+    Returns:
+        Callable: A decorator that wraps the target method with the guard.
+    """
     def decorator(fn):
         @wraps(fn)
         def wrapper(self, *args, **kwargs):
@@ -231,7 +285,17 @@ def requires_state(min_state: ContentState):
 
 # -----------------------------------------------------------------------------
 def if_update_successful(fn):
-    """Updates tracking attributes after a successful content modification."""
+    """Decorator marking content dirty after a successful mutation.
+
+    Wraps a mutation method; when it returns a non-None result, sets
+    ``self.is_unsaved = True`` and updates ``self.last_modified``.
+
+    Args:
+        fn (Callable, required): The mutation method to wrap.
+
+    Returns:
+        Callable: The wrapped method.
+    """
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
         result = fn(self, *args, **kwargs)
@@ -245,7 +309,14 @@ def if_update_successful(fn):
 # OSCAL CLASS
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCAL(LoggableMixin):
-    """
+    """Base class for all OSCAL model documents.
+
+    Provides loading, saving, validation, format conversion (XML/JSON/YAML),
+    import resolution, and query support shared by every OSCAL model. Content is
+    held internally as a JSON-primary dict (``self._dict``) with an XML tree
+    (``self._tree``) maintained for conversion. Do not instantiate directly; use
+    the factory classmethods ``load``, ``loads``, or ``new``, or a model subclass.
+
         Attributes (Content Location):
             href_original: The original href as provided (e.g., in an import statement)
             is_valid_href: True if the href is accessible and the content was loaded successfully
@@ -348,31 +419,40 @@ class OSCAL(LoggableMixin):
     # Content state properties (progressive — each implies all prior levels passed)
     @property
     def is_acquired(self) -> bool:
+        """bool: True once content has been acquired (``content_state >= ACQUIRED``)."""
         return self.content_state >= ContentState.ACQUIRED
 
     # -------------------------------------------------------------------------
     @property
     def is_well_formed(self) -> bool:
+        """bool: True when content is well-formed (``content_state >= WELL_FORMED``)."""
         return self.content_state >= ContentState.WELL_FORMED
 
     # -------------------------------------------------------------------------
     @property
     def is_valid(self) -> bool:
+        """bool: True when content passes OSCAL validation (``content_state >= VALID``)."""
         return self.content_state >= ContentState.VALID
 
     # -------------------------------------------------------------------------
     @property
     def imports_resolved(self) -> bool:
+        """bool: True when all imports resolved (``content_state >= IMPORTS_RESOLVED``)."""
         return self.content_state >= ContentState.IMPORTS_RESOLVED
 
     # -------------------------------------------------------------------------
     @classmethod
     def loads(cls, content: str | dict, *, href: str | None = None):
-        """Initialize from in-memory OSCAL content.
-        
+        """Initialize an instance from in-memory OSCAL content.
+
         Args:
-            content: OSCAL content already available in memory (string or dictionary).
-            href: Optional URI identifying the original content source.
+            content (str | dict, required): OSCAL content already in memory, as a
+                serialized string or a dict.
+            href (str | None, optional): URI identifying the original content
+                source. Keyword-only. Defaults to None.
+
+        Returns:
+            OSCAL: A new instance populated from the content.
         """
         instance = cls.__new__(cls)
         instance.__init_common__()
@@ -388,11 +468,23 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     @classmethod
     def load(cls, source: str | os.PathLike | _ReadableSource, *, href: str | None = None):
-        """Initialize from a local file path or file-like object.
+        """Initialize an instance from a local file path or file-like object.
 
-        This aligns with Python's conventional `load(...)` behavior.
-        Use `loads(...)` for in-memory strings/dicts, and `acquire(...)` for
-        URI/reference resolution and fallback sources.
+        Aligns with Python's conventional ``load(...)`` behavior. Use ``loads(...)``
+        for in-memory strings/dicts, and ``acquire(...)`` for URI/reference
+        resolution and fallback sources.
+
+        Args:
+            source (str | os.PathLike | file-like, required): A filesystem path or an
+                object with a ``read()`` method.
+            href (str | None, optional): URI label identifying the source; defaults to
+                the path or the object's ``name``. Keyword-only. Defaults to None.
+
+        Returns:
+            OSCAL: A new instance populated from the loaded content.
+
+        Raises:
+            TypeError: If ``source`` is neither path-like nor file-like.
         """
         instance = cls.__new__(cls)
         instance.__init_common__()
@@ -431,13 +523,16 @@ class OSCAL(LoggableMixin):
         """
         Acquire OSCAL content from one or more URI/reference sources.
 
-        Accepts:
-            - str               : URI or path-like href
-            - OscalRef          : already-typed ref
-            - dict              : reference dict with at least "href"
-            - list[...]         : mixed list of any of the above
+        The sources are treated as an ordered fallback list; the first that
+        resolves successfully is used.
 
-        Returns self to allow method chaining.
+        Args:
+            source (str | dict | OscalRef | list, required): The reference(s) to
+                acquire. May be a URI/path string, an ``OscalRef``, a reference dict
+                containing at least ``"href"``, or a list mixing any of these.
+
+        Returns:
+            OSCAL: A new instance populated from the first resolvable source.
         """
 
         instance = cls.__new__(cls)
@@ -453,7 +548,16 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     @classmethod
     def from_string(cls, content: str, *, href: str | None = None):
-        """Explicit constructor for in-memory OSCAL string content."""
+        """Explicit constructor for in-memory OSCAL string content.
+
+        Args:
+            content (str, required): Serialized OSCAL content.
+            href (str | None, optional): URI identifying the source. Keyword-only.
+                Defaults to None.
+
+        Returns:
+            OSCAL: A new instance (delegates to :meth:`loads`).
+        """
         return cls.loads(content, href=href)
 
     # # -------------------------------------------------------------------------
@@ -476,8 +580,14 @@ class OSCAL(LoggableMixin):
                         reference dicts, and fallback lists
 
         Args:
-            source: Any supported OSCAL source.
-            href:   Optional URI label passed through to load() when applicable.
+            source (str | os.PathLike | dict | OscalRef | list | file-like, required):
+                Any supported OSCAL source. String values with a URI scheme are
+                acquired; bare paths and file-like objects are loaded.
+            href (str | None, optional): URI label passed through to ``load()`` when
+                applicable. Keyword-only. Defaults to None.
+
+        Returns:
+            OSCAL: A new instance from the appropriate loader.
         """
         if isinstance(source, _ReadableSource) or isinstance(source, os.PathLike):
             return cls.load(source, href=href)
@@ -493,15 +603,22 @@ class OSCAL(LoggableMixin):
     @classmethod
     def new(cls, title: str, version: str = "", published: str = ""):
         """Create a new OSCAL document from a template.
-        
-        Must be called on a specific model class (Catalog.new(), Profile.new(), etc.),
-        not on OSCAL directly.
-        
+
+        Must be called on a specific model class (``Catalog.new()``,
+        ``Profile.new()``, etc.), not on ``OSCAL`` directly.
+
         Args:
-            title:   Document title (stored in metadata).
-            version: Document version (stored in metadata).
-            published: Document publication date (stored in metadata).
-            **kwargs: Additional metadata fields (e.g. published, last_modified).
+            title (str, required): Document title (stored in metadata).
+            version (str, optional): Document version (stored in metadata).
+                Defaults to "".
+            published (str, optional): Publication date (stored in metadata).
+                Defaults to "".
+
+        Returns:
+            OSCAL: A new editable instance of the model subclass.
+
+        Raises:
+            TypeError: If called on the ``OSCAL`` base class instead of a subclass.
         """
         if cls is OSCAL:
             raise TypeError(
@@ -530,12 +647,15 @@ class OSCAL(LoggableMixin):
         This will save to any valid filename, even if the file extension does not match the format.
 
         Args:
-            filename (str): The path to the file where content will be saved.
-            format (str): The format to save the content in {OSCAL_FORMATS}.
-            pretty_print (bool): Whether to pretty print the output.
+            filename (str, optional): Path to write to. Defaults to the original
+                source location when empty.
+            format (str, optional): Output format — one of ``OSCAL_FORMATS``
+                ("xml", "json", "yaml", "yml"). Defaults to the original format when empty.
+            pretty_print (bool, optional): Whether to pretty-print the output.
+                Defaults to False.
 
         Returns:
-            bool: True if write is successful, False otherwise
+            bool: True if the write succeeded, False otherwise.
         """
         status = False
         content = ""
@@ -668,10 +788,18 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     def retry_import(self, failed_href: str, replacement_href: str) -> bool:
-        """Retry a failed import identified by href.
+        """Retry a failed import identified by href, using a replacement source.
 
         The failed import is matched by href (original or previously resolved),
-        then re-attempted using replacement_href.
+        then re-attempted using ``replacement_href`` (resolved relative to this
+        document's location).
+
+        Args:
+            failed_href (str, required): The href of the failed import to retry.
+            replacement_href (str, required): The replacement href to attempt.
+
+        Returns:
+            bool: True if the import was successfully resolved on retry, False otherwise.
         """
         if not failed_href or not replacement_href:
             logger.warning("retry_import requires both failed_href and replacement_href.")
@@ -768,7 +896,15 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     def retry_imports(self, failed_href: str, replacement_href: str) -> bool:
-        """Compatibility alias for callers using the plural method name."""
+        """Compatibility alias for :meth:`retry_import` (plural method name).
+
+        Args:
+            failed_href (str, required): The href of the failed import to retry.
+            replacement_href (str, required): The replacement href to attempt.
+
+        Returns:
+            bool: True if the import was successfully resolved on retry, False otherwise.
+        """
         return self.retry_import(failed_href, replacement_href)
 
     # -------------------------------------------------------------------------
@@ -1187,7 +1323,8 @@ class OSCAL(LoggableMixin):
     def rebuild_import_tree(self) -> dict:
         """Discard the cached import tree and rebuild it from the current import_list.
 
-        Returns the freshly built tree.
+        Returns:
+            dict: The freshly built root node of the recursive import tree.
         """
         self._import_tree = None
         return self.import_tree
@@ -1195,6 +1332,7 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     @property
     def is_remote(self) -> bool:
+        """bool: True when the content originates from a remote source (not a local file)."""
         return not self.is_local
 
     # -------------------------------------------------------------------------
@@ -1236,11 +1374,18 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     def initial_validation(self, content: str) -> bool:
         """
-        Perform initial validation of content, which includes first ensuring the
-        content is a recognized OSCAL format type (xml, json or yaml) and
-        well formed, before passing it to the OSCAL validation method.
+        Perform initial validation of content and advance the content state.
+
+        Detects the format, checks that the content is a recognized, well-formed
+        OSCAL format (XML, JSON, or YAML), identifies the model/version and extracts
+        summary metadata, then invokes full OSCAL schema validation. Updates
+        ``self.content_state`` progressively as each stage passes.
+
+        Args:
+            content (str, required): The raw OSCAL content to validate.
+
         Returns:
-            bool: True if initial validation is successful, False otherwise
+            bool: True if initial validation is successful, False otherwise.
         """
         logger.debug("Performing initial validation of content...")
         self.content_state = ContentState.NONE   # reset for each validation attempt
@@ -1653,9 +1798,17 @@ class OSCAL(LoggableMixin):
     @if_update_successful
     def set_metadata(self, content: dict = {}) -> bool:
         """
-        Sets metadata fields in the OSCAL content.
+        Set simple metadata fields on the OSCAL content's ``metadata`` section.
+
+        Complex metadata collections (revisions, roles, parties, links, props, etc.)
+        are not yet supported and are skipped with a warning.
+
         Args:
-            content (dict): A dictionary containing metadata fields to set.
+            content (dict, optional): Mapping of metadata field name to value to set.
+                Defaults to an empty dict.
+
+        Returns:
+            bool: True on success, or None when the content cannot be mutated.
         """
         if not self._can_mutate("set_metadata"):
             return None
@@ -1714,7 +1867,18 @@ class OSCAL(LoggableMixin):
         return engine.query(path, data)
 
     def query_one(self, path: str, context: dict | None = None, default=None):
-        """Return the first result of :meth:`query`, or *default* when nothing matches."""
+        """Return the first result of :meth:`query`, or ``default`` when nothing matches.
+
+        Args:
+            path (str, required): Path expression using OSCAL XML element names.
+            context (dict | None, optional): Sub-dict to query within. Defaults to the
+                full document dict.
+            default (Any, optional): Value to return when there is no match.
+                Defaults to None.
+
+        Returns:
+            Any: The first matching JSON value, or ``default``.
+        """
         results = self.query(path, context)
         return results[0] if results else default
 
@@ -1745,7 +1909,18 @@ class OSCAL(LoggableMixin):
         return native_path.query(path, data)
 
     def json_query_one(self, path: str, context: dict | None = None, default=None):
-        """Return the first result of :meth:`json_query`, or *default* when nothing matches."""
+        """Return the first result of :meth:`json_query`, or ``default`` when nothing matches.
+
+        Args:
+            path (str, required): Path expression using JSON key names.
+            context (dict | None, optional): Sub-dict to query within. Defaults to the
+                full document dict.
+            default (Any, optional): Value to return when there is no match.
+                Defaults to None.
+
+        Returns:
+            Any: The first matching JSON value, or ``default``.
+        """
         results = self.json_query(path, context)
         return results[0] if results else default
 
@@ -1870,7 +2045,19 @@ class OSCAL(LoggableMixin):
     @if_update_successful
     def append_resource(self, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> dict | None:
         """
-        Appends a resource to the back-matter section.
+        Append a resource to the document's ``back-matter`` section.
+
+        Args:
+            uuid (str, optional): Resource UUID. A new UUID is generated when empty.
+            title (str, optional): Resource title.
+            description (str, optional): Resource description.
+            props (list, optional): Property dicts to add.
+            rlinks (list, optional): Resource-link (``rlink``) dicts to add.
+            base64 (str, optional): Base64-encoded inline content.
+            remarks (str, optional): Remarks prose (markdown).
+
+        Returns:
+            dict | None: The newly created resource dict, or None on failure.
         """
         if not self._can_mutate("append_resource"):
             return None
@@ -1878,16 +2065,20 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     def walk_imports(self, visitor_fn, depth=0, _seen=None, *, scope="successful"):
-        """Walk the import tree depth-first, calling visitor_fn(entry, depth) for each entry.
+        """Walk the import tree depth-first, calling ``visitor_fn(entry, depth)`` for each entry.
 
         Args:
-            visitor_fn: Callable receiving (entry_dict, depth_int).
-            depth:      Current recursion depth (used internally for the depth argument).
-            _seen:      Set of object ids already visited (used internally to prevent cycles).
-            scope:      Which entries to visit — "successful" (default), "failed", or "all".
-                        "successful" visits only READY imports and recurses into them.
-                        "failed"     visits only INVALID/NOT_LOADED imports (no recursion).
-                        "all"        visits every entry; recursion only follows READY imports.
+            visitor_fn (Callable, required): Callable receiving ``(entry_dict, depth_int)``.
+            depth (int, optional): Current recursion depth; used internally. Defaults to 0.
+            _seen (set | None, optional): Object ids already visited; used internally to
+                prevent cycles. Defaults to None.
+            scope (str, optional): Keyword-only. Which entries to visit — "successful"
+                (default) visits only READY imports and recurses into them; "failed" visits
+                only INVALID/NOT_LOADED imports without recursion; "all" visits every entry,
+                recursing only into READY imports.
+
+        Returns:
+            None
         """
         if _seen is None:
             _seen = set()
@@ -1911,8 +2102,18 @@ class OSCAL(LoggableMixin):
     # -------------------------------------------------------------------------
     def find_by_uuid(self, uuid, _seen=None):
         """
-        Method to search the import tree for an object with a matching UUID. 
-        This is a depth-first search that tracks seen objects to avoid infinite loops.
+        Search the import tree for an imported document containing a matching UUID.
+
+        Performs a depth-first search across resolved imports, tracking visited
+        objects to avoid infinite loops on circular imports.
+
+        Args:
+            uuid (str, required): The UUID to search for.
+            _seen (set | None, optional): Object ids already visited; used internally.
+                Defaults to None.
+
+        Returns:
+            OSCAL | None: The matching imported document, or None if not found.
         """
         if _seen is None:
             _seen = set()
@@ -2040,6 +2241,16 @@ class OSCAL(LoggableMixin):
 # Data Classes
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ImportState(str, Enum):
+    """Resolution state of a single import entry in an OSCAL document's import_list.
+
+    Members:
+        READY (str): "ready" — content is valid and loaded.
+        NOT_LOADED (str): "not-loaded" — content has not been loaded.
+        INVALID (str): "invalid" — content could not be loaded or failed validation.
+        EXPIRED (str): "expired" — content is valid but the cached copy has expired.
+        DUPLICATE (str): "duplicate" — the resolved href is already loaded by an earlier import.
+        IGNORED (str): "ignored" — the caller explicitly chose to ignore this import.
+    """
     READY        = "ready"        # The content is valid and loaded
     NOT_LOADED   = "not-loaded"   # The content has not been loaded
     INVALID      = "invalid"      # The content could not be loaded or failed validation
@@ -2049,6 +2260,21 @@ class ImportState(str, Enum):
 
 # -------------------------------------------------------------------------
 class ImportFailureCode(str, Enum):
+    """Typed reason codes describing why an OSCAL import could not be resolved.
+
+    Grouped by failure category — fragment/back-matter, full-URI/file,
+    content, and duplicate/retry. Members:
+        FRAGMENT_INVALID_UUID (str): Fragment reference is not a valid UUID.
+        RESOURCE_NOT_FOUND (str): No back-matter resource matches the UUID.
+        RESOURCE_NO_VIABLE_CONTENT (str): Resource has neither rlinks nor base64 content.
+        LOCAL_NOT_FOUND (str): Local file was not found.
+        REMOTE_UNREACHABLE (str): Remote host could not be reached.
+        REMOTE_AUTH_REQUIRED (str): Remote resource requires authentication.
+        REMOTE_UNSUPPORTED (str): URI scheme is not supported.
+        CONTENT_EMPTY (str): Source returned no content.
+        CONTENT_INVALID (str): Content is not valid OSCAL.
+        ALREADY_IMPORTED (str): Retry href resolves to a file already loaded elsewhere.
+    """
     # Fragment / back-matter failures
     FRAGMENT_INVALID_UUID      = "fragment-invalid-uuid"       # Fragment is not a valid UUID
     RESOURCE_NOT_FOUND         = "resource-not-found"          # No back-matter resource with that UUID
@@ -2066,8 +2292,21 @@ class ImportFailureCode(str, Enum):
 
 # -------------------------------------------------------------------------
 class ImportLoadError(Exception):
-    """Raised by load_source() to carry a typed import failure code to resolve_imports()."""
+    """Exception carrying a typed import failure code from ``load_source()`` to ``resolve_imports()``.
+
+    Attributes:
+        code (ImportFailureCode): The typed reason the import failed.
+        uri (str): The URI that failed to load.
+    """
     def __init__(self, code: ImportFailureCode, uri: str, message: str = ""):
+        """Initialize the error.
+
+        Args:
+            code (ImportFailureCode, required): The typed import failure reason.
+            uri (str, required): The URI that failed to load.
+            message (str, optional): Human-readable detail; a default is derived from
+                ``code`` and ``uri`` when omitted.
+        """
         self.code = code
         self.uri  = uri
         super().__init__(message or f"{code.value}: {uri}")
@@ -2105,7 +2344,16 @@ class ImportFailure:
 # -------------------------------------------------------------------------
 @dataclass
 class OscalRef:
-    """A single resolved reference: an href with an optional media type."""
+    """A single OSCAL source reference: an href with optional media type and hashes.
+
+    Attributes:
+        href (str): The reference target (URI or path).
+        media_type (str | None): Optional media type of the target.
+        hashes (list[dict] | None): Optional integrity hashes for the target.
+        source_type (str): Classified source type (set by classification; not an init arg).
+        source_scheme (str): URI scheme of the source (not an init arg).
+        source_supported (bool): Whether the source scheme can be fetched (not an init arg).
+    """
     href: str
     media_type: str | None = None
     hashes: list[dict] | None = None        # promoted from _extra
@@ -2294,8 +2542,20 @@ def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
 def load_content(source: str | dict | OscalRef | list, media_type: str = "", only_oscal: bool = False) -> str:
     """Load content from one or more sources and return the first successful payload.
 
-    Raises ImportLoadError when a source fails with a typed reason.
-    For multi-ref lists the last ImportLoadError is re-raised if all sources fail.
+    Args:
+        source (str | dict | OscalRef | list, required): The source(s) to load, as a
+            URI/path string, reference dict, ``OscalRef``, or a fallback list of these.
+        media_type (str, optional): Expected media type hint. Defaults to "".
+        only_oscal (bool, optional): When True, restrict acceptance to OSCAL content.
+            Defaults to False.
+
+    Returns:
+        str: The first successfully loaded content payload, or "" if none load and no
+            typed error was raised.
+
+    Raises:
+        ImportLoadError: When a source fails with a typed reason (the last error is
+            re-raised when every source in a list fails).
     """
     logger.debug("Loading content from source")
     refs = _normalize_refs(source)
@@ -2330,10 +2590,17 @@ def load_content(source: str | dict | OscalRef | list, media_type: str = "", onl
     return ""
 
 def load_source(ref: OscalRef) -> str:
-    """Fetch or read content from a classified OscalRef.
+    """Fetch or read content from a classified ``OscalRef``.
 
-    Returns the raw content as a string on success.
-    Raises ImportLoadError with a typed ImportFailureCode on any load failure.
+    Args:
+        ref (OscalRef, required): A reference that has already been classified
+            (via :func:`classify_source`) to set its source type/scheme.
+
+    Returns:
+        str: The raw content as a string on success.
+
+    Raises:
+        ImportLoadError: With a typed ``ImportFailureCode`` on any load failure.
     """
     src = ref.href.strip()
     content: str = ""
@@ -2544,15 +2811,18 @@ def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
     """
     Classify a source reference by path/URI type and Python stdlib accessibility.
 
-    This classification intentionally does not use file extensions because many
-    valid content endpoints (for example APIs) do not have predictable suffixes.
+    Sets the ``source_type``, ``source_scheme``, and ``source_supported`` fields on
+    ``ref`` in place. Classification intentionally does not use file extensions,
+    because many valid content endpoints (e.g. APIs) lack predictable suffixes.
 
-    ref: The OscalRef object containing the URI to classify. 
-        This function will set the source_type, source_scheme, and 
-        source_supported fields on the ref object based on the classification.
+    Args:
+        ref (OscalRef, required): The reference to classify; mutated in place.
+        only_oscal (bool, optional): Reserved for future content-shape validation;
+            currently does not affect classification. Defaults to False.
 
-    only_oscal: Reserved for future content-shape validation. It currently does
-        not change source classification behavior.
+    Returns:
+        bool: True if the reference was classified (even if unsupported), False only
+            when the href is empty.
     """
     uri = ref.href.strip()
 
@@ -2608,11 +2878,14 @@ def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
 # -------------------------------------------------------------------------
 def append_props(parent_obj: dict, props: list) -> None:
     """
-    Appends multiple prop dicts to parent_obj["props"].
+    Append multiple prop dicts to ``parent_obj["props"]``.
 
     Args:
-        parent_obj (dict): OSCAL JSON object that will receive the props.
-        props (list[dict]): Property dicts, each with at minimum "name" and "value".
+        parent_obj (dict, required): OSCAL JSON object that will receive the props.
+        props (list, required): Property dicts, each with at minimum "name" and "value".
+
+    Returns:
+        None
     """
     for prop in props:
         append_prop(parent_obj, prop)
@@ -2620,15 +2893,15 @@ def append_props(parent_obj: dict, props: list) -> None:
 # -------------------------------------------------------------------------
 def append_prop(parent_obj: dict, prop: dict) -> dict:
     """
-    Appends a prop dict to parent_obj["props"].
+    Append a single prop dict to ``parent_obj["props"]``.
 
     Args:
-        parent_obj (dict): OSCAL JSON object that will receive the prop.
-        prop (dict): Property dict.  Required keys: "name", "value".
-                     Optional keys: "uuid", "ns", "class", "group", "remarks".
+        parent_obj (dict, required): OSCAL JSON object that will receive the prop.
+        prop (dict, required): Property dict. Required keys: "name", "value".
+            Optional keys: "uuid", "ns", "class", "group", "remarks".
 
     Returns:
-        dict: The appended prop entry.
+        dict: The appended prop entry (filtered to recognized keys).
     """
     entry: dict = {}
     for key in ("uuid", "name", "ns", "value", "class", "group", "remarks"):
@@ -2640,11 +2913,14 @@ def append_prop(parent_obj: dict, prop: dict) -> dict:
 # -----------------------------------------------------------------------------
 def append_links(parent_obj: dict, links: list) -> None:
     """
-    Appends multiple link dicts to parent_obj["links"].
+    Append multiple link dicts to ``parent_obj["links"]``.
 
     Args:
-        parent_obj (dict): OSCAL JSON object that will receive the links.
-        links (list[dict]): Link dicts.
+        parent_obj (dict, required): OSCAL JSON object that will receive the links.
+        links (list, required): Link dicts, each with at minimum an "href" key.
+
+    Returns:
+        None
     """
     for link in links:
         append_link(parent_obj, link)
@@ -2652,15 +2928,15 @@ def append_links(parent_obj: dict, links: list) -> None:
 # -----------------------------------------------------------------------------
 def append_link(parent_obj: dict, link: dict) -> dict:
     """
-    Appends a link dict to parent_obj["links"].
+    Append a single link dict to ``parent_obj["links"]``.
 
     Args:
-        parent_obj (dict): OSCAL JSON object that will receive the link.
-        link (dict): Link dict.  Required key: "href".
-                     Optional keys: "rel", "media-type", "resource-fragment", "text".
+        parent_obj (dict, required): OSCAL JSON object that will receive the link.
+        link (dict, required): Link dict. Required key: "href".
+            Optional keys: "rel", "media-type", "resource-fragment", "text".
 
     Returns:
-        dict: The appended link entry.
+        dict: The appended link entry (filtered to recognized keys).
     """
     entry: dict = {}
     for key in ("href", "rel", "media-type", "resource-fragment", "text"):
@@ -2672,19 +2948,20 @@ def append_link(parent_obj: dict, link: dict) -> dict:
 # -----------------------------------------------------------------------------
 def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
     """
-    Callls oscal_markdown_to_html, which Formats markdown text into HTML
-    consistent with the OSCAL XML specification for markup-multiline.
+    Convert OSCAL markdown text to an HTML ElementTree element.
 
-    Converts the resulting string into an XML object suitable for appending
-    into a a parent XML object.
+    Calls ``oscal_markdown_to_html`` to format the markdown into HTML consistent
+    with the OSCAL XML specification for markup-line / markup-multiline, then parses
+    the resulting string into an XML element suitable for appending into a parent
+    XML object.
 
     Args:
-    markdown_text (str): The markdown text to convert
-    multiline (bool): If True, handles markup-multiline (supports block elements).
-                        If False, handles markup-line (inline elements only).
+        markdown_text (str, required): The markdown text to convert.
+        multiline (bool, optional): If True, handle markup-multiline (block elements);
+            if False, handle markup-line (inline elements only). Defaults to True.
 
     Returns:
-        Optional[ElementTree.Element]: ElementTree XML Element object, or None if conversion fails
+        Optional[ElementTree.Element]: The parsed XML element, or None if conversion fails.
     """
     html_str = oscal_markdown_to_html(markdown_text, multiline=multiline)
     if html_str:
@@ -2828,6 +3105,11 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
 
 # -----------------------------------------------------------------------------
 def new_uuid() -> str:
+    """Generate a new random (version 4) UUID string.
+
+    Returns:
+        str: A newly generated UUID in canonical string form.
+    """
     return str(uuid.uuid4())
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

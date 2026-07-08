@@ -1,17 +1,36 @@
+"""
+oscal_datatypes — OSCAL Metaschema data type definitions and helpers.
+
+Defines the OSCAL Metaschema primitive data types and their validation
+patterns, and provides a helper for producing OSCAL-conformant timezone-aware
+date-time strings.
+
+Module constants:
+    OSCAL_DATATYPES (dict): Mapping of OSCAL Metaschema data type name (str) to
+        a definition dict. Each definition contains the keys ``base-type`` (str),
+        ``xml-pattern`` (str regex), ``json-pattern`` (str regex),
+        ``recommended-pattern`` (str regex), ``documentation`` (str),
+        ``remarks`` (str), and ``links`` (list of {"title", "url"} dicts).
+        Covers types such as ``string``, ``token``, ``uuid``, ``uri``,
+        ``date-time-with-timezone``, ``integer``, ``boolean``, ``markup-line``,
+        and ``markup-multiline``.
+"""
 from loguru import logger
 
 def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
     """
-    Converts a date and time to UTC and outputs an OSCAL date-time-with-timezone string.
-    Optional Parameters:
-    - date_time (datetime or str): A date and time to convert to a formatted string.
-       Can be a datetime object or a string that can be parsed into datetime.
-       Default is the current date and time
-    - format (str): The formatting string to use
-        default is "%Y-%m-%dT%H:%M:%SZ" (OSCAL standard format)
+    Convert a date/time to UTC and format it as an OSCAL date-time-with-timezone string.
 
-    Returns a formatted date time string.
-    If an error occurs, returns an empty string.
+    Args:
+        date_time (datetime | str, optional): The date and time to convert. May be a
+            ``datetime`` object or an ISO-8601 string parseable into one. Naive values
+            are assumed to be UTC. Defaults to the current date and time.
+        format (str, optional): The ``strftime`` format string to apply.
+            Defaults to ``"%Y-%m-%dT%H:%M:%SZ"`` (the OSCAL standard format).
+
+    Returns:
+        str: The formatted date-time string, or an empty string if parsing or
+            formatting fails.
     """
     from datetime import datetime, timezone
 
