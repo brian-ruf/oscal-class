@@ -3,10 +3,12 @@ import sys
 import json
 from html import escape
 import html
-from loguru import logger
+import logging
 from time import sleep
 from oscal_support import *
 from common import *
+
+logger = logging.getLogger(__name__)
 
 """ OSCAL Metaschema Documentation Generator
 This script generates HTML documentation for OSCAL metaschemas.
@@ -411,21 +413,10 @@ async def generate_documentation(oscal_version=None, support=None) -> int:
     return ret_value
 
 if __name__ == "__main__":
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level="INFO",
-        colorize=True
-    )
-
-    logger.add(
-        "output.log",
-        level="DEBUG",  # Log everything to file
-        colorize=False,
-        encoding="utf-8",
-        enqueue=True,
-        backtrace=True,
-        diagnose=True
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s",
     )
 
     try:

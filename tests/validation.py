@@ -1,9 +1,15 @@
 import sys
 import os
-from loguru import logger
 import json
+import logging
 
 from oscal import OSCAL, Catalog
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 TEST_FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-data")
 

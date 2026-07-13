@@ -41,11 +41,13 @@ from datetime import datetime, timezone
 # import html
 # from urllib.parse import urljoin
 from typing import cast
-from loguru import logger
+import logging
 from .oscal_support import get_support
 from xml.etree import ElementTree as ET
 from ruf_common.helper import iif, has_repeated_ending, compare_semver
 from ruf_common.data import deserialize_xml, xpath, xpath_atomic, get_markup_content
+
+logger = logging.getLogger(__name__)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # TODO:
@@ -2395,21 +2397,10 @@ def _write_metaschema_report(
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == "__main__":
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level="INFO",
-        colorize=True
-    )
-
-    logger.add(
-        "output.log",
-        level="DEBUG",  # Log everything to file
-        colorize=False,
-        encoding="utf-8",
-        enqueue=True,
-        backtrace=True,
-        diagnose=True
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s",
     )
 
     try:

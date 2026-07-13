@@ -1,6 +1,6 @@
 # oscal — Library Documentation API Context
 **Version:** 3.0.0
-**Generated:** 2026-07-07T19:41:51Z
+**Generated:** 2026-07-12T23:15:28Z
 Generated from: `./oscal`
 
 # Module: oscal.oscal_support
@@ -656,6 +656,8 @@ Members:
     EXPIRED (str): "expired" — content is valid but the cached copy has expired.
     DUPLICATE (str): "duplicate" — the resolved href is already loaded by an earlier import.
     IGNORED (str): "ignored" — the caller explicitly chose to ignore this import.
+    CYCLIC (str): "cyclic" — this import resolves to one of its own ancestors; the
+        ancestor stays valid and recursion stops here to prevent an infinite loop.
 
 ### Available Members
 
@@ -679,7 +681,9 @@ the factory classmethods ``load``, ``loads``, or ``new``, or a model subclass.
         is_valid    : True if the content passed OSCAL validation, False otherwise
         is_local    : True if the source is a local file, False if it's remote (http/https)
         is_cached   : True if remote content has a local cache copy, False otherwise
-        is_read_only: True if local content is read-only, False if it's read-write
+        is_canonical: True if this is canonical/published content; forces read-only
+        is_read_only: True if the content may not be mutated (property; True whenever
+                      is_canonical is set, else reflects the loader/caller flag)
         is_unsaved  : True if there are unsaved modifications, False otherwise
 
     Attributes (Caching and Expiration):
@@ -705,7 +709,7 @@ the factory classmethods ``load``, ``loads``, or ``new``, or a model subclass.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -715,6 +719,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -871,6 +879,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -991,6 +1008,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -1054,9 +1102,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -1071,8 +1130,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -1134,10 +1196,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -1298,6 +1362,51 @@ Args:
 Returns:
     Optional[OSCAL]: A base OSCAL instance loaded from template, or None on failure.
 
+#### `def current_actor() -> "'str | None'"`
+Return the current actor (view/session) id, or None when unset.
+
+Returns:
+    str | None: The actor id activated by :func:`use_actor`, else None.
+
+#### `def get_props(parent_obj: 'dict', name: 'str | None' = None, uuid: 'str | None' = None, ns: 'str' = 'http://csrc.nist.gov/ns/oscal', class_: 'str | None' = None, group: 'str | None' = None) -> 'list'`
+Retrieve matching prop dicts from ``parent_obj["props"]``.
+
+Either ``name`` or ``uuid`` must be supplied. The return value is always a
+list — empty when nothing matches (or when the required parameters are
+missing) — never ``None``.
+
+An absent ``ns`` on a prop is treated as the OSCAL default namespace
+(``_OSCAL_NS``), matching the way ``ns`` defaults on this function's own
+``ns`` parameter. Correct default-``ns`` handling is essential: a prop with
+no ``ns`` is considered to be in the OSCAL namespace.
+
+Matching behaviour:
+  * ``uuid`` supplied: every prop whose ``uuid`` equals ``uuid`` is
+    returned. If any descriptor parameter (``name``, a non-default ``ns``,
+    ``class_`` or ``group``) is also supplied and does not match a returned
+    prop, a warning is logged, but the prop is still returned.
+  * ``uuid`` not supplied: ``name`` is required. Props are matched on
+    ``name`` **and** effective ``ns``. When ``class_`` and/or ``group`` are
+    supplied they must also match. When ``class_``/``group`` are *not*
+    supplied, all name+ns matches are returned, ordered best match first:
+    props carrying fewer of the un-queried qualifiers (``class``/``group``)
+    sort ahead of more-specific props. Document order is preserved among
+    equally specific matches.
+
+Args:
+    parent_obj (dict, required): OSCAL JSON object holding a ``props`` list.
+    name (str, optional): Prop ``name`` to match. Required if ``uuid`` is
+        not given.
+    uuid (str, optional): Prop ``uuid`` to match. Required if ``name`` is
+        not given.
+    ns (str, optional): Namespace to match; defaults to ``_OSCAL_NS``.
+    class_ (str, optional): Prop ``class`` to match. Maps to the ``"class"``
+        key (``class`` is a reserved word in Python).
+    group (str, optional): Prop ``group`` to match.
+
+Returns:
+    list: Matching prop dicts (possibly empty), ordered best match first.
+
 #### `def if_update_successful(fn)`
 Decorator marking content dirty after a successful mutation.
 
@@ -1310,7 +1419,7 @@ Args:
 Returns:
     Callable: The wrapped method.
 
-#### `def load_content(source: 'str | dict | OscalRef | list', media_type: 'str' = '', only_oscal: 'bool' = False) -> 'str'`
+#### `def load_content(source: 'str | dict | OscalRef | list', media_type: 'str' = '', only_oscal: 'bool' = False, cache_directive: "'CacheDirective | None'" = None) -> 'str'`
 Load content from one or more sources and return the first successful payload.
 
 Args:
@@ -1319,6 +1428,8 @@ Args:
     media_type (str, optional): Expected media type hint. Defaults to "".
     only_oscal (bool, optional): When True, restrict acceptance to OSCAL content.
         Defaults to False.
+    cache_directive (CacheDirective | None, optional): Caching directive applied
+        to remote fetches. Defaults to the standard 24h behavior.
 
 Returns:
     str: The first successfully loaded content payload, or "" if none load and no
@@ -1328,12 +1439,14 @@ Raises:
     ImportLoadError: When a source fails with a typed reason (the last error is
         re-raised when every source in a list fails).
 
-#### `def load_source(ref: 'OscalRef') -> 'str'`
+#### `def load_source(ref: 'OscalRef', cache_directive: "'CacheDirective | None'" = None) -> 'str'`
 Fetch or read content from a classified ``OscalRef``.
 
 Args:
     ref (OscalRef, required): A reference that has already been classified
         (via :func:`classify_source`) to set its source type/scheme.
+    cache_directive (CacheDirective | None, optional): Caching directive applied
+        to remote (http/https) fetches. Defaults to the standard 24h behavior.
 
 Returns:
     str: The raw content as a string on success.
@@ -1362,6 +1475,13 @@ Args:
 
 Returns:
     Optional[ElementTree.Element]: The parsed XML element, or None if conversion fails.
+
+#### `def register_model(model_name: 'str', cls: 'type') -> 'None'`
+Register an OSCAL model subclass so factory methods return typed instances.
+
+Args:
+    model_name (str, required): The OSCAL model name (e.g. "catalog").
+    cls (type, required): The ``OSCAL`` subclass implementing that model.
 
 #### `def requires(**conditions)`
 Decorator factory gating a method on instance attribute/property values.
@@ -1392,6 +1512,18 @@ Args:
 
 Returns:
     Callable: A decorator that wraps the target method with the guard.
+
+#### `def use_actor(actor: "'str | None'")`
+Set the current actor for the duration of the ``with`` block.
+
+Mutations performed inside the block are attributed to ``actor``; a document
+write-locked by a *different* actor is read-only within the block.
+
+Args:
+    actor (str | None, required): The actor (view/session) id.
+
+Yields:
+    str | None: The activated actor id.
 
 # Module: oscal.oscal_datatypes
 
@@ -1435,21 +1567,34 @@ Provides the editable model classes for the OSCAL control models: ``Catalog``
 (defines controls), ``Profile`` (selects and tailors controls into baselines),
 and ``Mapping`` (relates controls across frameworks). Each class subclasses
 ``OSCAL`` from ``oscal_content`` and adds model-specific navigation and
-mutation helpers.
+mutation helpers. ``ImportResult`` is the structured return value of
+``Profile.add_import``.
 
 Module constants:
-    (none exported)
+    MEDIA_TYPES (dict): Maps a lower-case file extension (``.xml``, ``.json``,
+        ``.yaml``, ``.yml``) to its OSCAL media type (``application/xml``,
+        ``application/json``, ``application/yaml``). Used to infer an ``rlink``
+        media type from a referenced file's href.
 
 ## Class: Catalog
 Editable OSCAL Catalog model.
 
-Subclasses ``OSCAL`` and adds methods for creating and navigating controls
-and control groups. Read-only guards apply to mutation methods when the
-instance state is not editable.
+Subclasses ``OSCAL`` and adds methods for creating, editing, navigating, and
+removing controls and control groups. Read-only guards apply to mutation methods
+when the instance state is not editable.
+
+Attributes:
+    controls_tree (list[dict]): A lightweight, nested view of the catalog's
+        group/control hierarchy for UI tree navigation. Each node is
+        ``{"id", "label", "title", "group", "children"}`` where ``group`` is True
+        for groups and False for controls, and ``children`` holds nested groups
+        and controls (control enhancements included). Built when the catalog is
+        found to be valid OSCAL and refreshed on every structural or
+        title/label change. See :meth:`_build_controls_tree`.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -1459,9 +1604,39 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
+
+#### `def add_part(self, parent_id: str, name: str, title: str = '', prose: str = '', ns: str = '', part_class: str = '', part_id: str = '', props: list = [], links: list = [], parts: list = []) -> Optional[dict]`
+Add a part to an existing control, group, or part.
+
+Parts are valid on controls and groups (and nest inside other parts), so
+``parent_id`` may identify any of those by id. There is no limit on how many
+parts of a given ``name`` a level may hold (e.g. multiple ``guidance`` parts).
+
+Args:
+    parent_id (str, required): ID of the control, group, or part to add to.
+    name (str, required): The part ``name`` token (e.g. "overview",
+        "guidance", "example", "assessment-objective").
+    title (str, optional): Part title (markup-line).
+    prose (str, optional): Part prose (markup-multiline / markdown).
+    ns (str, optional): Part namespace URI.
+    part_class (str, optional): Part ``class`` value.
+    part_id (str, optional): ID for the new part (needed to target it later,
+        e.g. to nest a child part or set its title).
+    props (list, optional): Property dicts to add.
+    links (list, optional): Link dicts to add.
+    parts (list, optional): Pre-built child part dicts to nest.
+
+Returns:
+    Optional[dict]: The newly created part dict, or None on failure — including
+        when the part would violate a "leaf part" rule (e.g. a ``guidance``
+        part cannot contain child parts).
 
 #### `def append_child(self, path: 'str', child: 'dict') -> 'dict | None'`
 Appends a child dict to the list at the given JSON path.
@@ -1493,10 +1668,14 @@ Returns:
     dict | None: The newly created resource dict, or None on failure.
 
 #### `def create_control(self, parent_id: str, id: str, title: str = '', params: list = [], props: list = [], links: list = [], label: str = '', sort_id: str = '', alt_identifier: str = '', overview: str = '', statements: list = [], guidance: str = '', example: str = '', objectives: list = [], objects: list = [], methods: list = [], remarks: str = '') -> Optional[dict]`
-Create a new control under the specified parent group.
+Create a new control under the specified parent group or control.
 
 Args:
-    parent_id (str, required): ID of the parent group to add the control to.
+    parent_id (str, required): ID of the parent to add the control to —
+        ``'[root]'`` (or an empty string) for the catalog top level, a group
+        id, or a control id. Nesting a control under a control models a
+        control enhancement (e.g. ``ac-2.1`` under ``ac-2``). The add fails if
+        it would mix controls and groups at the same level (not allowed in OSCAL).
     id (str, required): ID of the new control.
     title (str, optional): Title of the new control. Defaults to the label,
         or the id, when empty.
@@ -1520,12 +1699,16 @@ Args:
 Returns:
     Optional[dict]: The newly created control dict, or None on failure.
 
+Note:
+    Refreshes ``controls_tree`` when a control is successfully added.
+
 #### `def create_control_group(self, parent_id: str, id: str, title: str = '', params: list = [], props: list = [], links: list = [], label: str = '', sort_id: str = '', alt_identifier: str = '', overview: str = '', instruction: str = '', remarks: str = '') -> Optional[dict]`
 Create a new catalog group.
 
 Args:
     parent_id (str, required): ID of the parent group, or ``'[root]'`` (or an
-        empty string) for the catalog top level.
+        empty string) for the catalog top level. The add fails if it would mix
+        controls and groups at the same level (not allowed in OSCAL).
     id (str, required): ID of the new group.
     title (str, optional): Title of the new group.
     params (list, optional): Parameters to add to the group.
@@ -1540,6 +1723,9 @@ Args:
 
 Returns:
     Optional[dict]: The newly created group dict, or None on failure.
+
+Note:
+    Refreshes ``controls_tree`` when a group is successfully added.
 
 #### `def dump(self, filename: 'str' = '', format: 'str' = '', pretty_print: 'bool' = False) -> 'bool'`
 Write the current OSCAL content to a file.
@@ -1688,6 +1874,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -1808,6 +2003,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -1845,6 +2071,45 @@ Discard the cached import tree and rebuild it from the current import_list.
 Returns:
     dict: The freshly built root node of the recursive import tree.
 
+#### `def remove(self, id: str, cascade: bool = False, ignore_references: bool = False) -> Optional[dict]`
+Remove a control or group (found by id) from the catalog.
+
+Two independent locks guard the delete; either can block it, and the return
+value makes the reason explicit:
+
+  * **cascade** — when ``cascade`` is False, a node with *immediate* children
+    (direct groups, controls, or parts) is not removed. The block report
+    lists those immediate child ids under ``"children"``. Set ``cascade=True``
+    to remove the node together with everything beneath it.
+  * **referential integrity** — when ``ignore_references`` is False, the node
+    is not removed if any id in its subtree (the node, nested groups/controls,
+    or any part) is referenced by a link elsewhere in the catalog. The block
+    report lists those referenced ids under ``"referenced_ids"``. Set
+    ``ignore_references=True`` to delete anyway; the now-dangling references
+    are then returned under ``"dangling_refs"``.
+
+Both conditions are evaluated; if both block, ``"blocked_by"`` contains both
+reasons and both detail lists are present. Nothing is modified when blocked.
+
+References in *other* documents (profiles, SSPs, mappings) cannot be seen or
+fixed from here; on a successful delete a warning notes they may now break.
+Refreshes ``controls_tree`` on success.
+
+Args:
+    id (str, required): The id of the control or group to remove.
+    cascade (bool, optional): Permit removing a node that has immediate
+        children. Defaults to False.
+    ignore_references (bool, optional): Permit removing a node that is
+        referenced elsewhere in the catalog. Defaults to False.
+
+Returns:
+    Optional[dict]:
+        * ``None`` when no control/group has that id.
+        * On block: ``{"removed": False, "blocked_by": [...],
+          "children": [...]?, "referenced_ids": [...]?}``.
+        * On success: ``{"removed": True, "removed_ids": [...],
+          "dangling_refs": [...]}``.
+
 #### `def remove_import(self, href: 'str') -> 'bool'`
 Remove an import entry from both import_list and the document content.
 
@@ -1871,9 +2136,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -1888,8 +2164,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -1918,6 +2197,33 @@ Args:
 Returns:
     bool: True if the import was successfully resolved on retry, False otherwise.
 
+#### `def set_label(self, id: str, label: str, class_: str = '', group: str = '') -> Optional[dict]`
+Set (or clear) the ``label`` property of a control or group, found by id.
+
+The targeted property is the ``label`` prop in the default OSCAL namespace
+whose ``class``/``group`` qualifiers match the arguments: by default the one
+with **no** class and **no** group — the same property the navigation tree
+reads. Supplying ``class_`` and/or ``group`` targets (or creates) the label
+carrying exactly those qualifiers instead.
+
+Behaviour:
+  * A matching prop exists  → its value is updated (the first, if several).
+  * No matching prop exists → one is created with the given qualifiers.
+  * ``label`` is empty       → every matching prop is removed.
+
+Refreshes ``controls_tree`` on success.
+
+Args:
+    id (str, required): The id of the control or group to modify.
+    label (str, required): The new label value; an empty string removes the
+        matching label property.
+    class_ (str, optional): The prop ``class`` to target/create.
+    group (str, optional): The prop ``group`` to target/create.
+
+Returns:
+    Optional[dict]: The modified control/group dict, or None if no such id
+        exists.
+
 #### `def set_metadata(self, content: 'dict' = {}) -> 'bool'`
 Set simple metadata fields on the OSCAL content's ``metadata`` section.
 
@@ -1930,6 +2236,34 @@ Args:
 
 Returns:
     bool: True on success, or None when the content cannot be mutated.
+
+#### `def set_part_title(self, part_id: str, title: str = '') -> Optional[dict]`
+Set or remove the title of an existing part.
+
+Args:
+    part_id (str, required): ID of the part to modify. The part must carry an
+        ``id`` to be targetable.
+    title (str, optional): The new title. When empty, the part's ``title`` is
+        removed.
+
+Returns:
+    Optional[dict]: The modified part dict, or None if no part with that id
+        is found.
+
+#### `def set_title(self, id: str, title: str) -> Optional[dict]`
+Set the title of a control or group, found by id.
+
+Refreshes ``controls_tree`` on success, since a node's ``title`` is drawn
+from the object's title.
+
+Args:
+    id (str, required): The id of the control or group to modify.
+    title (str, required): The new title. Must be non-empty — a control's
+        title is required by OSCAL, so blanking it is rejected.
+
+Returns:
+    Optional[dict]: The modified control/group dict, or None if no such id
+        exists or ``title`` is empty.
 
 #### `property unresolved_imports`
 Return import_list entries that still warrant user attention.
@@ -1944,21 +2278,20 @@ True because the only remaining items are non-blocking duplicates.
 Once every entry is READY or IGNORED, this list is empty and the
 resolution UI can close.
 
-#### `def validate(self, format: 'str' = '') -> 'bool'`
-Validate OSCAL content against the metaschema index in sequenced phases.
+#### `def validate(self, format: str = '') -> bool`
+Validate the catalog, then (re)build ``controls_tree`` on success.
 
-Phases (each recorded in ``validation_status``):
-  structure      – all required fields and hierarchy are present
-  data-types     – every leaf value matches its declared OSCAL datatype
-  allowed-values – every constrained value is within its enumerated set
+Extends :meth:`OSCAL.validate` so the navigation tree is refreshed the
+moment the catalog is converted and found to be valid OSCAL. When the
+content is not valid the tree is emptied — an invalid catalog exposes no
+navigable hierarchy.
 
-``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
-compatibility but does not alter the validation path — ``_dict`` is always the
-authoritative representation.
+Args:
+    format (str, optional): Accepted for API compatibility with the base
+        method; does not alter the validation path.
 
-Returns True only when every phase passes (content_state reaches VALID).
+Returns:
+    bool: True when every validation phase passes.
 
 #### `def walk_imports(self, visitor_fn, depth=0, _seen=None, *, scope='successful')`
 Walk the import tree depth-first, calling ``visitor_fn(entry, depth)`` for each entry.
@@ -1982,6 +2315,27 @@ Return the content as an XML string, converting from dict if necessary.
 #### `property yaml`
 Return the content as a YAML string.
 
+## Class: ImportResult
+Outcome of a :meth:`Profile.add_import` call.
+
+Attributes:
+    status (str): One of "added", "replaced", "duplicate", or "error". A
+        "duplicate" is a blocking condition (``ok`` is False) — the href already
+        appears among this document's own imports.
+    entry (dict | None): The import entry — the newly added/replaced entry for
+        "added"/"replaced", or the conflicting existing import for "duplicate".
+    resource (dict | None): The back-matter resource created for the import
+        (None for "duplicate"/"error").
+    message (str): Human-readable detail, primarily for "duplicate"/"error".
+
+### Available Members
+
+#### `property is_duplicate`
+bool: True when the href already matched one of this document's imports.
+
+#### `property ok`
+bool: True when an import was actually added or replaced.
+
 ## Class: Mapping
 Class representing an OSCAL Mapping object.
 Inherits common OSCAL functionality and adds mapping-specific methods
@@ -1989,7 +2343,7 @@ for managing mappings between controls and other objects.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -1999,6 +2353,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -2155,6 +2513,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -2275,6 +2642,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -2338,9 +2736,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -2355,8 +2764,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -2418,10 +2830,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -2456,7 +2870,7 @@ for managing imports and control selections.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -2466,9 +2880,44 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
+
+#### `def add_import(self, href: str, title: str = '', description: str = '', remarks: str = '', include_all: bool = False) -> oscal.oscal_controls.ImportResult`
+Add an import to the profile, backed by a new back-matter resource.
+
+Steps:
+    1. If ``href`` already appears among this profile's own imports, block it
+       and report a "duplicate" (an error condition). Duplicate imports
+       farther down the import tree are acceptable and out of scope.
+    2. Create a back-matter ``resource`` (with an ``rlink`` to ``href`` and a
+       best-effort ``media-type`` inferred from the href's file extension).
+    3. Add an ``imports`` entry that references the resource by UUID fragment
+       (``href="#<resource-uuid>"``). An existing empty placeholder import
+       (href ``""`` or ``"#"``) is replaced in place; otherwise the entry is
+       appended.
+    4. Refresh the import tree (:meth:`resolve_imports`). The natural import
+       process loads the referenced content and reports success or failure;
+       an unreachable or invalid href simply resolves to ``INVALID`` in the
+       tree, and the caller decides whether that is acceptable.
+
+Args:
+    href (str, required): Reference to the imported OSCAL file (XML, JSON, or
+        YAML). Used as the resource ``rlink`` href.
+    title (str, optional): Title for the created back-matter resource.
+    description (str, optional): Description for the created resource.
+    remarks (str, optional): Remarks (markdown) for the created resource.
+    include_all (bool, optional): When True, the import selects all controls
+        via ``include-all``. Defaults to False.
+
+Returns:
+    ImportResult: The outcome — ``status`` of "added", "replaced",
+        "duplicate", or "error", with the relevant ``entry`` and ``resource``.
 
 #### `def append_child(self, path: 'str', child: 'dict') -> 'dict | None'`
 Appends a child dict to the list at the given JSON path.
@@ -2635,6 +3084,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -2755,6 +3213,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -2818,9 +3307,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -2835,8 +3335,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -2864,6 +3367,38 @@ Args:
 
 Returns:
     bool: True if the import was successfully resolved on retry, False otherwise.
+
+#### `def set_merge(self, flat: bool = False, as_is: Optional[bool] = None, custom: Optional[dict] = None, combine: Optional[str] = None) -> Optional[dict]`
+Set the profile's ``merge`` directives (``combine`` plus flat/as-is/custom).
+
+The ``merge`` assembly instructs how imported controls are organized after
+profile resolution. Exactly one of ``flat``, ``as_is``, or ``custom`` must be
+chosen — they are mutually exclusive — while ``combine`` is optional and may
+accompany any of those choices.
+
+The ``custom`` object is accepted whole and validated against the ``custom``
+portion of the profile metaschema index; if it fails validation the profile is
+left unchanged. Fine-grained management of ``custom`` internals (its ``groups``
+and ``insert-controls``) is intentionally deferred to future methods, as custom
+merges are uncommon.
+
+Args:
+    flat (bool, optional): When True, select the ``flat`` directive (resolved
+        controls are flattened, without groups). Defaults to False.
+    as_is (bool, optional): When set, select the ``as-is`` directive with this
+        boolean value (True keeps the source organization). Defaults to None
+        (not selected).
+    custom (dict, optional): When set, select the ``custom`` directive using
+        this object. Validated against the metaschema index. Defaults to None
+        (not selected).
+    combine (str, optional): The ``combine`` method — one of ``"use-first"``,
+        ``"merge"``, or ``"keep"``. When None, no ``combine`` is written.
+
+Returns:
+    Optional[dict]: The ``merge`` dict written to the profile, or None on
+        failure — when not exactly one of flat/as-is/custom is given, an
+        argument has the wrong type, ``combine`` is not a valid method, or the
+        ``custom`` object fails metaschema validation.
 
 #### `def set_metadata(self, content: 'dict' = {}) -> 'bool'`
 Set simple metadata fields on the OSCAL content's ``metadata`` section.
@@ -2898,10 +3433,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -2965,7 +3502,7 @@ satisfy controls. Subclasses ``OSCAL``.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -2975,6 +3512,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -3131,6 +3672,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -3251,6 +3801,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -3314,9 +3895,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -3331,8 +3923,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -3394,10 +3989,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -3433,7 +4030,7 @@ components, implemented requirements, and by-component statements.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -3443,6 +4040,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -3630,6 +4231,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -3750,6 +4360,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -3813,9 +4454,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -3830,8 +4482,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -3893,10 +4548,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -4009,7 +4666,7 @@ and tasks for a security assessment. Subclasses ``OSCAL``.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -4019,6 +4676,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -4175,6 +4836,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -4295,6 +4965,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -4358,9 +5059,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -4375,8 +5087,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -4438,10 +5153,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -4477,7 +5194,7 @@ assessment plan. Subclasses ``OSCAL``.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -4487,6 +5204,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -4643,6 +5364,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -4763,6 +5493,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -4826,9 +5587,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -4843,8 +5615,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -4906,10 +5681,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -4945,7 +5722,7 @@ milestones. Subclasses ``OSCAL``.
 
 ### Available Members
 
-#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list')`
+#### `classmethod def acquire(cls, source: 'str | dict | OscalRef | list', *, cache: "'CacheDirective | None'" = None)`
 Acquire OSCAL content from one or more URI/reference sources.
 
 The sources are treated as an ordered fallback list; the first that
@@ -4955,6 +5732,10 @@ Args:
     source (str | dict | OscalRef | list, required): The reference(s) to
         acquire. May be a URI/path string, an ``OscalRef``, a reference dict
         containing at least ``"href"``, or a list mixing any of these.
+    cache (CacheDirective | None, optional): Caching directive applied to
+        remote fetches (e.g. ``CacheDirective.never()``,
+        ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+        standard 24h behavior.
 
 Returns:
     OSCAL: A new instance populated from the first resolvable source.
@@ -5111,6 +5892,15 @@ Can this content be modified?
 #### `property is_fresh`
 True when content is local or cached and within its TTL.
 
+#### `property is_read_only`
+bool: True when the content may not be mutated (most-restrictive-wins).
+
+Read-only when any of these hold: the underlying writable flag is set,
+the content is canonical/published (``is_canonical``), or the document is
+write-locked by a *different* actor in its workspace (see
+:meth:`_locked_by_other`). Because every mutation gate checks this property,
+canonical status and workspace locks are enforced uniformly.
+
 #### `property is_remote`
 bool: True when the content originates from a remote source (not a local file).
 
@@ -5231,6 +6021,37 @@ Returns:
 #### `property origin_state`
 Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.
 
+#### `def put(self, path: 'str', value, mode: "Literal['replace', 'insert']" = 'replace', *, validate: 'bool' = False, check_refs: 'bool' = False) -> 'bool'`
+Write a value into the JSON content at a slash-separated path.
+
+This is the shared, guarded entry point for JSON mutations. It centralizes the
+defensive behavior that would otherwise be repeated at every call site:
+the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+(``is_unsaved`` / ``last_modified``).
+
+Path segments are ``'/'`` separated and relative to the model root (e.g.
+``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+indexes a list; any other segment names a dict key. Missing intermediate dict
+keys are created automatically.
+
+Args:
+    path (str, required): Slash-separated path relative to the model root.
+    value (Any, required): The JSON-compatible value to write.
+    mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+        ``"insert"`` treats the leaf as an optional array — creating it if
+        absent — and appends ``value`` to it.
+    validate (bool, optional): When True, run metaschema-driven datatype/regex
+        and allowed-value checks before writing (see :meth:`_validate_write`).
+        Currently a permissive extension point. Defaults to False.
+    check_refs (bool, optional): When True, run referential-integrity checks
+        before writing (see :meth:`_check_referential_integrity`). Currently a
+        permissive extension point. Defaults to False.
+
+Returns:
+    bool: True on success, False on any failure (guard, bad path/index,
+        validation, or type mismatch). No mutation occurs on failure.
+
 #### `def query(self, path: 'str', context: 'dict | None' = None) -> 'list'`
 Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
 
@@ -5294,9 +6115,20 @@ Returns:
     True if an entry was found and removed, False if not found or the
     content is read-only.
 
-#### `def resolve_imports(self, base_path: 'str' = '') -> 'list'`
+#### `def resolve_imports(self, base_path: 'str' = '', *, cache_directive: "'CacheDirective | None'" = None) -> 'list'`
 Discover and load every OSCAL document referenced by this document's
 import declarations.  Populates (and returns) self.import_list.
+
+Because ``validate()`` resolves imports, loading a document cascades this
+depth-first down the whole import tree. Two guards prevent runaway on shared
+or circular graphs: the object registry ensures a file loaded via multiple
+branches (a diamond) is held once, and an import that resolves back to an
+ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+not loaded — the ancestor stays valid and recursion stops there.
+
+A ``cache_directive`` is applied to this document's direct imports; a
+``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+the imported content is genuinely reloaded rather than reused.
 
 Recognised import locations by model:
     profile                    → import/@href
@@ -5311,8 +6143,11 @@ Recognised import locations by model:
                                  mapping/target/@href
 
 Args:
-    base_path: Directory used to resolve relative hrefs.  Defaults to
-               the directory of this document's own href.
+    base_path (str, optional): Directory used to resolve relative hrefs.
+        Defaults to the directory of this document's own href.
+    cache_directive (CacheDirective | None, optional): Caching directive
+        applied to this document's direct import fetches. Keyword-only.
+        Defaults to the standard 24h behavior.
 
 Returns:
     list[dict]: self.import_list, one entry per discovered reference.
@@ -5374,10 +6209,12 @@ Phases (each recorded in ``validation_status``):
   structure      – all required fields and hierarchy are present
   data-types     – every leaf value matches its declared OSCAL datatype
   allowed-values – every constrained value is within its enumerated set
+  cardinality    – every array satisfies its min-occurs/max-occurs bounds
+  choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
 ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-All three phases always run regardless of earlier failures, giving a complete
-picture of issues in a single call.  The format argument is accepted for API
+All phases always run regardless of earlier failures, giving a complete picture
+of issues in a single call.  The format argument is accepted for API
 compatibility but does not alter the validation path — ``_dict`` is always the
 authoritative representation.
 
@@ -5404,6 +6241,418 @@ Return the content as an XML string, converting from dict if necessary.
 
 #### `property yaml`
 Return the content as a YAML string.
+
+# Module: oscal.oscal_registry
+
+oscal_registry — process-shared identity map for loaded OSCAL objects.
+
+Ensures a given OSCAL document is held in memory once and reused across branches
+of an import tree (and across separate resolves in the same process), so two
+references to the same file share a single object instead of loading it twice.
+
+Objects are keyed by a composite **content identity** — ``(root-uuid,
+last-modified, published)`` — which treats the same content as identical
+regardless of format or location, with a **canonicalized href** as a pre-fetch
+fast path. Values are held via weak references (``WeakValueDictionary``), so an
+object stays registered only while some importer still holds it and is dropped
+automatically once no longer referenced.
+
+The default registry is a process-global singleton (``get_registry()``). The
+``ObjectRegistry`` class is injectable so a future Workspace/session can own an
+isolated instance.
+
+Module constants:
+    (none exported)
+
+## Class: ObjectRegistry
+An identity map of loaded OSCAL objects, keyed by content identity and href.
+
+Lookups check the canonical href first (cheap, pre-fetch), then the composite
+content-identity key. Stale entries — objects whose own TTL has expired
+(``is_cache_expired``) — are treated as misses and dropped so the caller
+reloads. Thread-safe via an internal lock.
+
+### Available Members
+
+#### `def __init__(self) -> None`
+Initialize an empty registry (weak identity/href maps and a resolution stack).
+
+#### `def alias_href(self, href: str, obj: Any) -> None`
+Point an additional canonical href at an already-registered object.
+
+Args:
+    href (str, required): The canonical href to alias.
+    obj (Any, required): The object the href should resolve to.
+
+#### `def clear(self) -> None`
+Drop all entries (primarily for test isolation).
+
+#### `def enter_resolving(self, href: str) -> None`
+Mark a canonical href as currently being resolved (push onto the DFS stack).
+
+#### `def exit_resolving(self, href: str) -> None`
+Unmark a canonical href once its resolution completes (pop from the stack).
+
+#### `def get(self, *, key: Optional[tuple] = None, href: str = '') -> Optional[Any]`
+Return a live, fresh object matching ``href`` (checked first) or ``key``.
+
+Args:
+    key (tuple | None, optional): Composite content-identity key.
+    href (str, optional): Canonicalized href.
+
+Returns:
+    Any | None: The registered object, or None on miss or when the match is
+        stale (its ``is_cache_expired`` is True), in which case it is dropped.
+
+#### `def is_resolving(self, href: str) -> bool`
+Return True when ``href`` is an ancestor currently being resolved (a cycle).
+
+#### `def register(self, obj: Any, *, key: Optional[tuple] = None, href: str = '') -> Any`
+Register ``obj`` under its content-identity key and/or canonical href.
+
+Args:
+    obj (Any, required): The object to register.
+    key (tuple | None, optional): Composite content-identity key.
+    href (str, optional): Canonicalized href.
+
+Returns:
+    Any: The registered object (``obj``).
+
+## Module Functions
+
+#### `def get_registry() -> oscal.oscal_registry.ObjectRegistry`
+Return the currently active object registry.
+
+Returns the registry activated by :func:`use_registry` (e.g. a Workspace's own
+registry) when one is in effect on the current context, otherwise the
+process-global default. Because a document load cascades synchronously, every
+object created during the load picks up whichever registry is active.
+
+Returns:
+    ObjectRegistry: The active registry, or the process-global default.
+
+#### `def use_registry(registry: oscal.oscal_registry.ObjectRegistry)`
+Activate ``registry`` for the duration of the ``with`` block.
+
+Objects created while this context is active (including transitively-loaded
+imports) use ``registry`` instead of the process-global default.
+
+Args:
+    registry (ObjectRegistry, required): The registry to activate.
+
+Yields:
+    ObjectRegistry: The activated registry.
+
+# Module: oscal.oscal_cache
+
+oscal_cache — on-disk cache of remote OSCAL content.
+
+Provides a persistent, cross-session cache of content fetched from remote URLs so
+the same remote document is not downloaded repeatedly. It reuses the shared
+``filecache`` file-store schema (the same table the support database uses) in a
+separate ``local_cache.db`` located alongside the support database. The database
+is created lazily on first use, not at startup.
+
+Cached content is keyed by its (canonicalized) remote URL via the ``filecache``
+``original_location`` column, with the fetch time stored in ``acquired``; an entry
+is served only while it is within ``LOCAL_CACHE_TTL`` seconds of that time,
+otherwise it is refetched and the entry refreshed.
+
+This complements the in-memory object registry (``oscal_registry``): the registry
+avoids re-loading/parsing a live object, while this cache avoids the network round
+trip across process runs.
+
+Caching is controlled per fetch by a :class:`CacheDirective`. The directive is
+applied first, then the fetch is evaluated for local reuse vs. refresh. Because
+the directive's TTL is compared against the entry's last-fetch time, changing the
+TTL re-evaluates freshness against that time (e.g. an entry fetched 6h ago is
+still fresh under a new 12h TTL). ``CACHE_NEVER`` purges any copy and always
+fetches remotely; ``CACHE_FOREVER`` reuses a copy of any age; ``refresh`` forces a
+refetch now.
+
+Module constants:
+    LOCAL_CACHE_TTL (int): Default seconds a cached item stays fresh (86400 = 24h).
+    CACHE_FOREVER (int): TTL sentinel — never expires (reuse a copy of any age).
+    CACHE_NEVER (int): TTL sentinel — do not cache (purge and always fetch remotely).
+    LOCAL_CACHE_FILENAME (str): Filename of the cache database ("local_cache.db").
+
+## Class: CacheDirective
+A per-fetch instruction for how the remote-content cache should behave.
+
+The directive is applied first, then the fetch is evaluated: the (possibly
+overridden) TTL is compared against the cached entry's last-fetch time to decide
+whether the local copy is reused or the content is refetched.
+
+Attributes:
+    ttl (int): Freshness window in seconds, or a sentinel — ``CACHE_FOREVER``
+        (reuse a copy of any age) or ``CACHE_NEVER`` (purge and always fetch).
+        Defaults to ``LOCAL_CACHE_TTL`` (24h).
+    refresh (bool): When True, force a refetch now regardless of freshness
+        (the refreshed content replaces the cached copy). Defaults to False.
+
+### Available Members
+
+#### `classmethod def default(cls) -> 'CacheDirective'`
+Default behavior: 24h TTL, no forced refresh.
+
+Returns:
+    CacheDirective: A directive with the default TTL and no refresh.
+
+#### `classmethod def forever(cls) -> 'CacheDirective'`
+Keep the cached copy until manually purged or refreshed.
+
+Returns:
+    CacheDirective: A directive with ``ttl=CACHE_FOREVER``.
+
+#### `classmethod def never(cls) -> 'CacheDirective'`
+Never cache: purge any existing copy and always fetch remotely.
+
+Returns:
+    CacheDirective: A directive with ``ttl=CACHE_NEVER``.
+
+#### `classmethod def of(cls, seconds: int) -> 'CacheDirective'`
+Cache with a specific TTL.
+
+Args:
+    seconds (int, required): Freshness window in seconds.
+
+Returns:
+    CacheDirective: A directive with ``ttl=seconds``.
+
+#### `classmethod def refresh_now(cls, ttl: int = 86400) -> 'CacheDirective'`
+Force a refetch now, then cache the result.
+
+Args:
+    ttl (int, optional): TTL to apply to the refreshed copy. Defaults to
+        ``LOCAL_CACHE_TTL`` (24h).
+
+Returns:
+    CacheDirective: A directive with ``refresh=True`` and the given ``ttl``.
+
+## Class: LocalCache
+Persistent cache of remote content, backed by a ``filecache`` table.
+
+The backing ``local_cache.db`` is opened/created lazily on first access. Entries
+are keyed by remote URL and expire ``LOCAL_CACHE_TTL`` seconds after they were
+fetched.
+
+### Available Members
+
+#### `def __init__(self, db_path: str = '') -> None`
+Initialize the cache.
+
+Args:
+    db_path (str, optional): Explicit path to the cache database. When empty,
+        the path is resolved lazily to ``local_cache.db`` beside the support
+        database.
+
+#### `def clear(self) -> None`
+Remove all cached entries (primarily for maintenance/tests).
+
+#### `def get(self, url: str, directive: Optional[oscal.oscal_cache.CacheDirective] = None) -> Optional[str]`
+Apply ``directive``, then return cached content for ``url`` if reusable.
+
+The directive is applied first: ``CACHE_NEVER`` purges any copy; ``refresh``
+forces a miss. Freshness is then evaluated by comparing the directive's TTL
+against the entry's last-fetch time (``CACHE_FOREVER`` reuses any age).
+
+Args:
+    url (str, required): The (canonicalized) remote URL key.
+    directive (CacheDirective | None, optional): Caching directive; defaults
+        to :meth:`CacheDirective.default` (24h, no refresh).
+
+Returns:
+    Optional[str]: The cached content to reuse, or None to fetch remotely.
+
+#### `def purge(self, url: str) -> None`
+Remove the cached entry for a single ``url`` (manual deletion).
+
+Args:
+    url (str, required): The (canonicalized) remote URL key.
+
+#### `def put(self, url: str, content, directive: Optional[oscal.oscal_cache.CacheDirective] = None) -> bool`
+Store or refresh cached content for ``url``, resetting its last-fetch time.
+
+A ``CACHE_NEVER`` directive stores nothing (the content is used but not cached).
+
+Args:
+    url (str, required): The (canonicalized) remote URL key.
+    content (str | bytes, required): The fetched content to cache.
+    directive (CacheDirective | None, optional): Caching directive; defaults
+        to :meth:`CacheDirective.default`.
+
+Returns:
+    bool: True when stored, False when skipped or on error.
+
+## Module Functions
+
+#### `def get_local_cache() -> oscal.oscal_cache.LocalCache`
+Return the process-global default remote-content cache.
+
+Returns:
+    LocalCache: The shared cache instance (its database is created on first use).
+
+# Module: oscal.oscal_workspace
+
+oscal_workspace — a Workspace that owns a set of related OSCAL documents.
+
+A ``Workspace`` is the entry point for opening/creating OSCAL content as a project.
+It owns an isolated in-memory object registry (so two workspaces are independent
+object graphs) and injects that registry into every document it loads — including
+transitively-loaded imports — via :func:`oscal.oscal_registry.use_registry`.
+
+Within one workspace, opening the same file twice returns the **same** object
+(root documents are shared, keyed by their source path/href), which is the basis
+for multi-view editing. The remote-content disk cache remains process-global
+(shared across workspaces).
+
+A workspace can be **saved to a single SQLite project file** (content + state,
+reusing the shared ``filecache`` schema) and reloaded self-contained, without
+refetching. The project file also carries project-level metadata (title, path,
+last-modified, remarks, and an extensible attributes bag) and is the intended
+substrate for future multi-view / multi-user (locking, sync) support.
+
+Module constants:
+    WORKSPACE_META_TABLE (dict): Schema for the ``workspace_meta`` key/value table.
+    WORKSPACE_DOCS_TABLE (dict): Schema for the ``workspace_documents`` table.
+
+## Class: Workspace
+A named set of related OSCAL documents with an isolated object registry.
+
+Documents opened through the workspace share one registry (imports dedup within
+the workspace) and one document identity map (opening the same source twice
+returns the same object). Carries project metadata and can be persisted to a
+single SQLite project file.
+
+### Available Members
+
+#### `def __init__(self, title: str = '', path: str = '', registry: Optional[oscal.oscal_registry.ObjectRegistry] = None) -> None`
+Create a workspace.
+
+Args:
+    title (str, optional): Project title.
+    path (str, optional): Default path for the workspace's project file.
+    registry (ObjectRegistry | None, optional): Registry to use; a fresh
+        isolated one is created when omitted.
+
+#### `def as_actor(self, actor: str)`
+Context manager that attributes mutations in the block to ``actor``.
+
+Args:
+    actor (str, required): The actor (view/session) id.
+
+Returns:
+    A context manager activating ``actor`` as the current actor.
+
+#### `def close(self, doc: oscal.oscal_content.OSCAL) -> None`
+Stop tracking a document (releasing the workspace's strong reference and lock).
+
+#### `def close_all(self) -> None`
+Release all tracked documents and their locks.
+
+#### `property documents`
+list: The workspace's open root documents.
+
+#### `def is_locked(self, doc: oscal.oscal_content.OSCAL) -> bool`
+Return True when ``doc`` is write-locked by any actor.
+
+#### `classmethod def load(cls, path: str) -> 'Workspace'`
+Load a workspace from its SQLite project file (self-contained; no refetch).
+
+Args:
+    path (str, required): The workspace project file.
+
+Returns:
+    Workspace: The reconstructed workspace, with documents rehydrated and
+        their import trees rewired from the persisted content and state.
+
+#### `def loads(self, content: str, *, href: Optional[str] = None) -> oscal.oscal_content.OSCAL`
+Open in-memory content into the workspace.
+
+Args:
+    content (str, required): Serialized OSCAL content.
+    href (str | None, optional): Source URI to key/track the document by.
+
+Returns:
+    OSCAL: The opened document.
+
+#### `def lock(self, doc: oscal.oscal_content.OSCAL, actor: Optional[str] = None) -> bool`
+Acquire the write lock on ``doc`` for ``actor`` (exclusive editing).
+
+While held, the document is read-only to every other actor. Re-locking by
+the same actor succeeds (idempotent).
+
+Args:
+    doc (OSCAL, required): The document to lock.
+    actor (str | None, optional): The actor; defaults to the current actor.
+
+Returns:
+    bool: True if the lock is held by ``actor`` afterward, False if another
+        actor already holds it.
+
+Raises:
+    ValueError: When no actor is given and none is active.
+
+#### `def lock_holder(self, doc: oscal.oscal_content.OSCAL) -> Optional[str]`
+Return the actor holding the write lock on ``doc``, or None.
+
+Args:
+    doc (OSCAL, required): The document.
+
+Returns:
+    Optional[str]: The lock-holding actor, or None when unlocked.
+
+#### `def new(self, model_cls, title: str, **kwargs) -> oscal.oscal_content.OSCAL`
+Create a new document in the workspace.
+
+Args:
+    model_cls (type, required): A model class (e.g. ``Catalog``).
+    title (str, required): Document title.
+    **kwargs: Passed through to ``model_cls.new``.
+
+Returns:
+    OSCAL: The new document, tracked by the workspace.
+
+#### `def open(self, source) -> oscal.oscal_content.OSCAL`
+Open a document into the workspace (loading it under the workspace registry).
+
+Re-opening the same source returns the already-open document (shared root).
+
+Args:
+    source (str, required): A path or URI to load.
+
+Returns:
+    OSCAL: The (possibly already-open) document.
+
+#### `property registry`
+ObjectRegistry: This workspace's isolated object registry.
+
+#### `def save(self, path: str = '') -> bool`
+Save the workspace (content + state + project metadata) to a SQLite file.
+
+Every reachable document (roots and their resolved imports) is serialized as
+JSON into the shared ``filecache`` table, with its state and import edges
+recorded in ``workspace_documents``; project metadata goes in
+``workspace_meta``. Reusing ``filecache`` means no schema change to the
+support database.
+
+Args:
+    path (str, optional): Destination path. Defaults to ``self.path``.
+
+Returns:
+    bool: True on success.
+
+#### `def unlock(self, doc: oscal.oscal_content.OSCAL, actor: Optional[str] = None) -> bool`
+Release the write lock on ``doc``.
+
+Args:
+    doc (OSCAL, required): The document to unlock.
+    actor (str | None, optional): The actor; defaults to the current actor.
+        A caller may only release its own lock (unless ``actor`` is None-held).
+
+Returns:
+    bool: True when the document is unlocked afterward; False when the lock
+        is held by a different actor and cannot be released.
 
 # Module: oscal.metaschema_parser
 

@@ -42,7 +42,7 @@ Module constants:
 import json
 import os
 import xml.etree.ElementTree as ET
-from loguru import logger
+import logging
 from importlib import resources
 import uuid
 import time
@@ -53,6 +53,8 @@ from ruf_common import helper
 from ruf_common import database
 from ruf_common import network
 from .oscal_datatypes import oscal_date_time_with_timezone
+
+logger = logging.getLogger(__name__)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 SUPPORT_DATABASE_DEFAULT_FILE = "./support/oscal_support.db"

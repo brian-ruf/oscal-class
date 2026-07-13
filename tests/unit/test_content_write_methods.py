@@ -12,11 +12,13 @@ import pytest
 
 from oscal import Catalog
 from oscal.oscal_content import (
+    _OSCAL_NS,
     append_link,
     append_links,
     append_prop,
     append_props,
     append_resource,
+    get_props,
 )
 
 
@@ -488,3 +490,213 @@ class TestMutationGuardsDoNotFlagUnsaved:
         cat.is_unsaved = False
         cat.append_resource(title="x")
         assert cat.is_unsaved is False
+
+
+# ===========================================================================
+# get_props()  — module-level function
+# ===========================================================================
+FEDRAMP_NS = "https://fedramp.gov/ns/oscal"
+
+
+class TestGetProps:
+
+    # -- required-parameter handling ---------------------------------------
+    def test_no_name_or_uuid_returns_empty(self):
+        """Neither name nor uuid supplied -> empty list (and warns)."""
+        parent = {"props": [{"name": "label", "value": "AC-1"}]}
+        assert get_props(parent) == []
+
+    def test_missing_props_key_returns_empty(self):
+        """Parent with no 'props' key returns empty list, not error."""
+        assert get_props({}, name="label") == []
+
+    def test_props_none_returns_empty(self):
+        """A 'props' key explicitly set to None is tolerated."""
+        assert get_props({"props": None}, name="label") == []
+
+    def test_return_type_always_list(self):
+        """Return value is a list even when nothing matches."""
+        parent = {"props": [{"name": "other", "value": "v"}]}
+        assert get_props(parent, name="label") == []
+
+    # -- name + ns matching ------------------------------------------------
+    def test_match_by_name(self):
+        parent = {"props": [{"name": "label", "value": "AC-1"}]}
+        result = get_props(parent, name="label")
+        assert len(result) == 1
+        assert result[0]["value"] == "AC-1"
+
+    def test_absent_ns_matches_default(self):
+        """A prop with no ns matches when ns defaults to _OSCAL_NS."""
+        parent = {"props": [{"name": "label", "value": "AC-1"}]}
+        assert len(get_props(parent, name="label", ns=_OSCAL_NS)) == 1
+
+    def test_explicit_default_ns_matches_absent_ns(self):
+        parent = {"props": [{"name": "label", "value": "AC-1", "ns": _OSCAL_NS}]}
+        assert len(get_props(parent, name="label")) == 1
+
+    def test_non_default_ns_excluded_by_default(self):
+        """A prop in a non-default ns is not returned for a default-ns query."""
+        parent = {"props": [{"name": "label", "value": "AC-1", "ns": FEDRAMP_NS}]}
+        assert get_props(parent, name="label") == []
+
+    def test_match_non_default_ns(self):
+        parent = {"props": [{"name": "label", "value": "AC-1", "ns": FEDRAMP_NS}]}
+        assert len(get_props(parent, name="label", ns=FEDRAMP_NS)) == 1
+
+    def test_name_mismatch_excluded(self):
+        parent = {"props": [{"name": "sort-id", "value": "AC-1"}]}
+        assert get_props(parent, name="label") == []
+
+    # -- class / group filtering -------------------------------------------
+    def test_class_filter_matches(self):
+        parent = {"props": [
+            {"name": "label", "value": "A", "class": "sp800-53"},
+            {"name": "label", "value": "B"},
+        ]}
+        result = get_props(parent, name="label", class_="sp800-53")
+        assert len(result) == 1
+        assert result[0]["value"] == "A"
+
+    def test_class_filter_excludes_non_matching(self):
+        parent = {"props": [{"name": "label", "value": "A", "class": "other"}]}
+        assert get_props(parent, name="label", class_="sp800-53") == []
+
+    def test_group_filter_matches(self):
+        parent = {"props": [
+            {"name": "label", "value": "A", "group": "access"},
+            {"name": "label", "value": "B", "group": "audit"},
+        ]}
+        result = get_props(parent, name="label", group="access")
+        assert len(result) == 1
+        assert result[0]["value"] == "A"
+
+    # -- best-to-worst ordering --------------------------------------------
+    def test_ordering_bare_prop_first(self):
+        """With only name+ns queried, the prop without class/group sorts first."""
+        parent = {"props": [
+            {"name": "label", "value": "withclass", "class": "sp800-53"},
+            {"name": "label", "value": "bare"},
+            {"name": "label", "value": "withgroup", "group": "access"},
+        ]}
+        result = get_props(parent, name="label")
+        assert len(result) == 3
+        assert result[0]["value"] == "bare"
+
+    def test_ordering_least_specific_first(self):
+        """Bare < single qualifier < both qualifiers."""
+        parent = {"props": [
+            {"name": "label", "value": "both", "class": "c", "group": "g"},
+            {"name": "label", "value": "one", "class": "c"},
+            {"name": "label", "value": "bare"},
+        ]}
+        result = get_props(parent, name="label")
+        assert [p["value"] for p in result] == ["bare", "one", "both"]
+
+    def test_ordering_stable_within_specificity(self):
+        """Equally specific matches keep document order."""
+        parent = {"props": [
+            {"name": "label", "value": "first", "class": "a"},
+            {"name": "label", "value": "second", "class": "b"},
+        ]}
+        result = get_props(parent, name="label")
+        assert [p["value"] for p in result] == ["first", "second"]
+
+    def test_class_passed_orders_by_group(self):
+        """When class is queried, the un-queried group drives ordering."""
+        parent = {"props": [
+            {"name": "label", "value": "grouped", "class": "c", "group": "g"},
+            {"name": "label", "value": "plain", "class": "c"},
+        ]}
+        result = get_props(parent, name="label", class_="c")
+        assert [p["value"] for p in result] == ["plain", "grouped"]
+
+    # -- uuid mode ---------------------------------------------------------
+    def test_match_by_uuid(self):
+        parent = {"props": [
+            {"name": "label", "value": "A", "uuid": "u-1"},
+            {"name": "label", "value": "B", "uuid": "u-2"},
+        ]}
+        result = get_props(parent, uuid="u-1")
+        assert len(result) == 1
+        assert result[0]["value"] == "A"
+
+    def test_uuid_no_match_returns_empty(self):
+        parent = {"props": [{"name": "label", "value": "A", "uuid": "u-1"}]}
+        assert get_props(parent, uuid="missing") == []
+
+    def test_uuid_takes_precedence_over_name(self):
+        """uuid identifies the prop even when name would not match."""
+        parent = {"props": [{"name": "label", "value": "A", "uuid": "u-1"}]}
+        result = get_props(parent, name="does-not-match", uuid="u-1")
+        assert len(result) == 1
+        assert result[0]["uuid"] == "u-1"
+
+    def test_uuid_only_no_warning(self, caplog):
+        """uuid alone (no other params) triggers no descriptor warning."""
+        parent = {"props": [{"name": "label", "value": "A", "uuid": "u-1",
+                             "ns": FEDRAMP_NS}]}
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = get_props(parent, uuid="u-1")
+        assert len(result) == 1
+
+
+# ===========================================================================
+# get_props()  — warning behaviour (stdlib logging)
+# ===========================================================================
+class TestGetPropsWarnings:
+
+    def _capture(self):
+        """Attach a capturing handler to the 'oscal' logger; return (messages, remove_fn).
+
+        The oscal package installs only a NullHandler, so the library is silent
+        until a caller adds a handler and lowers the level. This helper does
+        exactly that so the warnings emitted by get_props can be observed.
+        """
+        import logging
+
+        messages = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record):
+                messages.append(record.getMessage())
+
+        handler = _ListHandler(level=logging.WARNING)
+        pkg_logger = logging.getLogger("oscal")
+        prev_level = pkg_logger.level
+        pkg_logger.addHandler(handler)
+        pkg_logger.setLevel(logging.WARNING)
+
+        def _restore():
+            pkg_logger.removeHandler(handler)
+            pkg_logger.setLevel(prev_level)
+
+        return messages, _restore
+
+    def test_missing_params_warns(self):
+        messages, remove = self._capture()
+        try:
+            get_props({"props": []})
+        finally:
+            remove()
+        assert any("name" in m and "uuid" in m for m in messages)
+
+    def test_uuid_descriptor_mismatch_warns(self):
+        parent = {"props": [{"name": "label", "value": "A", "uuid": "u-1"}]}
+        messages, remove = self._capture()
+        try:
+            result = get_props(parent, name="sort-id", uuid="u-1")
+        finally:
+            remove()
+        assert len(result) == 1  # still returned
+        assert any("name" in m for m in messages)
+
+    def test_uuid_descriptor_match_no_warning(self):
+        parent = {"props": [{"name": "label", "value": "A", "uuid": "u-1"}]}
+        messages, remove = self._capture()
+        try:
+            get_props(parent, name="label", uuid="u-1")
+        finally:
+            remove()
+        assert messages == []

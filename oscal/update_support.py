@@ -3,13 +3,18 @@ import sys
 from oscal.oscal_support import configure_support
 import os
 import argparse
-from loguru import logger
+import logging
 from ruf_common.lfs import zip_file
 from pathlib import Path
 
-logger.enable("oscal")
-logger.remove()
-logger.add(sys.stderr, level="INFO")
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stderr,
+    format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s",
+)
+# This module is an application entry point; surface the oscal library's INFO logs.
+logging.getLogger("oscal").setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 script_dir = Path(__file__).parent.resolve()
 

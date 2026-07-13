@@ -23,29 +23,34 @@ from __future__         import annotations
 import os
 import re
 import json
+import contextvars
+from contextlib         import contextmanager
 import yaml
 import uuid
-from loguru             import logger
-from typing             import Optional, Any, Protocol, runtime_checkable
+import logging
+from typing             import Optional, Any, Literal, Protocol, runtime_checkable
 from datetime           import datetime, timezone
 from functools          import wraps
 from enum               import Enum, IntEnum
-from urllib.parse       import urlparse, urljoin
+from urllib.parse       import urlparse, urljoin, urlunparse
 from urllib.request     import urlopen
 from urllib.error       import HTTPError, URLError
 from xml.etree          import ElementTree
 from dataclasses        import dataclass, field
 
-from ruf_common.logging import LoggableMixin
 from ruf_common.network import download_file
 from ruf_common.data    import detect_data_format, safe_load, safe_load_xml, xpath_atomic
 from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
 from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES
+from .oscal_registry    import get_registry
+from .oscal_cache       import get_local_cache, CacheDirective, CACHE_NEVER
 from .oscal_converter   import (
     oscal_markdown_to_html, OSCALConverter, _html_to_et,
     OSCALPath, NativePath, native_path,
 )
+
+logger = logging.getLogger(__name__)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Constants
@@ -167,7 +172,7 @@ def _check_datatype(value: str, datatype: str, location: str, field: str) -> dic
     return None
 
 
-_OSCAL_NS = "http://csrc.nist.gov/ns/oscal"
+_OSCAL_NS = "http://csrc.nist.gov/ns/oscal" # OSCAL default namespace for props, parts and any other `ns` qualified elements.
 
 
 def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
@@ -306,9 +311,64 @@ def if_update_successful(fn):
     return wrapper
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Model-class registry — model name → subclass, populated by the model modules
+# (oscal_controls, oscal_implementation, oscal_assessment) at import time. Kept
+# here (rather than importing the subclasses) to avoid an import cycle; lets the
+# base factory methods return the correct typed instance.
+_MODEL_REGISTRY: dict[str, type] = {}
+
+
+def register_model(model_name: str, cls: type) -> None:
+    """Register an OSCAL model subclass so factory methods return typed instances.
+
+    Args:
+        model_name (str, required): The OSCAL model name (e.g. "catalog").
+        cls (type, required): The ``OSCAL`` subclass implementing that model.
+    """
+    _MODEL_REGISTRY[model_name] = cls
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Current actor (view/session) — identifies who is performing mutations, so a
+# Workspace's write locks can be enforced per view on shared documents.
+_current_actor: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "oscal_current_actor", default=None
+)
+
+
+def current_actor() -> "str | None":
+    """Return the current actor (view/session) id, or None when unset.
+
+    Returns:
+        str | None: The actor id activated by :func:`use_actor`, else None.
+    """
+    return _current_actor.get()
+
+
+@contextmanager
+def use_actor(actor: "str | None"):
+    """Set the current actor for the duration of the ``with`` block.
+
+    Mutations performed inside the block are attributed to ``actor``; a document
+    write-locked by a *different* actor is read-only within the block.
+
+    Args:
+        actor (str | None, required): The actor (view/session) id.
+
+    Yields:
+        str | None: The activated actor id.
+    """
+    token = _current_actor.set(actor)
+    try:
+        yield actor
+    finally:
+        _current_actor.reset(token)
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # OSCAL CLASS
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-class OSCAL(LoggableMixin):
+class OSCAL:
     """Base class for all OSCAL model documents.
 
     Provides loading, saving, validation, format conversion (XML/JSON/YAML),
@@ -326,7 +386,9 @@ class OSCAL(LoggableMixin):
             is_valid    : True if the content passed OSCAL validation, False otherwise
             is_local    : True if the source is a local file, False if it's remote (http/https)
             is_cached   : True if remote content has a local cache copy, False otherwise
-            is_read_only: True if local content is read-only, False if it's read-write
+            is_canonical: True if this is canonical/published content; forces read-only
+            is_read_only: True if the content may not be mutated (property; True whenever
+                          is_canonical is set, else reflects the loader/caller flag)
             is_unsaved  : True if there are unsaved modifications, False otherwise
 
         Attributes (Caching and Expiration):
@@ -366,7 +428,8 @@ class OSCAL(LoggableMixin):
         self.content_state: ContentState = ContentState.NONE  # progressive validation state
         self.is_local    : bool = True  # source is local file (vs http/https)
         self.is_cached   : bool = False # remote content has a local cache copy
-        self.is_read_only: bool = True  # local content is read-only (not read-write)
+        self.is_canonical: bool = False # canonical/published content — always read-only
+        self._is_read_only: bool = True # backing store for the is_read_only property
         self.is_unsaved  : bool = True  # True when there are unsaved modifications
 
         # Caching and Expiration
@@ -378,7 +441,8 @@ class OSCAL(LoggableMixin):
         self.original_format : str = ""
         self.model           : str = ""
         self.oscal_version   : str = ""
-        self.last_modified   : str = "" 
+        self.uuid            : str = ""   # root document UUID (as loaded)
+        self.last_modified   : str = ""
         self.title           : str = ""
         self.published       : str = ""
         self.version         : str = ""
@@ -390,6 +454,11 @@ class OSCAL(LoggableMixin):
         self._dict: dict | None = None # JSON/YAML constructs
         self._tree = None              # XML constructs
         self._oscal_path: OSCALPath | None = None  # Lazily built metaschema-aware path engine
+        # Object registry (identity map) — composite content-identity key captured at load,
+        # shared instance used to dedup imports across the tree. Default is the process-global.
+        self._identity: tuple | None = None
+        self._registry = get_registry()
+        self._workspace = None  # back-reference to the owning Workspace, if any
 
         # Validation Status
         self.validation_status: dict[str, bool | None] = {
@@ -398,6 +467,7 @@ class OSCAL(LoggableMixin):
             "data-types":     None,  # every field/flag value matches its declared OSCAL datatype
             "allowed-values": None,  # every constrained value is within its enumerated set
             "cardinality":    None,  # all arrays satisfy their min-occurs/max-occurs bounds
+            "choice":         None,  # every choice is mutually exclusive (at most one member) and has a member when one is required
         }
         self.validation_errors: list[dict] = []  # structured errors from the most recent validate() call
         self.errors = {} # A dictionary to hold any acquisition, validation or importing errors encountered during processing
@@ -414,6 +484,62 @@ class OSCAL(LoggableMixin):
         to initialize attributes that are not part of the base OSCAL class.
         Always call super()._init_common() at the start of the override.
         """
+
+    # -------------------------------------------------------------------------
+    def _upgrade_to_model_class(self) -> "OSCAL":
+        """Re-class a base ``OSCAL`` instance to its model subclass, if registered.
+
+        The factory methods (``load``/``loads``/``acquire``) create a base ``OSCAL``
+        because the model isn't known until the content is parsed. Once
+        ``self.model`` is identified, this swaps ``__class__`` to the registered
+        subclass (e.g. ``Catalog``) and runs its ``_init_common`` hook so
+        subclass-specific attributes are set up. A no-op when already a subclass
+        (e.g. ``Catalog.load``) or when the model is unregistered.
+
+        Returns:
+            OSCAL: ``self`` (possibly re-classed to a model subclass).
+        """
+        if type(self) is OSCAL:
+            klass = _MODEL_REGISTRY.get(self.model)
+            if klass is not None and klass is not OSCAL:
+                self.__class__ = klass
+                self._init_common()
+        return self
+
+    # -------------------------------------------------------------------------
+    def _export_state(self) -> dict:
+        """Return a JSON-serializable snapshot of derived state for persistence.
+
+        Captures state that would otherwise have to be re-determined after a
+        workspace save/reload — currently validation results and dirty-state.
+        Subclasses override this (calling ``super()._export_state()``) to add their
+        own derived attributes and, in future, computed indexes.
+
+        Returns:
+            dict: The persistable derived state.
+        """
+        return {
+            "validation_status": self.validation_status,
+            "validation_errors": self.validation_errors,
+            "errors":            self.errors,
+            "is_unsaved":        self.is_unsaved,
+            "last_modified":     self.last_modified,
+        }
+
+    # -------------------------------------------------------------------------
+    def _import_state(self, state: dict) -> None:
+        """Restore derived state produced by :meth:`_export_state`.
+
+        Args:
+            state (dict, required): The persisted state dict (may be empty).
+        """
+        if not state:
+            return
+        self.validation_status = state.get("validation_status", self.validation_status)
+        self.validation_errors = state.get("validation_errors", [])
+        self.errors = state.get("errors", {})
+        self.is_unsaved = state.get("is_unsaved", self.is_unsaved)
+        self.last_modified = state.get("last_modified", self.last_modified)
 
     # =========================================================================
     # Content state properties (progressive — each implies all prior levels passed)
@@ -463,7 +589,7 @@ class OSCAL(LoggableMixin):
         if instance.initial_validation(normalized_content):
             instance.is_read_only = False
 
-        return instance
+        return instance._upgrade_to_model_class()
 
     # -------------------------------------------------------------------------
     @classmethod
@@ -515,11 +641,11 @@ class OSCAL(LoggableMixin):
         if instance.initial_validation(content):
             instance.is_read_only = False
 
-        return instance
+        return instance._upgrade_to_model_class()
 
     # -------------------------------------------------------------------------
     @classmethod
-    def acquire(cls, source: str | dict | OscalRef | list):
+    def acquire(cls, source: str | dict | OscalRef | list, *, cache: "CacheDirective | None" = None):
         """
         Acquire OSCAL content from one or more URI/reference sources.
 
@@ -530,6 +656,10 @@ class OSCAL(LoggableMixin):
             source (str | dict | OscalRef | list, required): The reference(s) to
                 acquire. May be a URI/path string, an ``OscalRef``, a reference dict
                 containing at least ``"href"``, or a list mixing any of these.
+            cache (CacheDirective | None, optional): Caching directive applied to
+                remote fetches (e.g. ``CacheDirective.never()``,
+                ``CacheDirective.refresh_now()``). Keyword-only. Defaults to the
+                standard 24h behavior.
 
         Returns:
             OSCAL: A new instance populated from the first resolvable source.
@@ -541,9 +671,9 @@ class OSCAL(LoggableMixin):
         instance._refs = _normalize_refs(source)
 
         instance.href_original = instance._refs[0].href if instance._refs else ""
-        content = load_content(instance._refs)
+        content = load_content(instance._refs, cache_directive=cache)
         instance.initial_validation(content)
-        return instance
+        return instance._upgrade_to_model_class()
 
     # -------------------------------------------------------------------------
     @classmethod
@@ -1031,10 +1161,95 @@ class OSCAL(LoggableMixin):
         return True
 
     # -------------------------------------------------------------------------
-    def resolve_imports(self, base_path: str = "") -> list:
+    def _identity_key(self) -> tuple | None:
+        """Return this document's composite content-identity key, or None.
+
+        The key is ``(root-uuid, last-modified, published)``, captured during
+        :meth:`initial_validation`. Two objects with the same key are the same
+        content revision regardless of format or location. Returns None when the
+        root UUID is unavailable (the object then does not participate in dedup).
+
+        Returns:
+            tuple | None: The identity key, or None.
+        """
+        return self._identity
+
+    # -------------------------------------------------------------------------
+    def _acquire_shared(self, resolved: str, cache_directive: "CacheDirective | None" = None) -> "OSCAL":
+        """Load — or reuse from the registry — the OSCAL object for a resolved href.
+
+        Checks the object registry by canonical href first (reuses without a fetch);
+        on a miss, loads via :meth:`acquire`, and if the loaded content matches an
+        already-registered content identity (e.g. the same catalog reached by a
+        different href or format), reuses that instance and drops the freshly loaded
+        duplicate. Newly loaded, identity-bearing objects are registered.
+
+        A ``refresh`` or ``CACHE_NEVER`` cache directive **bypasses the in-memory
+        registry** (both the href fast-path and identity dedup) so the content is
+        genuinely reloaded (hitting the disk cache with the directive); the freshly
+        loaded object then replaces the registry entry.
+
+        Args:
+            resolved (str, required): The resolved (absolute) href to load.
+            cache_directive (CacheDirective | None, optional): Caching directive
+                applied to the fetch. Defaults to the standard 24h behavior.
+
+        Returns:
+            OSCAL: The shared or newly loaded object.
+
+        Raises:
+            ImportLoadError: Propagated from :meth:`acquire` when the content cannot
+                be loaded.
+        """
+        canonical = _canonicalize_ref(resolved)
+        # A refresh/never directive must reload the content, so it bypasses the
+        # in-memory registry (both the href fast-path and identity dedup below).
+        force_reload = cache_directive is not None and (
+            cache_directive.refresh or cache_directive.ttl == CACHE_NEVER
+        )
+
+        if not force_reload:
+            hit = self._registry.get(href=canonical)
+            if hit is not None:
+                logger.debug(f"registry: reusing object for '{canonical}' (href hit).")
+                return hit
+
+        child = OSCAL.acquire(resolved, cache=cache_directive)
+        child._registry = self._registry
+
+        if child.is_valid:
+            key = child._identity_key()
+            if key is not None:
+                if not force_reload:
+                    existing = self._registry.get(key=key)
+                    if existing is not None:
+                        logger.info(
+                            f"registry: '{canonical}' is the same content as an "
+                            "already-loaded object (identity hit) — reusing."
+                        )
+                        self._registry.alias_href(canonical, existing)
+                        return existing
+                self._registry.register(child, key=key, href=canonical)
+            else:
+                logger.debug(f"registry: '{canonical}' has no identity key; not deduped.")
+        return child
+
+    # -------------------------------------------------------------------------
+    def resolve_imports(self, base_path: str = "", *, cache_directive: "CacheDirective | None" = None) -> list:
         """
         Discover and load every OSCAL document referenced by this document's
         import declarations.  Populates (and returns) self.import_list.
+
+        Because ``validate()`` resolves imports, loading a document cascades this
+        depth-first down the whole import tree. Two guards prevent runaway on shared
+        or circular graphs: the object registry ensures a file loaded via multiple
+        branches (a diamond) is held once, and an import that resolves back to an
+        ancestor still being resolved (a cycle) is marked ``ImportState.CYCLIC`` and
+        not loaded — the ancestor stays valid and recursion stops there.
+
+        A ``cache_directive`` is applied to this document's direct imports; a
+        ``refresh`` or ``CACHE_NEVER`` directive bypasses the in-memory registry so
+        the imported content is genuinely reloaded rather than reused.
 
         Recognised import locations by model:
             profile                    → import/@href
@@ -1049,12 +1264,25 @@ class OSCAL(LoggableMixin):
                                          mapping/target/@href
 
         Args:
-            base_path: Directory used to resolve relative hrefs.  Defaults to
-                       the directory of this document's own href.
+            base_path (str, optional): Directory used to resolve relative hrefs.
+                Defaults to the directory of this document's own href.
+            cache_directive (CacheDirective | None, optional): Caching directive
+                applied to this document's direct import fetches. Keyword-only.
+                Defaults to the standard 24h behavior.
 
         Returns:
             list[dict]: self.import_list, one entry per discovered reference.
         """
+        self_canonical = _canonicalize_ref(self.href or self.href_original)
+        self._registry.enter_resolving(self_canonical)
+        try:
+            return self._resolve_imports_inner(base_path, cache_directive)
+        finally:
+            self._registry.exit_resolving(self_canonical)
+
+    # -------------------------------------------------------------------------
+    def _resolve_imports_inner(self, base_path: str = "", cache_directive: "CacheDirective | None" = None) -> list:
+        """Core of :meth:`resolve_imports`, wrapped for cycle-stack management."""
         self.import_list = []
         self._import_tree = None  # invalidate cached tree whenever imports are re-resolved
 
@@ -1162,6 +1390,7 @@ class OSCAL(LoggableMixin):
             # --- Try each href_list item in order; use the first that yields valid OSCAL ---
             rlinks_tried: list[str] = []
             last_load_error: ImportLoadError | None = None
+            cyclic = False
 
             for item in entry["href_list"]:
                 if item["href"].startswith("#"):
@@ -1169,9 +1398,15 @@ class OSCAL(LoggableMixin):
                 primary  = _resolve_href(base_path, item["href"])
                 attempts = [primary] + [_resolve_href(base_path, v) for v in _oscal_format_variants(item["href"])]
                 for resolved in attempts:
+                    # Cycle guard: this href resolves to an ancestor still being resolved
+                    # higher on the stack. Flag CYCLIC and do not load (avoids a loop).
+                    if self._registry.is_resolving(_canonicalize_ref(resolved)):
+                        cyclic = True
+                        entry["href_valid"] = resolved
+                        break
                     rlinks_tried.append(resolved)
                     try:
-                        child = OSCAL.acquire(resolved)
+                        child = self._acquire_shared(resolved, cache_directive)
                         if child.is_valid:
                             item["status"]      = ImportState.READY
                             entry["href_valid"] = resolved
@@ -1196,10 +1431,16 @@ class OSCAL(LoggableMixin):
                     except Exception as exc:
                         item["status"] = ImportState.INVALID
                         logger.warning(f"resolve_imports: could not load '{resolved}': {exc}")
-                if entry["status"] == ImportState.READY:
+                if cyclic or entry["status"] == ImportState.READY:
                     break
 
-            if entry["status"] != ImportState.READY:
+            if cyclic:
+                entry["status"] = ImportState.CYCLIC
+                logger.info(
+                    f"resolve_imports: '{raw_href}' resolves to an ancestor still being "
+                    f"resolved ('{entry['href_valid']}') — marking CYCLIC."
+                )
+            elif entry["status"] != ImportState.READY:
                 entry["status"] = ImportState.INVALID
                 failure_code = last_load_error.code if last_load_error else ImportFailureCode.CONTENT_INVALID
                 failure_uri  = last_load_error.uri  if last_load_error else (rlinks_tried[-1] if rlinks_tried else "")
@@ -1330,6 +1571,36 @@ class OSCAL(LoggableMixin):
         return self.import_tree
 
     # -------------------------------------------------------------------------
+    def _import_base_path(self) -> str:
+        """Base directory (or base URL) used to resolve this document's relative import hrefs.
+
+        Mirrors the base-path logic in :meth:`resolve_imports`.
+
+        Returns:
+            str: The directory of this document's own href, or the current working
+                directory when the document has no source location.
+        """
+        src = self.href or self.href_original
+        if src:
+            parsed = urlparse(src)
+            if parsed.scheme and len(parsed.scheme) > 1:
+                return src.rsplit("/", 1)[0] + "/"
+            return os.path.dirname(os.path.abspath(src))
+        return os.getcwd()
+
+    # -------------------------------------------------------------------------
+    def _resolve_import_href(self, href: str) -> str:
+        """Resolve a (possibly relative) import href against this document's base path.
+
+        Args:
+            href (str, required): The href to resolve.
+
+        Returns:
+            str: The resolved absolute path or URL.
+        """
+        return _resolve_href(self._import_base_path(), href)
+
+    # -------------------------------------------------------------------------
     @property
     def is_remote(self) -> bool:
         """bool: True when the content originates from a remote source (not a local file)."""
@@ -1367,6 +1638,43 @@ class OSCAL(LoggableMixin):
 
     # -------------------------------------------------------------------------
     @property
+    def is_read_only(self) -> bool:
+        """bool: True when the content may not be mutated (most-restrictive-wins).
+
+        Read-only when any of these hold: the underlying writable flag is set,
+        the content is canonical/published (``is_canonical``), or the document is
+        write-locked by a *different* actor in its workspace (see
+        :meth:`_locked_by_other`). Because every mutation gate checks this property,
+        canonical status and workspace locks are enforced uniformly.
+        """
+        return self._is_read_only or self.is_canonical or self._locked_by_other()
+
+    @is_read_only.setter
+    def is_read_only(self, value: bool) -> None:
+        self._is_read_only = bool(value)
+
+    # -------------------------------------------------------------------------
+    def _locked_by_other(self) -> bool:
+        """Return True when this document is write-locked by a different actor.
+
+        Consults the owning workspace's lock manager (if any) against the current
+        actor (:func:`current_actor`). Always False for documents not owned by a
+        workspace, or when no lock is held, or when the current actor holds the lock.
+
+        Returns:
+            bool: True when another actor holds the write lock.
+        """
+        ws = self._workspace
+        if ws is None:
+            return False
+        try:
+            holder = ws.lock_holder(self)
+        except Exception:
+            return False
+        return holder is not None and holder != current_actor()
+
+    # -------------------------------------------------------------------------
+    @property
     def is_editable(self) -> bool:
         """Can this content be modified?"""
         return self.content_state >= ContentState.VALID and self.is_local and not self.is_read_only
@@ -1395,6 +1703,8 @@ class OSCAL(LoggableMixin):
         content_title = ""
         content_version = ""
         content_publication = ""
+        content_uuid = ""
+        content_last_modified = ""
 
         # --- Step: acquired ---
         if not content or not content.strip():
@@ -1419,6 +1729,8 @@ class OSCAL(LoggableMixin):
                     content_title = xpath_atomic(self._tree, _NSMAP, "/*/metadata/title/text()")
                     content_version = xpath_atomic(self._tree, _NSMAP, "/*/metadata/version/text()")
                     content_publication = xpath_atomic(self._tree, _NSMAP, "/*/metadata/published/text()")
+                    content_uuid = xpath_atomic(self._tree, _NSMAP, "/*/@uuid")
+                    content_last_modified = xpath_atomic(self._tree, _NSMAP, "/*/metadata/last-modified/text()")
                 else:
                     status = False
                     logger.error("Content is not well-formed XML.")
@@ -1436,6 +1748,8 @@ class OSCAL(LoggableMixin):
                     content_title = metadata.get('title', '')
                     content_version = metadata.get('version', '')
                     content_publication = metadata.get('published', '')
+                    content_uuid = root_obj.get('uuid', '') if isinstance(root_obj, dict) else ''
+                    content_last_modified = metadata.get('last-modified', '')
                 else:
                     status = False
                     logger.error(f"Content is not well-formed {self.original_format.upper()}.")
@@ -1452,6 +1766,10 @@ class OSCAL(LoggableMixin):
                     self.title = content_title
                     self.version = content_version
                     self.published = content_publication
+                    self.uuid = content_uuid
+                    # Composite content-identity key for the object registry: same tuple
+                    # means the same content revision regardless of format or location.
+                    self._identity = (content_uuid, content_last_modified, content_publication) if content_uuid else None
                     logger.debug(f"OSCAL model '{self.model}' and version '{self.oscal_version}' identified.")
                     status = True
                 else:
@@ -1495,16 +1813,18 @@ class OSCAL(LoggableMixin):
           structure      – all required fields and hierarchy are present
           data-types     – every leaf value matches its declared OSCAL datatype
           allowed-values – every constrained value is within its enumerated set
+          cardinality    – every array satisfies its min-occurs/max-occurs bounds
+          choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
 
         ``validation_status["well-formed"]`` is set by ``initial_validation()``, not here.
-        All three phases always run regardless of earlier failures, giving a complete
-        picture of issues in a single call.  The format argument is accepted for API
+        All phases always run regardless of earlier failures, giving a complete picture
+        of issues in a single call.  The format argument is accepted for API
         compatibility but does not alter the validation path — ``_dict`` is always the
         authoritative representation.
 
         Returns True only when every phase passes (content_state reaches VALID).
         """
-        for phase in ("structure", "data-types", "allowed-values", "cardinality"):
+        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
             self.validation_status[phase] = None
         self.validation_errors = []
 
@@ -1519,7 +1839,7 @@ class OSCAL(LoggableMixin):
         index = self._support.get_metaschema_index(self.oscal_version, self.model)
         if index is None:
             logger.warning("Metaschema index unavailable; treating all validation phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -1531,7 +1851,7 @@ class OSCAL(LoggableMixin):
 
         if not isinstance(model_instance, dict) or model_nodes is None:
             logger.warning("Cannot locate model root or index nodes; treating all phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -1546,11 +1866,13 @@ class OSCAL(LoggableMixin):
         dtype_errors       = [e for e in errors if e["error-type"] == "invalid-type"]
         av_errors          = [e for e in errors if e["error-type"] == "allowed-values"]
         cardinality_errors = [e for e in errors if e["error-type"] == "cardinality"]
+        choice_errors      = [e for e in errors if e["error-type"] == "choice"]
 
         self.validation_status["structure"]      = (len(struct_errors)      == 0)
         self.validation_status["data-types"]     = (len(dtype_errors)       == 0)
         self.validation_status["allowed-values"] = (len(av_errors)          == 0)
         self.validation_status["cardinality"]    = (len(cardinality_errors) == 0)
+        self.validation_status["choice"]         = (len(choice_errors)      == 0)
         self.validation_errors = errors
 
         for e in errors:
@@ -1559,7 +1881,7 @@ class OSCAL(LoggableMixin):
                 f"field={e.get('field', '')} value={e.get('value')!r}"
             )
 
-        _phases = ("structure", "data-types", "allowed-values", "cardinality")
+        _phases = ("structure", "data-types", "allowed-values", "cardinality", "choice")
         all_passed = all(self.validation_status[p] for p in _phases)
         if all_passed:
             self.content_state = ContentState.VALID
@@ -1589,8 +1911,9 @@ class OSCAL(LoggableMixin):
           ``invalid-type``      – a value does not match its declared OSCAL datatype pattern
           ``allowed-values``    – a value is not in its enumerated allowed-values set
           ``cardinality``       – an array has fewer items than min-occurs or more than max-occurs
+          ``choice``            – a choice has more than one member present (mutually exclusive), or none where one is required
 
-        All four error types are collected in a single pass so that ``validate()`` can
+        All error types are collected in a single pass so that ``validate()`` can
         partition them by phase after the walk completes.
 
         Args:
@@ -1714,6 +2037,75 @@ class OSCAL(LoggableMixin):
                         self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]")
             elif isinstance(child_val, dict):
                 self._walk_instance(child_val, child_node, errors, child_loc)
+
+        # ------------------------------------------------------------------
+        # Choice groups: mutually exclusive members (at most one), and a member
+        # required when every member is min-occurs="1"
+        # ------------------------------------------------------------------
+        for choice_node in (c for c in children if c.get("structure-type") == "choice"):
+            self._check_choice(instance, choice_node, errors, location)
+
+    # -------------------------------------------------------------------------
+    def _check_choice(self, instance: dict, choice_node: dict,
+                      errors: list[dict], location: str) -> None:
+        """Enforce a metaschema ``choice``: mutually exclusive use of its members.
+
+        Per the Metaschema specification, a ``choice`` "permits the mutually exclusive
+        use of a non-empty set of named model instances." So **at most one** of its
+        members (branches) may be present. This holds regardless of a member's
+        ``max-occurs``: ``max-occurs`` bounds how many items may appear *within* the
+        chosen branch (validated by that member's own array cardinality), not whether
+        branches may be combined. Present-ness is therefore counted per distinct member
+        key, not by summing array lengths.
+
+        Whether a selection is *required* is derived from the members: when every
+        member is ``min-occurs="1"`` a branch must be chosen (e.g. profile ``merge`` →
+        one of flat/as-is/custom; ``timing`` → one of on-date/within-date-range/
+        at-frequency), so zero branches present is an error. When some member is
+        ``min-occurs="0"`` the choice is optional (e.g. a ``param`` with neither
+        ``values`` nor ``select``, or an empty catalog ``group``), so zero is allowed.
+
+        Nested choices are flattened into the same mutually-exclusive group.
+
+        Args:
+            instance (dict, required): The JSON object that owns the choice.
+            choice_node (dict, required): The index node of structure-type ``"choice"``.
+            errors (list, required): Accumulator for ``"choice"`` errors.
+            location (str, required): JSON path to ``instance`` for error reporting.
+        """
+        members: list[dict] = []
+
+        def _collect(node: dict) -> None:
+            for m in node.get("children", []):
+                if m.get("structure-type") == "choice":
+                    _collect(m)  # flatten nested choices into one group
+                else:
+                    members.append(m)
+
+        _collect(choice_node)
+        if not members:
+            return
+
+        keys = [(m.get("group-as") or m.get("use-name") or m.get("name")) for m in members]
+        required = all((m.get("min-occurs") or "0") == "1" for m in members)
+        present = [k for k in keys if k and k in instance]
+
+        if required and len(present) == 0:
+            errors.append({
+                "error-type": "choice",
+                "location":   location,
+                "field":      keys,
+                "value":      0,
+                "expected":   {"select-one-of": keys},
+            })
+        elif len(present) > 1:
+            errors.append({
+                "error-type": "choice",
+                "location":   location,
+                "field":      present,
+                "value":      len(present),
+                "expected":   {"mutually-exclusive": keys},
+            })
 
     # -------------------------------------------------------------------------
     def _build_tree(self) -> bool:
@@ -1923,6 +2315,197 @@ class OSCAL(LoggableMixin):
         """
         results = self.json_query(path, context)
         return results[0] if results else default
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _as_index(segment: str) -> int | None:
+        """Return a non-negative int for a numeric path segment, else None.
+
+        Args:
+            segment (str, required): A single slash-path segment.
+
+        Returns:
+            int | None: The parsed non-negative index, or None when the segment is
+                not a non-negative integer (i.e. it names a dict key).
+        """
+        try:
+            idx = int(segment)
+        except (ValueError, TypeError):
+            return None
+        return idx if idx >= 0 else None
+
+    # -------------------------------------------------------------------------
+    def _ensure_list(self, container: dict, key: str) -> list | None:
+        """Return the list at ``container[key]``, creating an empty one if absent.
+
+        Mirrors ``dict.setdefault`` but guarantees the result is a list. This is the
+        shared "optional OSCAL array" guard: many OSCAL arrays (``props``, ``links``,
+        ``controls`` …) are optional, so writes must create them on first use.
+
+        Args:
+            container (dict, required): The parent object to read/create the list on.
+            key (str, required): The array key.
+
+        Returns:
+            list | None: The (possibly newly created) list, or None if ``key`` exists
+                but is not a list.
+        """
+        target = container.setdefault(key, [])
+        if not isinstance(target, list):
+            logger.error(f"_ensure_list: '{key}' is {type(target).__name__}, expected list.")
+            return None
+        return target
+
+    # -------------------------------------------------------------------------
+    def put(
+        self,
+        path: str,
+        value,
+        mode: Literal["replace", "insert"] = "replace",
+        *,
+        validate: bool = False,
+        check_refs: bool = False,
+    ) -> bool:
+        """
+        Write a value into the JSON content at a slash-separated path.
+
+        This is the shared, guarded entry point for JSON mutations. It centralizes the
+        defensive behavior that would otherwise be repeated at every call site:
+        the read-only / content guard (:meth:`_can_mutate`), auto-creation of missing
+        intermediate objects and optional OSCAL arrays, and dirty-state bookkeeping
+        (``is_unsaved`` / ``last_modified``).
+
+        Path segments are ``'/'`` separated and relative to the model root (e.g.
+        ``"metadata/title"`` or ``"metadata/roles/0/title"``). A numeric segment
+        indexes a list; any other segment names a dict key. Missing intermediate dict
+        keys are created automatically.
+
+        Args:
+            path (str, required): Slash-separated path relative to the model root.
+            value (Any, required): The JSON-compatible value to write.
+            mode (str, optional): ``"replace"`` (default) sets the value at ``path``;
+                ``"insert"`` treats the leaf as an optional array — creating it if
+                absent — and appends ``value`` to it.
+            validate (bool, optional): When True, run metaschema-driven datatype/regex
+                and allowed-value checks before writing (see :meth:`_validate_write`).
+                Currently a permissive extension point. Defaults to False.
+            check_refs (bool, optional): When True, run referential-integrity checks
+                before writing (see :meth:`_check_referential_integrity`). Currently a
+                permissive extension point. Defaults to False.
+
+        Returns:
+            bool: True on success, False on any failure (guard, bad path/index,
+                validation, or type mismatch). No mutation occurs on failure.
+        """
+        if not self._can_mutate("put"):
+            return False
+
+        if mode not in ("replace", "insert"):
+            logger.error(f"put: invalid mode '{mode}'; expected 'replace' or 'insert'.")
+            return False
+
+        parts = [p for p in path.strip("/").split("/") if p != ""]
+        if not parts:
+            logger.error("put: empty path.")
+            return False
+
+        if validate and not self._validate_write(path, value, mode):
+            return False
+        if check_refs and not self._check_referential_integrity(path, value, mode):
+            return False
+
+        # Walk to the parent of the leaf, auto-creating missing intermediate dicts.
+        obj = self._dict.setdefault(self.model, {})
+        for depth, part in enumerate(parts[:-1]):
+            if isinstance(obj, list):
+                idx = self._as_index(part)
+                if idx is None or idx >= len(obj):
+                    logger.error(f"put: invalid list index '{part}' in path '{path}'.")
+                    return False
+                obj = obj[idx]
+            elif isinstance(obj, dict):
+                if part not in obj:
+                    # Auto-vivify a dict. A following numeric segment would require a
+                    # pre-existing list, which we will not fabricate by index.
+                    if self._as_index(parts[depth + 1]) is not None:
+                        logger.error(
+                            f"put: cannot auto-create list for index '{parts[depth + 1]}' in path '{path}'."
+                        )
+                        return False
+                    obj[part] = {}
+                obj = obj[part]
+            else:
+                logger.error(f"put: cannot traverse into {type(obj).__name__} at '{part}' in path '{path}'.")
+                return False
+
+        leaf = parts[-1]
+
+        if mode == "insert":
+            if not isinstance(obj, dict):
+                logger.error(f"put: insert requires a dict parent at '{path}', got {type(obj).__name__}.")
+                return False
+            if self._as_index(leaf) is not None:
+                logger.error(f"put: positional insert (index leaf '{leaf}') is not supported; use an array key.")
+                return False
+            target = self._ensure_list(obj, leaf)
+            if target is None:
+                logger.error(f"put: '{leaf}' at '{path}' is not a list; cannot insert.")
+                return False
+            target.append(value)
+        else:  # replace
+            if isinstance(obj, dict):
+                obj[leaf] = value
+            elif isinstance(obj, list):
+                idx = self._as_index(leaf)
+                if idx is None or idx >= len(obj):
+                    logger.error(f"put: invalid list index '{leaf}' in path '{path}'.")
+                    return False
+                obj[idx] = value
+            else:
+                logger.error(f"put: cannot set value on {type(obj).__name__} at path '{path}'.")
+                return False
+
+        # Dirty-state bookkeeping (done inline so a False return never marks unsaved).
+        self.is_unsaved = True
+        self.last_modified = oscal_date_time_with_timezone()
+        logger.debug(f"put[{mode}]: '{path}' = {value!r}")
+        return True
+
+    # -------------------------------------------------------------------------
+    def _validate_write(self, path: str, value, mode: str) -> bool:
+        """Extension point for metaschema-driven datatype/regex/allowed-value checks.
+
+        Invoked by :meth:`put` when ``validate=True``. Currently permissive (always
+        returns True). Future work: resolve the metaschema node for ``path`` and run
+        :func:`_check_datatype` and allowed-value checks against ``value``.
+
+        Args:
+            path (str, required): The slash path being written.
+            value (Any, required): The value being written.
+            mode (str, required): The write mode ("replace" or "insert").
+
+        Returns:
+            bool: True when the write is permitted (permissive stub for now).
+        """
+        return True
+
+    # -------------------------------------------------------------------------
+    def _check_referential_integrity(self, path: str, value, mode: str) -> bool:
+        """Extension point for referential-integrity checks on a write.
+
+        Invoked by :meth:`put` when ``check_refs=True``. Currently permissive (always
+        returns True). Future work: verify that reference values (e.g. ``control-id``,
+        ``party-uuids``, resource UUIDs) resolve to existing targets.
+
+        Args:
+            path (str, required): The slash path being written.
+            value (Any, required): The value being written.
+            mode (str, required): The write mode ("replace" or "insert").
+
+        Returns:
+            bool: True when the write is permitted (permissive stub for now).
+        """
+        return True
 
     # -------------------------------------------------------------------------
     @if_update_successful
@@ -2250,6 +2833,8 @@ class ImportState(str, Enum):
         EXPIRED (str): "expired" — content is valid but the cached copy has expired.
         DUPLICATE (str): "duplicate" — the resolved href is already loaded by an earlier import.
         IGNORED (str): "ignored" — the caller explicitly chose to ignore this import.
+        CYCLIC (str): "cyclic" — this import resolves to one of its own ancestors; the
+            ancestor stays valid and recursion stops here to prevent an infinite loop.
     """
     READY        = "ready"        # The content is valid and loaded
     NOT_LOADED   = "not-loaded"   # The content has not been loaded
@@ -2257,6 +2842,7 @@ class ImportState(str, Enum):
     EXPIRED      = "expired"      # The content is valid, but cached copy has expired
     DUPLICATE    = "duplicate"    # The resolved href is already loaded by an earlier import
     IGNORED      = "ignored"      # Caller explicitly chose to ignore this import (duplicate or otherwise)
+    CYCLIC       = "cyclic"       # Resolves to an ancestor — recursion stops to avoid a loop
 
 # -------------------------------------------------------------------------
 class ImportFailureCode(str, Enum):
@@ -2539,7 +3125,8 @@ def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Functions
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def load_content(source: str | dict | OscalRef | list, media_type: str = "", only_oscal: bool = False) -> str:
+def load_content(source: str | dict | OscalRef | list, media_type: str = "", only_oscal: bool = False,
+                 cache_directive: "CacheDirective | None" = None) -> str:
     """Load content from one or more sources and return the first successful payload.
 
     Args:
@@ -2548,6 +3135,8 @@ def load_content(source: str | dict | OscalRef | list, media_type: str = "", onl
         media_type (str, optional): Expected media type hint. Defaults to "".
         only_oscal (bool, optional): When True, restrict acceptance to OSCAL content.
             Defaults to False.
+        cache_directive (CacheDirective | None, optional): Caching directive applied
+            to remote fetches. Defaults to the standard 24h behavior.
 
     Returns:
         str: The first successfully loaded content payload, or "" if none load and no
@@ -2577,7 +3166,7 @@ def load_content(source: str | dict | OscalRef | list, media_type: str = "", onl
             continue
 
         try:
-            content = load_source(ref)
+            content = load_source(ref, cache_directive)
             if content:
                 return content
         except ImportLoadError as exc:
@@ -2589,12 +3178,14 @@ def load_content(source: str | dict | OscalRef | list, media_type: str = "", onl
     logger.error("No usable content could be loaded from provided sources")
     return ""
 
-def load_source(ref: OscalRef) -> str:
+def load_source(ref: OscalRef, cache_directive: "CacheDirective | None" = None) -> str:
     """Fetch or read content from a classified ``OscalRef``.
 
     Args:
         ref (OscalRef, required): A reference that has already been classified
             (via :func:`classify_source`) to set its source type/scheme.
+        cache_directive (CacheDirective | None, optional): Caching directive applied
+            to remote (http/https) fetches. Defaults to the standard 24h behavior.
 
     Returns:
         str: The raw content as a string on success.
@@ -2619,23 +3210,34 @@ def load_source(ref: OscalRef) -> str:
                                       f"File URI returned no content: {local_path}")
 
         elif ref.source_type == "uri" and ref.source_scheme in {"http", "https"}:
-            logger.info(f"Loading controls from URL: {src}")
-            try:
-                content = normalize_content(download_file(src, "oscal_remote_content")) 
-            except HTTPError as exc:
-                if exc.code in (401, 403):
-                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
-                                          f"HTTP {exc.code}: authentication required") from exc
-                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
-                                      f"HTTP {exc.code}: {exc.reason}") from exc
-            except (URLError, OSError, ConnectionError) as exc:
-                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
-            except Exception as exc:
-                # download_file may raise implementation-specific types; inspect message for auth hints
-                msg = str(exc).lower()
-                if any(t in msg for t in ("401", "403", "unauthorized", "forbidden")):
-                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src, str(exc)) from exc
-                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+            # Apply the cache directive, then serve from the on-disk cache when a
+            # reusable copy exists; otherwise fetch and populate/refresh the cache.
+            cache_key = _canonicalize_ref(src)
+            cache = get_local_cache()
+            cached = cache.get(cache_key, cache_directive)
+            if cached is not None:
+                logger.info(f"Loading controls from local cache: {src}")
+                content = cached
+            else:
+                logger.info(f"Loading controls from URL: {src}")
+                try:
+                    content = normalize_content(download_file(src, "oscal_remote_content"))
+                except HTTPError as exc:
+                    if exc.code in (401, 403):
+                        raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
+                                              f"HTTP {exc.code}: authentication required") from exc
+                    raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
+                                          f"HTTP {exc.code}: {exc.reason}") from exc
+                except (URLError, OSError, ConnectionError) as exc:
+                    raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+                except Exception as exc:
+                    # download_file may raise implementation-specific types; inspect message for auth hints
+                    msg = str(exc).lower()
+                    if any(t in msg for t in ("401", "403", "unauthorized", "forbidden")):
+                        raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src, str(exc)) from exc
+                    raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+                if content:
+                    cache.put(cache_key, content, cache_directive)
 
         elif ref.source_type == "uri" and ref.source_scheme in {"ftp", "data"}:
             logger.info(f"Loading controls from URI via urllib: {src}")
@@ -2744,6 +3346,35 @@ def _resolve_href(base: str, href: str) -> str:
             return urljoin(base, href)  # base is a real URL
         return os.path.normpath(os.path.join(base, href))
     return os.path.abspath(href)
+
+
+def _canonicalize_ref(href: str) -> str:
+    """Canonicalize a resolved href for object-registry identity.
+
+    Produces a stable key for the same location: URLs get lower-cased scheme/host
+    and their fragment stripped; local paths are resolved with ``os.path.realpath``
+    (collapsing symlinks and ``..``). Format differences are intentionally *not*
+    normalized away — ``catalog.xml`` and ``catalog.json`` are different files and
+    keep distinct href keys (content-identity dedup handles the format-variant case).
+
+    Args:
+        href (str, required): A resolved (absolute) href or path.
+
+    Returns:
+        str: The canonicalized key, or "" when ``href`` is empty.
+    """
+    if not href:
+        return ""
+    parsed = urlparse(href)
+    if parsed.scheme and len(parsed.scheme) > 1 and parsed.scheme.lower() != "file":
+        return urlunparse((
+            parsed.scheme.lower(), parsed.netloc.lower(),
+            parsed.path, parsed.params, parsed.query, "",
+        ))
+    try:
+        return os.path.realpath(href)
+    except Exception:
+        return href
 
 def _oscal_format_variants(href: str) -> list[str]:
     """Return the same href with each other OSCAL format extension substituted.
@@ -2909,6 +3540,98 @@ def append_prop(parent_obj: dict, prop: dict) -> dict:
             entry[key] = prop[key]
     parent_obj.setdefault("props", []).append(entry)
     return entry
+
+# -------------------------------------------------------------------------
+def get_props(parent_obj: dict, name: str | None = None, uuid: str | None = None,
+              ns: str = _OSCAL_NS, class_: str | None = None,
+              group: str | None = None) -> list:
+    """
+    Retrieve matching prop dicts from ``parent_obj["props"]``.
+
+    Either ``name`` or ``uuid`` must be supplied. The return value is always a
+    list — empty when nothing matches (or when the required parameters are
+    missing) — never ``None``.
+
+    An absent ``ns`` on a prop is treated as the OSCAL default namespace
+    (``_OSCAL_NS``), matching the way ``ns`` defaults on this function's own
+    ``ns`` parameter. Correct default-``ns`` handling is essential: a prop with
+    no ``ns`` is considered to be in the OSCAL namespace.
+
+    Matching behaviour:
+      * ``uuid`` supplied: every prop whose ``uuid`` equals ``uuid`` is
+        returned. If any descriptor parameter (``name``, a non-default ``ns``,
+        ``class_`` or ``group``) is also supplied and does not match a returned
+        prop, a warning is logged, but the prop is still returned.
+      * ``uuid`` not supplied: ``name`` is required. Props are matched on
+        ``name`` **and** effective ``ns``. When ``class_`` and/or ``group`` are
+        supplied they must also match. When ``class_``/``group`` are *not*
+        supplied, all name+ns matches are returned, ordered best match first:
+        props carrying fewer of the un-queried qualifiers (``class``/``group``)
+        sort ahead of more-specific props. Document order is preserved among
+        equally specific matches.
+
+    Args:
+        parent_obj (dict, required): OSCAL JSON object holding a ``props`` list.
+        name (str, optional): Prop ``name`` to match. Required if ``uuid`` is
+            not given.
+        uuid (str, optional): Prop ``uuid`` to match. Required if ``name`` is
+            not given.
+        ns (str, optional): Namespace to match; defaults to ``_OSCAL_NS``.
+        class_ (str, optional): Prop ``class`` to match. Maps to the ``"class"``
+            key (``class`` is a reserved word in Python).
+        group (str, optional): Prop ``group`` to match.
+
+    Returns:
+        list: Matching prop dicts (possibly empty), ordered best match first.
+    """
+    if uuid is None and name is None:
+        logger.warning("get_props() requires either 'name' or 'uuid'; neither "
+                       "was provided. Returning an empty list.")
+        return []
+
+    props = parent_obj.get("props", []) or []
+
+    def _eff_ns(prop: dict) -> str:
+        # Absent @ns defaults to the OSCAL namespace per OSCAL specification.
+        return prop.get("ns") or _OSCAL_NS
+
+    # -- uuid mode: uuid identifies the prop; other params only validate ------
+    if uuid is not None:
+        matches = [p for p in props if p.get("uuid") == uuid]
+        descriptors_given = (name is not None or class_ is not None
+                             or group is not None or ns != _OSCAL_NS)
+        if descriptors_given:
+            for p in matches:
+                mismatched = []
+                if name is not None and p.get("name") != name:
+                    mismatched.append("name")
+                if _eff_ns(p) != ns:
+                    mismatched.append("ns")
+                if class_ is not None and p.get("class") != class_:
+                    mismatched.append("class")
+                if group is not None and p.get("group") != group:
+                    mismatched.append("group")
+                if mismatched:
+                    logger.warning(f"get_props() matched prop uuid={uuid!r} but "
+                                   f"the following supplied parameter(s) did not "
+                                   f"match the prop: {', '.join(mismatched)}.")
+        return matches
+
+    # -- name mode: match on name + effective ns (+ class/group if given) -----
+    results = [p for p in props
+               if p.get("name") == name and _eff_ns(p) == ns
+               and (class_ is None or p.get("class") == class_)
+               and (group is None or p.get("group") == group)]
+
+    # Order best match first: props carrying fewer of the un-queried
+    # qualifiers (class/group) are the closer match. Stable sort keeps
+    # document order among equally specific props.
+    unqueried = [q for q, given in (("class", class_), ("group", group))
+                 if given is None]
+    if unqueried:
+        results.sort(key=lambda p: sum(1 for q in unqueried
+                                       if p.get(q) not in (None, "")))
+    return results
 
 # -----------------------------------------------------------------------------
 def append_links(parent_obj: dict, links: list) -> None:

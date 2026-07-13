@@ -12,10 +12,12 @@ Module constants:
     (none exported)
 """
 from __future__ import annotations
-from loguru import logger
+import logging
 from typing import Any, Optional
 
-from .oscal_content import OSCAL, requires, if_update_successful, new_uuid, append_props, append_links
+from .oscal_content import OSCAL, requires, if_update_successful, new_uuid, append_props, append_links, register_model
+
+logger = logging.getLogger(__name__)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ComponentDefinition(OSCAL):
@@ -286,3 +288,8 @@ def append_responsible_role(oscal_obj: dict, role_id: str, party_uuids: list = [
 
     oscal_obj.setdefault("responsible-roles", []).append(resp_role)
     return resp_role
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Register model classes so OSCAL factory methods return typed instances.
+register_model("component-definition", ComponentDefinition)
+register_model("system-security-plan", SSP)

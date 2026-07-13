@@ -10,7 +10,7 @@ query behavior.
 Module constants:
     (none exported)
 """
-from .oscal_content import OSCAL
+from .oscal_content import OSCAL, register_model
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class AssessmentPlan(OSCAL):
@@ -41,3 +41,9 @@ class POAM(OSCAL):
     """
     def _init_common(self):
         super()._init_common()        # run OSCAL's common init first
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Register model classes so OSCAL factory methods return typed instances.
+register_model("assessment-plan", AssessmentPlan)
+register_model("assessment-results", AssessmentResults)
+register_model("plan-of-action-and-milestones", POAM)

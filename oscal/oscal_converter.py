@@ -39,7 +39,7 @@ import json
 import re
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, SubElement
-from loguru import logger
+import logging
 
 import markdown
 from markdown.extensions import Extension
@@ -48,6 +48,8 @@ from markdown.treeprocessors import Treeprocessor
 
 from .oscal_support import get_support, METASCHEMA_MIN_VERSION
 from ruf_common.helper import compare_semver
+
+logger = logging.getLogger(__name__)
 
 OSCAL_XML_NAMESPACE = "http://csrc.nist.gov/ns/oscal/1.0"
 

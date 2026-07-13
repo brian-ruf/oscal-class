@@ -15,7 +15,10 @@ Module constants:
         ``date-time-with-timezone``, ``integer``, ``boolean``, ``markup-line``,
         and ``markup-multiline``.
 """
-from loguru import logger
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
     """

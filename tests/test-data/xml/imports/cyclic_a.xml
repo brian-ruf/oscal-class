@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="cccccccc-0000-4000-a000-00000000000a">
+  <metadata>
+    <title>Cyclic Profile A</title>
+    <last-modified>2026-01-01T00:00:00Z</last-modified>
+    <version>1.0</version>
+    <oscal-version>1.2.1</oscal-version>
+  </metadata>
+  <import href="cyclic_b.xml">
+    <include-all/>
+  </import>
+  <merge>
+    <combine method="keep"/>
+    <as-is>true</as-is>
+  </merge>
+</profile>
