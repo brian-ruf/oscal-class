@@ -13,7 +13,7 @@ import tempfile
 
 import pytest
 
-from oscal import OSCAL
+from oscal import OSCAL, Catalog, Profile
 
 # ---------------------------------------------------------------------------
 # Fixtures — schema-valid structure but missing required fields
@@ -178,9 +178,9 @@ class TestSchemaInvalidContent:
         assert obj.is_valid is False
 
     def test_xml_schema_valid_flag_is_false(self):
-        """Schema-invalid XML sets schema_valid['_tree'] to False (not None)."""
+        """Schema-invalid XML sets validation_status['structure'] to False."""
         obj = OSCAL.loads(_XML_SCHEMA_INVALID)
-        assert obj.schema_valid["_tree"] is False
+        assert obj.validation_status["structure"] is False
 
     def test_json_schema_invalid_does_not_raise(self):
         """Well-formed OSCAL-shaped JSON that is schema-invalid must not raise."""
@@ -197,9 +197,9 @@ class TestSchemaInvalidContent:
         assert obj.is_valid is False
 
     def test_json_schema_valid_flag_is_false(self):
-        """Schema-invalid JSON sets schema_valid['_tree'] to False (JSON is converted to XML before validation)."""
+        """Schema-invalid JSON sets validation_status['structure'] to False."""
         obj = OSCAL.loads(_JSON_SCHEMA_INVALID)
-        assert obj.schema_valid["_tree"] is False
+        assert obj.validation_status["structure"] is False
 
     def test_yaml_schema_invalid_does_not_raise(self):
         """Well-formed OSCAL-shaped YAML that is schema-invalid must not raise."""
@@ -216,6 +216,116 @@ class TestSchemaInvalidContent:
         assert obj.is_valid is False
 
     def test_yaml_schema_valid_flag_is_false(self):
-        """Schema-invalid YAML sets schema_valid['_tree'] to False (YAML is converted to XML before validation)."""
+        """Schema-invalid YAML sets validation_status['structure'] to False."""
         obj = OSCAL.loads(_YAML_SCHEMA_INVALID)
-        assert obj.schema_valid["_tree"] is False
+        assert obj.validation_status["structure"] is False
+
+
+# ===========================================================================
+# Choice directive — metaschema choice members are mutually exclusive
+# ===========================================================================
+class TestChoiceValidation:
+
+    def test_validation_status_has_choice_key(self):
+        p = Profile.new("Choice Test")
+        p.validate()
+        assert "choice" in p.validation_status
+
+    def test_valid_choice_passes(self):
+        p = Profile.new("Choice Test")
+        p.set_merge(as_is=True)          # exactly one member -> valid
+        p.validate()
+        assert p.validation_status["choice"] is True
+        assert p.is_valid
+
+    def test_two_members_violate_choice(self):
+        p = Profile.new("Choice Test")
+        p._dict["profile"]["merge"] = {"flat": {}, "as-is": True}   # two members
+        p.validate()
+        assert p.validation_status["choice"] is False
+        assert p.is_valid is False
+        errs = [e for e in p.validation_errors if e["error-type"] == "choice"]
+        assert errs
+        assert errs[0]["location"] == "/profile/merge"
+        assert set(errs[0]["field"]) == {"flat", "as-is"}
+
+    def test_three_members_violate_choice(self):
+        p = Profile.new("Choice Test")
+        p._dict["profile"]["merge"] = {"flat": {}, "as-is": True, "custom": {}}
+        p.validate()
+        assert p.validation_status["choice"] is False
+
+    def test_optional_choice_with_zero_members_ok(self):
+        """A choice member set may be empty when the choice is optional — e.g. a
+        param with neither 'values' nor 'select' must not be flagged."""
+        c = Catalog.new("Choice Test")
+        c.create_control("[root]", "ac-1", title="A", params=["ac-1_prm_1"])
+        c.validate()
+        assert c.validation_status["choice"] is True
+
+    def test_single_member_choice_ok(self):
+        p = Profile.new("Choice Test")
+        p.set_merge(flat=True)
+        p.validate()
+        assert p.validation_status["choice"] is True
+
+
+# ===========================================================================
+# Choice cardinality — required/optional & bounded/unbounded driven by members
+# ===========================================================================
+class TestChoiceCardinality:
+
+    def test_required_choice_missing_member_fails(self):
+        """profile 'merge' is a required choice (flat|as-is|custom); none present -> error."""
+        p = Profile.new("Card")
+        p._dict["profile"]["merge"] = {"combine": {"method": "keep"}}  # no flat/as-is/custom
+        p.validate()
+        assert p.validation_status["choice"] is False
+        assert p.is_valid is False
+        errs = [e for e in p.validation_errors if e["error-type"] == "choice"]
+        assert errs and errs[0]["location"] == "/profile/merge"
+        assert errs[0]["expected"] == {"select-one-of": ["flat", "as-is", "custom"]}
+
+    def test_required_choice_single_member_ok(self):
+        p = Profile.new("Card")
+        p.set_merge(custom={})
+        p.validate()
+        assert p.validation_status["choice"] is True
+
+    def test_bounded_required_choice_rejects_two(self):
+        p = Profile.new("Card")
+        p._dict["profile"]["merge"] = {"as-is": True, "custom": {}}
+        p.validate()
+        assert p.validation_status["choice"] is False
+
+    def test_optional_choice_empty_group_ok(self):
+        """catalog group's (groups|controls) choice is optional -> empty group is valid."""
+        c = Catalog.new("Card")
+        c.create_control_group("[root]", "empty", title="Empty Group")
+        c.validate()
+        assert c.validation_status["choice"] is True
+        assert c.is_valid
+
+    def test_unbounded_choice_allows_many_members(self):
+        """The (groups|controls) choice is unbounded — many controls is fine."""
+        c = Catalog.new("Card")
+        c.create_control_group("[root]", "g", title="G")
+        c.create_control("g", "c-1", title="C1")
+        c.create_control("g", "c-2", title="C2")
+        c.validate()
+        assert c.validation_status["choice"] is True
+        assert c.is_valid
+
+    def test_unbounded_choice_still_mutually_exclusive(self):
+        """max-occurs=unbounded bounds items *within* a branch, not combining branches:
+        a group holding BOTH groups and controls violates the (groups|controls) choice."""
+        c = Catalog.new("Card")
+        c._dict["catalog"]["groups"] = [{
+            "id": "g", "title": "G",
+            "groups": [{"id": "g-sub", "title": "Sub"}],
+            "controls": [{"id": "c-1", "title": "C1"}],
+        }]
+        c.validate()
+        assert c.validation_status["choice"] is False
+        errs = [e for e in c.validation_errors if e["error-type"] == "choice"]
+        assert any(set(e["field"]) == {"groups", "controls"} for e in errs)

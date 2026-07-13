@@ -15,9 +15,6 @@
         <include-all />
     </import>
 
-    <import href="#051a77c1-b61d-4995-8275-dacfe688d510">
-        <include-all />
-    </import>
 
     <back-matter>
         <resource uuid="e9d6719d-c4a3-4d74-9227-907e227427bf">

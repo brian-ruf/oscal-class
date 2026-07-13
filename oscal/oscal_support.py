@@ -1,20 +1,51 @@
 """
-OSCAL Support Class
+oscal_support — OSCAL support-file database and singleton accessor.
 
-Provides support for NIST-published OSCAL support files for all versions of OSCAL.
+Manages the local SQLite database of NIST-published OSCAL support files
+(metaschemas and XML/JSON schemas) for every OSCAL version and model, and
+provides the ``OSCALSupport`` class along with helpers for validation and
+format conversion.
 
-Always instantiate using the `get_support` function. 
-This ensures that only one instance of the support class exists within the application, and is shared across the application for access to OSCAL support files and information.
-
-The OSCAL content classes rely on this class to perform validation and conversion.
+Always obtain the shared instance via ``get_support()`` (optionally configured
+first with ``configure_support()`` / ``setup_support()``). This ensures a single
+support instance is shared across the application. The OSCAL content classes rely
+on this instance to perform validation and conversion.
 
 More information: https://github.com/brian-ruf/oscal-class/blob/main/docs/SUPPORT_MODULE.md
 
+Module constants:
+    SUPPORT_DATABASE_DEFAULT_FILE (str): Default path to the support DB
+        (``"./support/oscal_support.db"``), resolved relative to the runtime CWD.
+    SUPPORT_DATABASE_DEFAULT_TYPE (str): Default database backend (``"sqlite3"``).
+    COMPRESS_SUPPORT_FILES_IN_DATABASE (bool): Whether support files are stored
+        compressed in the database.
+    OSCAL_DEFAULT_XML_NAMESPACE (str): The NIST OSCAL XML namespace URI.
+    NIST_OSCAL_EXTENSION_NAMESPACE (str): The NIST OSCAL property/extension namespace URI.
+    NIST_RMF_EXTENSION_NAMESPACE (str): The NIST RMF extension namespace URI.
+    OSCAL_FORMATS (list): Supported serialization formats
+        (``["xml", "json", "yaml", "yml"]``).
+    DEFAULT_EXCLUDE_VERSIONS (list): OSCAL release tags excluded by default
+        (release candidates and milestones).
+    METASCHEMA_MIN_VERSION (str): Earliest version with NIST-published resolved
+        metaschema files (``"v1.1.1"``).
+    INDEX_REFRESH (int): Seconds before a cached metaschema index entry is stale
+        (86400 = 24 hours).
+    METASCHEMA_FILE_PATTERNS (dict): Filename-suffix → support-type map for
+        metaschema files.
+    SCHEMA_FILE_PATTERNS (dict): Filename-suffix → support-type map for XML/JSON
+        schema files.
+    OSCAL_SUPPORT_TABLES (dict): Schema definitions for the support database tables
+        (``oscal_versions``, ``oscal_support``, ``filecache``).
+    OSCAL_DATA_TYPES (dict): Data-type registry populated at runtime from parsed
+        metaschemas.
 """
+import json
 import os
-from loguru import logger
+import xml.etree.ElementTree as ET
+import logging
 from importlib import resources
 import uuid
+import time
 from time import sleep
 from typing import Optional
 from ruf_common.lfs import chkdir, putfile, chkfile
@@ -22,6 +53,8 @@ from ruf_common import helper
 from ruf_common import database
 from ruf_common import network
 from .oscal_datatypes import oscal_date_time_with_timezone
+
+logger = logging.getLogger(__name__)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 SUPPORT_DATABASE_DEFAULT_FILE = "./support/oscal_support.db"
@@ -38,13 +71,19 @@ OSCAL_FORMATS = ["xml", "json", "yaml", "yml"]
 # Release and Support File Patterns
 # DEFAULT_EXCLUDE_TAG_PATTERNS = ["-rc", "-milestone"] # Ignore release tags with these substrings.
 DEFAULT_EXCLUDE_VERSIONS = ["v1.0.0-rc1", "v1.0.0-rc2", "v1.0.0-milestone1", "v1.0.0-milestone2", "v1.0.0-milestone3"]
-SUPPORT_FILE_PATTERNS    = {
-    "_metaschema_RESOLVED.xml":   "metaschema",    # OSCAL specification files
-    "_schema.xsd":                "xml-schema",       # OSCAL XML schema validation files
-    "_schema.json":               "json-schema",      # OSCAL JSON schema validation files
-    "_xml-to-json-converter.xsl": "xml-to-json", # OSCAL XML to JSON converters
-    "_json-to-xml-converter.xsl": "json-to-xml" # OSCAL JSON to XML converters
-    }
+METASCHEMA_MIN_VERSION = "v1.1.1"  # NIST did not publish resolved metaschema files before this version
+INDEX_REFRESH = 86400  # Seconds before a cached metaschema index entry is considered stale (24 hours)
+
+# Module-level cache for parsed metaschema index objects.
+# Key: (version, model)  Value: {"version", "model", "last_retrieved", "index"}
+_metaschema_index_cache: dict = {}
+METASCHEMA_FILE_PATTERNS = {
+    "_metaschema_RESOLVED.xml": "metaschema",   # OSCAL resolved metaschema specification files
+}
+SCHEMA_FILE_PATTERNS = {
+    "_schema.xsd":  "xml-schema",               # OSCAL XML schema validation files
+    "_schema.json": "json-schema",              # OSCAL JSON schema validation files
+}
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # GitHub root URLs
@@ -91,6 +130,32 @@ OSCAL_SUPPORT_TABLES["filecache"] = database.OSCAL_COMMON_TABLES["filecache"]
 
 OSCAL_DATA_TYPES = {}
 
+_METASCHEMA_NS = "http://csrc.nist.gov/ns/oscal/metaschema/1.0"
+_METASCHEMA_PFX = f"{{{_METASCHEMA_NS}}}"
+
+
+def _extract_root_name(content: str | bytes) -> str | None:
+    """Return the OSCAL root-name from a resolved metaschema XML string, or None.
+
+    Document models declare a ``<root-name>`` inside their top-level
+    ``<define-assembly>``; shared metaschemas (e.g. assessment-common) do not.
+    """
+    try:
+        text = content if isinstance(content, str) else content.decode("utf-8", errors="replace")
+        root = ET.fromstring(text)
+        for da in root.findall(f"{_METASCHEMA_PFX}define-assembly"):
+            rn = da.find(f"{_METASCHEMA_PFX}root-name")
+            if rn is not None and rn.text:
+                return rn.text.strip()
+        for da in root.findall("define-assembly"):
+            rn = da.find("root-name")
+            if rn is not None and rn.text:
+                return rn.text.strip()
+    except Exception:
+        pass
+    return None
+
+
 support = None
 
 # ========================================================================
@@ -102,9 +167,24 @@ def configure_support(
     init_mode: Optional[str] = None,
 ):
     """
-    Configure the OSCAL support system with the specified settings. 
-    This should be called before get_support() and before any OSCAL 
-    content is loaded if you want to use settings other than the defaults.
+    Configure and create the shared OSCAL support instance.
+
+    Call this before ``get_support()`` and before any OSCAL content is loaded when
+    non-default settings are needed. If the shared instance already exists, it is
+    returned unchanged.
+
+    Args:
+        support_file (str, optional): Path to the support database file.
+            Defaults to ``SUPPORT_DATABASE_DEFAULT_FILE``.
+        db_init_mode (str, optional): Database initialization mode — ``"auto"``,
+            ``"extract"``, or ``"create"``. Defaults to ``"auto"``.
+        db_path (str, optional): Keyword-only alias for ``support_file``; overrides
+            it when provided.
+        init_mode (str, optional): Keyword-only alias for ``db_init_mode``;
+            overrides it when provided.
+
+    Returns:
+        OSCALSupport: The shared support instance.
     """
     if db_path is not None:
         support_file = db_path
@@ -137,9 +217,13 @@ def configure_support(
 # -------------------------------------------------------------------------
 def get_support():
     """
-    Get the shared instance of the OSCAL support system.
-    Will create the instance if it does not already exist, 
-    using default settings.
+    Return the shared OSCAL support instance, creating it if necessary.
+
+    Creates the instance with default settings (via ``configure_support()``) if it
+    does not already exist.
+
+    Returns:
+        OSCALSupport: The shared support instance.
     """
     logger.debug("Fetching the support object instance.")
     global support
@@ -151,22 +235,51 @@ def get_support():
 
 
 def setup_support(support_file=SUPPORT_DATABASE_DEFAULT_FILE, db_init_mode="auto"):
-    """Compatibility helper for update utility scripts."""
+    """Compatibility wrapper around ``configure_support()`` for update utility scripts.
+
+    Args:
+        support_file (str, optional): Path to the support database file.
+            Defaults to ``SUPPORT_DATABASE_DEFAULT_FILE``.
+        db_init_mode (str, optional): Database initialization mode
+            (``"auto"``, ``"extract"``, or ``"create"``). Defaults to ``"auto"``.
+
+    Returns:
+        OSCALSupport: The shared support instance.
+    """
     return configure_support(support_file=support_file, db_init_mode=db_init_mode)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCALSupport:
+    """Access layer for the local OSCAL support-file database.
+
+    Manages a SQLite database of NIST-published support files (metaschemas and
+    XML/JSON schemas) for every OSCAL version and model, and exposes methods for
+    querying supported versions/models, retrieving assets, building metaschema
+    indexes, and updating content from NIST's GitHub releases.
+
+    Prefer the module-level ``get_support()`` accessor over instantiating this
+    class directly, so a single instance is shared across the application.
+
+    Note:
+        ``OSCAL_support`` is a backward-compatible alias for this class.
+    """
     def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto", db_compress_files=COMPRESS_SUPPORT_FILES_IN_DATABASE):
         """
-        Initialize OSCAL Support.
+        Initialize OSCAL support and run startup (table checks / population).
 
         Args:
-            db_conn: Database connection string or path
-            db_type: Database type (sqlite3, mysql, etc.)
-            db_init_mode: Database initialization mode:
-                - "auto": Extract from resources if file missing/empty, otherwise create empty
-                - "extract": Always try to extract from resources, create empty if extraction fails
-                - "create": Always create empty database from scratch
+            db_conn (str, optional): Database connection string or file path.
+                Defaults to ``SUPPORT_DATABASE_DEFAULT_FILE``.
+            db_type (str, optional): Database backend type (e.g. "sqlite3").
+                Defaults to ``SUPPORT_DATABASE_DEFAULT_TYPE``.
+            db_init_mode (str, optional): Database initialization mode. Defaults to "auto".
+                - "auto": Extract from packaged resources if the file is missing/empty,
+                  otherwise use the existing file.
+                - "extract": Always try to extract from resources; create empty if that fails.
+                - "create": Always create an empty database from scratch.
+            db_compress_files (bool, optional): Whether to store support files
+                compressed in the database. Defaults to
+                ``COMPRESS_SUPPORT_FILES_IN_DATABASE``.
         """
         self.ready      = False     # Is the support capability available?
         self.db_conn    = db_conn   # The support database connection string or path and filename
@@ -178,6 +291,7 @@ class OSCALSupport:
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
         self._cache     = {}        # Internal cache for support operations
+        self._update_stats = None   # Populated during update(); None when not running an update
 
         logger.debug(f"Initializing OSCALSupport with db_type='{db_type}', db_conn='{db_conn}', db_init_mode='{db_init_mode}'")
 
@@ -317,8 +431,11 @@ class OSCALSupport:
                         logger.error(f"{member} not found inside oscal_support.zip")
                         logger.debug(f"Available files in zip: {z.namelist()}")
                         return False
+        except FileNotFoundError:
+            logger.warning("No pre-built support database found — a new one will be initialized.")
+            return False
         except Exception as e:
-            logger.error(f"Failed to extract default support DB: {e}")
+            logger.warning(f"Could not extract default support DB: {e} — a new one will be initialized.")
             import traceback
             logger.debug(f"Exception details: {traceback.format_exc()}")
             return False
@@ -360,6 +477,19 @@ class OSCALSupport:
         """
         Perform startup tasks required to provide OSCAL support.
 
+        Ensures the support database has the required tables and data, populating
+        it from NIST's GitHub releases when empty, and sets ``self.ready``.
+
+        Args:
+            check_for_updates (bool, optional): Reserved flag to check for newer
+                OSCAL versions during startup. Defaults to False.
+            refresh_all (bool, optional): Reserved flag to force a full refresh of
+                all support content. Defaults to False.
+
+        Returns:
+            bool: True if the support capability is ready, False otherwise.
+
+        Process:
         1 Check for tables
           - If tables do not exist:
             - create tables
@@ -411,16 +541,16 @@ class OSCALSupport:
     # -------------------------------------------------------------------------
     def update(self, mode="new", fetch=None): # , backend=None):
         """
-        Update OSCAL support content based on the fetch directive.
-        - "all": Clears all re-fetches all OSCAL versions and support files.
-        - "latest": Check for new OSCAL versions and fetch if found.
-        - "vX.Y.Z": Clear and re-fetch a specific OSCAL version and its support files.
+        Update OSCAL support content based on a fetch directive.
+
         Args:
-            fetch (str): The directive for fetching OSCAL versions.
-                         - "all" for all versions
-                         - "latest" for the latest version
-                         - "vX.Y.Z" for a specific version
-            backend (Optional[Any]): Optional backend object for status updates.
+            mode (str, optional): The fetch directive. Defaults to "new".
+                - "all": Clear and re-fetch all OSCAL versions and support files.
+                - "latest"/"new": Check for new OSCAL versions and fetch any found.
+                - "vX.Y.Z": Clear and re-fetch a specific OSCAL version.
+            fetch (str, optional): Legacy alias for ``mode``; when provided it
+                overrides ``mode``. Defaults to None.
+
         Returns:
             bool: True if the update was successful, False otherwise.
         """
@@ -429,12 +559,25 @@ class OSCALSupport:
             mode = fetch
 
         fetch = mode
-        # self.backend = backend
+
+        self._update_stats = {
+            "versions_processed": [],
+            "versions_skipped":   [],
+            "files_fetched":      0,
+            "files_fetch_failed": [],   # (version, filename)
+            "files_saved":        0,
+            "files_save_failed":  [],   # (version, filename)
+            "metaschema_built":   [],
+            "metaschema_skipped": [],
+            "metaschema_failed":  [],
+        }
 
         try:
             if fetch == "all":
                 self.__status_messages("Starting full refresh of OSCAL support content...")
                 status = self.__clear_oscal_versions()
+                if status:
+                    self.__vacuum_database()
             elif fetch == "latest" or fetch == "new":
                 self.__status_messages("Checking for new OSCAL versions...")
                 status = True
@@ -447,13 +590,11 @@ class OSCALSupport:
                     status = False
 
             if status:
-                # Get OSCAL versions with periodic status updates
                 status = self.__get_oscal_versions(fetch)
 
-            # Final reload of versions
             self.__load_versions()
-
             self.__status_messages("Update process completed.")
+            self.__report_update_stats()
 
         except Exception as e:
             logger.error(f"Error during update: {e}")
@@ -479,7 +620,7 @@ class OSCALSupport:
         if version in self.versions:
             query = f"SELECT filecache_uuid FROM oscal_support WHERE version = '{version}' and model = '{model}' and type = '{asset_type}'"
             results = self.db.query(query)
-            if results is not None:
+            if results:
                 filecache_uuid = results[0].get("filecache_uuid", None)
                 # logger.debug(f"Found filecache UUID {filecache_uuid} for {oscal_version} and {model_name}.")
                 logger.debug(f"Found filecache UUID {filecache_uuid} for {version} and {model}.")
@@ -498,14 +639,141 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def asset(self, oscal_version, model_name, asset_type):
-        """Backward-compatible wrapper for get_asset()."""
+        """Backward-compatible wrapper for :meth:`get_asset`.
+
+        Args:
+            oscal_version (str, required): The OSCAL version (e.g. "v1.0.0").
+            model_name (str, required): The OSCAL model name (e.g. "system-security-plan").
+            asset_type (str, required): The asset type (e.g. "xml-schema", "json-schema").
+
+        Returns:
+            Any: The asset content if found, otherwise None.
+        """
         return self.get_asset(oscal_version, model_name, asset_type)
+
+    # -------------------------------------------------------------------------
+    def get_metaschema_index(self, version: str, model: str) -> dict | None:
+        """
+        Return the parsed metaschema index dict for the given OSCAL version and model.
+
+        Results are held in the module-level ``_metaschema_index_cache`` so that
+        only one copy of each index lives in memory and survives across calls.
+        A cached entry is reused until it is older than :data:`INDEX_REFRESH`
+        seconds (24 hours), at which point it is refreshed from the database.
+
+        Args:
+            version: OSCAL version string, e.g. ``"v1.1.3"``.
+            model:   OSCAL model name, e.g. ``"catalog"``.
+
+        Returns:
+            The model-specific index dict on success, or ``None`` when the index
+            is unavailable.
+        """
+        key = (version, model)
+        now = time.time()
+
+        entry = _metaschema_index_cache.get(key)
+        if entry and (now - entry["last_retrieved"]) < INDEX_REFRESH:
+            logger.debug(f"Metaschema index cache hit for {version}/{model}.")
+            return entry["index"]
+
+        logger.debug(f"Metaschema index cache miss for {version}/{model} — fetching from database.")
+
+        # Try the per-model entry first (new format).
+        raw = self.get_asset(version, model, "processed")
+
+        # Fall back to the legacy combined "complete" entry and migrate on first hit.
+        if not raw:
+            logger.debug(f"Per-model index not found for {version}/{model}; trying legacy 'complete' entry.")
+            complete_raw = self.get_asset(version, "complete", "processed")
+            if complete_raw:
+                try:
+                    complete_index = json.loads(complete_raw)
+                    model_index = complete_index.get("oscal_models", {}).get(model)
+                    if model_index is not None:
+                        model_json = json.dumps(model_index, indent=2)
+                        stored = self.add_asset(version, model, "processed", model_json, filename=f"{model}.json")
+                        if stored:
+                            logger.info(f"Migrated {version}/{model} from legacy 'complete' index to per-model entry.")
+                        raw = model_json
+                except json.JSONDecodeError as exc:
+                    logger.error(f"Could not parse legacy 'complete' metaschema index for {version}: {exc}")
+
+        if not raw:
+            logger.error(f"No processed metaschema index found for {version}/{model}. Run the metaschema parser to populate support assets.")
+            return None
+
+        try:
+            model_index = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.error(f"Could not parse metaschema index for {version}/{model}: {exc}")
+            return None
+
+        if not model_index:
+            logger.error(f"Empty metaschema index for {version}/{model}.")
+            return None
+
+        # Ensure json-path (node-level) and condition (constraint-level) are present.
+        # Indexes built before these features were added lack these keys; annotate lazily.
+        nodes = model_index.get("nodes")
+        if nodes and isinstance(nodes, dict):
+            from .metaschema_parser import (
+                _annotate_ns_conditions,
+                _compute_json_paths,
+                _index_uses_stale_allow_other_key,
+                _migrate_flags_to_children,
+                _reroute_unresolved_constraints,
+            )
+
+            # Detect indexes built by an older parser that stored "allow-others" (plural)
+            # instead of the current "allow-other" key.  The stored value may also be
+            # incorrect (e.g. False when the metaschema says allow-other="yes").
+            # Rebuild only this model's index from the raw metaschema XML.
+            if _index_uses_stale_allow_other_key(nodes):
+                logger.info(
+                    f"Stale metaschema index for {version}/{model} "
+                    "(deprecated 'allow-others' key) — rebuilding from raw metaschema."
+                )
+                from .metaschema_parser import _rebuild_model_index
+                fresh_index = _rebuild_model_index(self, version, model)
+                if fresh_index is not None:
+                    _metaschema_index_cache.pop(key, None)
+                    model_index = fresh_index
+                    nodes = model_index.get("nodes")
+                else:
+                    logger.warning(
+                        f"Rebuild failed for {version}/{model} — continuing with stale index. "
+                        "Allowed-values constraints may be overly strict."
+                    )
+
+            _migrate_flags_to_children(nodes)
+            _reroute_unresolved_constraints(nodes)
+            _annotate_ns_conditions(nodes)
+            _compute_json_paths(nodes, "")
+
+        _metaschema_index_cache[key] = {
+            "version": version,
+            "model": model,
+            "last_retrieved": now,
+            "index": model_index,
+        }
+        logger.debug(f"Metaschema index cached for {version}/{model}.")
+        return _metaschema_index_cache[key]["index"]
 
     # -------------------------------------------------------------------------
     def supported(self, oscal_version, assets):
         """
-        Currently not implemented.
-        Checks if the specified OSCAL version and assets are supported.
+        Check whether the specified OSCAL version and assets are supported.
+
+        Note:
+            Currently not implemented; always returns False.
+
+        Args:
+            oscal_version (str, required): The OSCAL version to check (e.g. "v1.0.0").
+            assets (list, required): The asset types to check for.
+
+        Returns:
+            bool: True if the version and assets are supported, False otherwise.
         """
         status = False
 
@@ -530,7 +798,16 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def is_model_valid(self, model_name, version="all") -> bool:
-        """Backward-compatible wrapper for is_valid_model()."""
+        """Backward-compatible wrapper for :meth:`is_valid_model`.
+
+        Args:
+            model_name (str, required): The OSCAL model name to check.
+            version (str, optional): The OSCAL version to check against, or "all".
+                Defaults to "all".
+
+        Returns:
+            bool: True if the model is valid for the version, False otherwise.
+        """
         return self.is_valid_model(model_name, version)
 
     # -------------------------------------------------------------------------
@@ -555,10 +832,15 @@ class OSCALSupport:
                 self._cache[CACHE_MODELS_PER_VERSION] = {}
 
             if version == "all":
-                query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'xml-schema' and model != 'complete'"
+                doc_query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'document-model' and model != 'complete'"
+                xml_query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'xml-schema' and model != 'complete'"
             else:
-                query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{version}' and type = 'xml-schema' and model != 'complete'"
-            results = self.db.query(query)
+                doc_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{version}' and type = 'document-model' and model != 'complete'"
+                xml_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{version}' and type = 'xml-schema' and model != 'complete'"
+
+            results = self.db.query(doc_query)
+            if not results:
+                results = self.db.query(xml_query)
             if results is not None:
                 for entry in results:
                     models.append(entry.get("model", ""))
@@ -569,7 +851,15 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def enumerate_models(self, version: str = "all") -> list[str]:
-        """Backward-compatible wrapper for list_models()."""
+        """Backward-compatible wrapper for :meth:`list_models`.
+
+        Args:
+            version (str, optional): The OSCAL version to enumerate models for, or
+                "all". Defaults to "all".
+
+        Returns:
+            list[str]: Supported model-name strings (may be empty).
+        """
         return self.list_models(version)
 
     # -------------------------------------------------------------------------
@@ -580,10 +870,13 @@ class OSCALSupport:
         If the content is a string, it will be converted to bytes.
         If the content is already in bytes, it will be used as is.
         Args:
-            oscal_version (str): The OSCAL version (e.g., "v1.0.0").
-            model_name (str): The OSCAL model name (e.g., "system-security-plan").
-            asset_type (str): The type of asset to add (e.g., "xml-schema", "json-schema").
-            content (Any): The content of the asset to add.
+            oscal_version (str, required): The OSCAL version (e.g. "v1.0.0").
+            model_name (str, required): The OSCAL model name (e.g. "system-security-plan").
+            asset_type (str, required): The asset type (e.g. "xml-schema", "json-schema").
+            content (str | bytes, required): The asset content; strings are encoded
+                to UTF-8 bytes.
+            filename (str, optional): Filename to record for the cached asset.
+                Defaults to ``"{model_name}_{asset_type}"``.
         Returns:
             bool: True if the asset was added successfully, False otherwise.
         """
@@ -693,7 +986,12 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def latest_version(self):
-        """Returns the latest supported OSCAL version."""
+        """Return the latest supported OSCAL version.
+
+        Returns:
+            Optional[str]: The highest OSCAL version tag available in the support
+                database, or None if none are loaded.
+        """
         latest_version = None
         if self.versions:
             latest_version = sorted(self.versions.keys(), reverse=True)[0]
@@ -701,7 +999,11 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def get_latest_version(self):
-        """Backward-compatible wrapper for latest_version()."""
+        """Backward-compatible wrapper for :meth:`latest_version`.
+
+        Returns:
+            Optional[str]: The latest OSCAL version tag, or None if none are loaded.
+        """
         return self.latest_version()
     # -------------------------------------------------------------------------
     def __get_oscal_versions(self, fetch="latest"):
@@ -737,6 +1039,8 @@ class OSCALSupport:
                                         (fetch_one and oscal_version == fetch))
 
                         if ok_to_continue:
+                            if self._update_stats is not None:
+                                self._update_stats["versions_processed"].append(oscal_version)
                             self.__status_messages(f"Processing {oscal_version} release...")
                             release_date = entry.get("published_at", "0000-00-00T00:00:00Z")
                             release_name = entry.get("name", "")
@@ -747,21 +1051,39 @@ class OSCALSupport:
                             # Database operations
 
                             logger.info(f"Learning {oscal_version}, released {release_date} ...")
+                            acquired_ts = oscal_date_time_with_timezone()
                             if self.db.insert("oscal_versions", {
                                 "version": oscal_version,
                                 "released": release_date,
                                 "title": release_name,
                                 "github_location": github_location,
                                 "documentation_location": documentation_location,
-                                "acquired": oscal_date_time_with_timezone()
+                                "acquired": acquired_ts,
                             }):
+                                # Register in memory immediately so list_models() can find it
+                                # during __build_metaschema_index() later in this same loop.
+                                self.versions[oscal_version] = {
+                                    "title":                  release_name,
+                                    "released":               release_date,
+                                    "github_location":        github_location,
+                                    "documentation_location": documentation_location,
+                                    "acquired":               acquired_ts,
+                                    "successful":             None,
+                                }
                                 OSCAL_versions.append(oscal_version)
                                 if "assets" in entry:
-                                    # Process assets in chunks
                                     self.__fetch_support_files(oscal_version, entry["assets"])
+                                    if helper.compare_semver(oscal_version, METASCHEMA_MIN_VERSION) >= 0:
+                                        self.__build_metaschema_index(oscal_version)
+                                    else:
+                                        if self._update_stats is not None:
+                                            self._update_stats["metaschema_skipped"].append(oscal_version)
+                                        self.__status_messages(f"Skipping metaschema index for {oscal_version} (resolved metaschema not published before {METASCHEMA_MIN_VERSION}).")
                             else:
                                 logger.error(f"Unable to insert OSCAL version {oscal_version} into support database.")
                         else:
+                            if self._update_stats is not None:
+                                self._update_stats["versions_skipped"].append(oscal_version)
                             if fetch_one and oscal_version != fetch:
                                 self.__status_messages(f"Skipping {oscal_version} release. Not the version specified.")
                             elif fetch_latest and oscal_version in self.versions:
@@ -786,18 +1108,13 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def __fetch_support_files(self, version, assets):
-        """Process assets sequentially"""
-        status = False
-
-        # Process assets sequentially
+        """Download and store metaschema files for *version* into the database."""
         for asset in assets:
             asset_name = asset.get("name", "")
-            for pattern in SUPPORT_FILE_PATTERNS:
+            for pattern in METASCHEMA_FILE_PATTERNS:
                 if pattern in asset_name:
                     self.__process_single_asset(version, asset, pattern)
-
-        status = True
-        return status
+        return True
 
     # -------------------------------------------------------------------------
     def __process_single_asset(self, version, asset, pattern):
@@ -822,7 +1139,7 @@ class OSCALSupport:
         self.db.insert("oscal_support", {
             "version": version,
             "model": model_name,
-            "type": SUPPORT_FILE_PATTERNS[pattern],
+            "type": METASCHEMA_FILE_PATTERNS[pattern],
             "filecache_uuid": uuid_value
         })
 
@@ -830,18 +1147,106 @@ class OSCALSupport:
         content = network.download_file(asset_URL, asset_name)
 
         if content:
+            if self._update_stats is not None:
+                self._update_stats["files_fetched"] += 1
             attributes = {
                 "filename": asset_name,
                 "original_location": asset_URL,
                 "mime_type": "application/octet-stream",
-                "file_type": SUPPORT_FILE_PATTERNS[pattern],
+                "file_type": METASCHEMA_FILE_PATTERNS[pattern],
                 "acquired": oscal_date_time_with_timezone(),
                 "compressed": COMPRESS_SUPPORT_FILES_IN_DATABASE
             }
-            self.db.cache_file(content, uuid_value, attributes)
-            self.__status_messages(f"Downloaded [{version}] {asset_name}")
+            saved = self.db.cache_file(content, uuid_value, attributes)
+            if saved:
+                if self._update_stats is not None:
+                    self._update_stats["files_saved"] += 1
+                self.__status_messages(f"Downloaded [{version}] {asset_name}")
+
+                # If this is a metaschema, check for root-name to identify document models
+                if METASCHEMA_FILE_PATTERNS[pattern] == "metaschema":
+                    root_name = _extract_root_name(content)
+                    if root_name:
+                        self.db.insert("oscal_support", {
+                            "version": version,
+                            "model": root_name,
+                            "type": "document-model",
+                            "filecache_uuid": uuid_value,
+                        })
+                        logger.debug(f"Registered '{root_name}' as a document model for {version}.")
+
+                        # When root-name differs from the filename-derived model name
+                        # (e.g. root-name='mapping-collection', file key='mapping'),
+                        # insert a metaschema alias so lookups by root-name also work.
+                        if root_name != model_name:
+                            self.db.insert("oscal_support", {
+                                "version": version,
+                                "model": root_name,
+                                "type": "metaschema",
+                                "filecache_uuid": uuid_value,
+                            })
+                            logger.debug(f"Added metaschema alias '{root_name}' → '{model_name}' for {version}.")
+            else:
+                if self._update_stats is not None:
+                    self._update_stats["files_save_failed"].append((version, asset_name))
+                self.__status_messages(f"Failed to save [{version}] {asset_name}", "error")
         else:
+            if self._update_stats is not None:
+                self._update_stats["files_fetch_failed"].append((version, asset_name))
             self.__status_messages(f"Failed to download {asset_name}", "error")
+
+    # -------------------------------------------------------------------------
+    def __build_metaschema_index(self, version):
+        """Parse the metaschema for *version* and store the processed index.
+
+        Uses a lazy import to avoid the circular dependency between
+        oscal_support and metaschema_parser.
+        """
+        self.__status_messages(f"Building metaschema index for {version}...")
+        try:
+            from .metaschema_parser import parse_metaschema_specific  # lazy import
+            ok = parse_metaschema_specific(self, version)
+            if ok:
+                if self._update_stats is not None:
+                    self._update_stats["metaschema_built"].append(version)
+                self.__status_messages(f"Metaschema index for {version} built successfully.")
+            else:
+                if self._update_stats is not None:
+                    self._update_stats["metaschema_failed"].append(version)
+                self.__status_messages(f"Metaschema index for {version} failed to build.", "error")
+        except Exception as e:
+            if self._update_stats is not None:
+                self._update_stats["metaschema_failed"].append(version)
+            logger.error(f"Error building metaschema index for {version}: {e}")
+            self.__status_messages(f"Error building metaschema index for {version}: {e}", "error")
+
+    # -------------------------------------------------------------------------
+    def __vacuum_database(self) -> None:
+        """Reclaim free space in the database after a bulk delete.
+
+        Only executed for SQLite databases — VACUUM is a SQLite-specific DDL
+        statement that rewrites the database file in place and is not
+        appropriate (or available) on enterprise databases such as PostgreSQL
+        or MySQL.
+
+        VACUUM must run outside any open transaction, so it is issued directly
+        on the underlying connection rather than through db_execute().
+        """
+        if self.db_type != "sqlite3":
+            logger.debug(f"Skipping VACUUM: not applicable for db_type '{self.db_type}'.")
+            return
+
+        if self.db is None or self.db.conn is None:
+            logger.warning("Cannot VACUUM: database connection is not open.")
+            return
+
+        try:
+            self.__status_messages("Compressing database (VACUUM)...")
+            self.db.conn.execute("VACUUM")
+            logger.info("Database VACUUM completed successfully.")
+            self.__status_messages("Database compression complete.")
+        except Exception as e:
+            logger.warning(f"VACUUM failed (non-fatal): {e}")
 
     # -------------------------------------------------------------------------
     def __clear_oscal_version(self, version):
@@ -893,9 +1298,12 @@ class OSCALSupport:
     # -------------------------------------------------------------------------
     def export_support_files(self, export_path="./support_files"):
         """
-        Export all support files to the specified directory.
+        Export all cached support files to a directory tree, grouped by version.
+
         Args:
-            export_path (str): The directory to export support files to.
+            export_path (str, optional): The directory to export support files to.
+                Defaults to "./support_files".
+
         Returns:
             bool: True if the export was successful, False otherwise.
         """
@@ -958,6 +1366,130 @@ class OSCALSupport:
     # -------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
+    def download_schemas(self, support_dir: str, fetch: str = "all") -> bool:
+        """Download XML and JSON schema files to the filesystem.
+
+        Files are written to ``{support_dir}/{version}_schemas/`` directories and
+        are not stored in the support database.
+
+        Args:
+            support_dir: Root directory under which per-version schema folders are created.
+            fetch: ``"all"`` to download every known version, or a specific version
+                   tag (e.g. ``"v1.2.2"``) to download only that version.
+        Returns:
+            True if all files were saved without error, False otherwise.
+        """
+        support_dir = os.path.abspath(support_dir)
+
+        if fetch != "all":
+            if fetch not in self.versions:
+                logger.error(f"Version '{fetch}' is not in the support database.")
+                return False
+            logger.info(f"Downloading schema files for {fetch} to {support_dir} ...")
+        else:
+            logger.info(f"Downloading schema files for all versions to {support_dir} ...")
+
+        response = network.api_get(GitHub_API_root + "/repos/" + OSCAL_repo + "/releases")
+        if response is None or not response.ok:
+            logger.error("Unable to fetch release information from GitHub.")
+            return False
+
+        downloaded = 0
+        failed = 0
+
+        for entry in response.json():
+            oscal_version = entry.get("tag_name", "").lower()
+            if oscal_version not in self.versions:
+                continue
+            if fetch != "all" and oscal_version != fetch:
+                continue
+
+            version_dir = os.path.join(support_dir, "schemas", oscal_version)
+            if not chkdir(version_dir, make_if_not_present=True):
+                logger.error(f"Unable to create directory: {version_dir}")
+                failed += 1
+                continue
+
+            logger.info(f"Downloading schemas for {oscal_version} ...")
+            d, f = self.__fetch_schema_files(oscal_version, entry.get("assets", []), version_dir)
+            downloaded += d
+            failed += f
+
+        logger.info(f"Schema download complete — {downloaded} file(s) saved, {failed} failure(s).")
+        return failed == 0
+
+    # -------------------------------------------------------------------------
+    def __fetch_schema_files(self, version, assets, output_dir: str) -> tuple:
+        """Download schema files from *assets* and write them to *output_dir*.
+
+        Returns:
+            (downloaded_count, failed_count)
+        """
+        downloaded = 0
+        failed = 0
+
+        for asset in assets:
+            asset_name = asset.get("name", "")
+            for pattern in SCHEMA_FILE_PATTERNS:
+                if pattern in asset_name:
+                    url = asset.get("browser_download_url", "")
+                    content = network.download_file(url, asset_name)
+                    if content:
+                        content = helper.normalize_content(content)
+                        dest = os.path.join(output_dir, asset_name)
+                        if putfile(dest, content):
+                            logger.info(f"  [{version}] Saved {asset_name}")
+                            downloaded += 1
+                        else:
+                            logger.error(f"  [{version}] Failed to save {asset_name}")
+                            failed += 1
+                    else:
+                        logger.error(f"  [{version}] Failed to download {asset_name}")
+                        failed += 1
+
+        return downloaded, failed
+
+    # -------------------------------------------------------------------------
+    def __report_update_stats(self):
+        """Log a summary of the update run collected in self._update_stats."""
+        stats = self._update_stats
+        if stats is None:
+            return
+
+        lines = [
+            "=" * 48,
+            "Update Summary",
+            "=" * 48,
+            f"  Versions processed:    {len(stats['versions_processed'])}",
+            f"  Versions skipped:      {len(stats['versions_skipped'])}",
+            f"  Files downloaded:      {stats['files_fetched']}",
+            f"  Files saved:           {stats['files_saved']}",
+            f"  Download failures:     {len(stats['files_fetch_failed'])}",
+            f"  Save failures:         {len(stats['files_save_failed'])}",
+            f"  Metaschema built:      {len(stats['metaschema_built'])}",
+            f"  Metaschema skipped:    {len(stats['metaschema_skipped'])}",
+            f"  Metaschema failed:     {len(stats['metaschema_failed'])}",
+        ]
+
+        if stats["files_fetch_failed"]:
+            lines.append("\n  Download failures:")
+            for version, filename in stats["files_fetch_failed"]:
+                lines.append(f"    [{version}] {filename}")
+
+        if stats["files_save_failed"]:
+            lines.append("\n  Save failures:")
+            for version, filename in stats["files_save_failed"]:
+                lines.append(f"    [{version}] {filename}")
+
+        if stats["metaschema_failed"]:
+            lines.append("\n  Metaschema build failures:")
+            for version in stats["metaschema_failed"]:
+                lines.append(f"    {version}")
+
+        lines.append("=" * 48)
+        self.__status_messages("\n".join(lines))
+
+    # -------------------------------------------------------------------------
     def __status_messages(self, status="", level="info"):
         """Enhanced status message handling"""
         if self.backend is not None:
@@ -966,7 +1498,18 @@ class OSCALSupport:
 
     # -------------------------------------------------------------------------
     def load_file(self, name, binary=False, *, as_bytes=None):
-        """Load a schema XML file from package data."""
+        """Load a file bundled in the ``oscal.data`` package resources, with caching.
+
+        Args:
+            name (str, required): Filename of the resource within ``oscal.data``.
+            binary (bool, optional): If True, return raw bytes; otherwise return
+                UTF-8 decoded text. Defaults to False.
+            as_bytes (bool, optional): Keyword-only alias for ``binary``; overrides
+                it when provided. Defaults to None.
+
+        Returns:
+            str | bytes | None: The file contents (text or bytes), or None on failure.
+        """
         if as_bytes is not None:
             binary = as_bytes
 

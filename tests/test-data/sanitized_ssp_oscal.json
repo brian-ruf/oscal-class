@@ -1,0 +1,191 @@
+{
+  "system-security-plan" : {
+    "uuid" : "1b27736e-f992-4082-95bf-f0bab744be76",
+    "metadata" : {
+      "version" : "DRAFT",
+      "oscal-version" : "1.2.2",
+      "last-modified" : "2026-04-26T12:00:00-04:00",
+      "title" : "Example",
+      "role": [
+          {
+              "id": "system-owner",
+              "title": "The System Owner"
+          },
+          {
+              "id": "cloud-service-provider",
+              "title": "The Cloud Service Provider",
+              "short-name": "CSP"
+          },
+          {
+              "id": "customer",
+              "title": "The Customer"
+          }
+      ],
+      "parties" : [
+        {
+            "uuid": "bf0672d8-1ac0-484f-a49e-79cc6347bdb7",
+            "type": "organization",
+            "name": "The CSP"
+        }
+      ]
+    },
+    "import-profile" : {
+      "href" : "#21f7e477-4aea-432c-95e0-65b678ecdc89"
+    },
+    "system-characteristics" : {
+      "status" : {
+        "state" : "other"
+      },
+      "system-ids" : [ {
+        "identifier-type" : "https://ietf.org/rfc/rfc4122",
+        "id" : "3c5ff39c-4144-4f93-a917-dff331ffb828"
+      } ],
+      "description" : "",
+      "authorization-boundary" : {
+        "description" : ""
+      },
+      "security-sensitivity-level" : "[not-specified]",
+      "system-information" : {
+        "information-types" : [ {
+          "title" : "None",
+          "description" : "Placeholder",
+          "uuid" : "472ff18d-01d5-45cc-9e16-32092c39bea7"
+        } ]
+      }
+    },
+    "system-implementation" : {
+      "components" : [ {
+        "title" : "This System",
+        "type" : "this-system",
+        "status" : {
+          "state" : "operational"
+        },
+        "description" : "",
+        "uuid" : "cd1570e8-b600-426d-a87a-845c47aa13a5"
+      } ],
+      "users" : [ {
+        "props" : [ {
+          "value" : "internal",
+          "name" : "type"
+        } ],
+        "role-ids" : [ "system-owner" ],
+        "title" : "System Owner",
+        "uuid" : "ecc8e51e-56d1-4961-b4f2-cdcb90f4a9c1"
+      } ]
+    },
+    "control-implementation" : {
+      "description" : "",
+      "implemented-requirements" : [ 
+        {
+            "uuid" : "644e4f6e-d6ab-4435-8aa7-57f732ea2513",
+            "control-id": "ac-1",
+            "set-parameters": [
+                {
+                    "param-id": "ac-01_odp.03",
+                    "values": ["everyone"]
+                }
+            ],
+            "statements": [
+                {
+                    "uuid": "b8cbd66b-ec41-45b9-8232-413cc85c3380",
+                    "statement-id": "ac-1_smt.a.1",
+                    "props": [
+                        {
+                            "name": "control-origination",
+                            "value": "organization"
+                        },
+                        {
+                            "name": "control-origination",
+                            "value": "system-specific"
+                        },
+                        {
+                            "name": "control-origination",
+                            "value": "customer-provided"
+                        }
+                    ],
+                    "by-components": [
+                        {
+                            "component-uuid": "cd1570e8-b600-426d-a87a-845c47aa13a5",
+                            "uuid": "74a60ca9-aea6-4327-8bc8-7cb9659e3702",
+                            "description": "",
+                            "export": {
+                                "provided": [
+                                    {
+                                        "uuid": "2ec57a42-2028-4352-a209-bb267ab587e0",
+                                        "description": "A control that can be inherited."
+                                    }
+                                ],
+                                "responsibilities": [
+                                    {
+                                        "uuid": "5e23f4de-f6fe-4099-a8ab-ba96459eb5fb",
+                                        "description": "A customer responsibility."
+                                    }
+                                ]
+                            },
+                            "responsible-roles": [
+                                 {"role-id": "cloud-service-provider"},
+                                 {"role-id": "customer"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "statement-id": "ac-1_smt.a.2",
+                    "uuid": "3dd65fc5-0534-45cc-a15c-b8cb1a100002",
+                    "props": [
+                        {
+                            "name": "control-origination",
+                            "value": "organization"
+                        },
+                        {
+                            "name": "control-origination",
+                            "value": "system-specific"
+                        },
+                        {
+                            "name": "control-origination",
+                            "value": "customer-provided"
+                        }
+                    ],
+                    "by-components": [
+                        {
+                            "component-uuid": "cd1570e8-b600-426d-a87a-845c47aa13a5",
+                            "uuid": "79158af8-dc19-4d65-a1b2-5da92868e2f5",
+                            "description": "",
+                            "export" : {
+                                "provided": [
+                                    {
+                                        "uuid": "be6430c7-0e57-4dd0-afff-f551c9c4a355",
+                                        "description": "A control that can be inherited."
+                                    }
+                                ],
+                                "responsibilities": [
+                                    {
+                                        "uuid": "578f16b7-53a9-4d09-895b-aa5e9c22b2b2",
+                                        "description": "A customer responsibility."
+                                    }
+                                ]
+                            },
+                            "responsible-roles": [
+                                 {"role-id": "cloud-service-provider"},
+                                 {"role-id": "customer"}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+      ]
+    },
+    "back-matter": {
+        "resources": [
+            {"uuid": "21f7e477-4aea-432c-95e0-65b678ecdc89",
+            "title" : "FedRAMP High Baseline",
+            "rlinks" : [
+                {"href": "https://raw.githubusercontent.com/OSCAL-Foundation/fedramp-resources/refs/heads/main/baselines/rev5/json/FedRAMP_rev5_HIGH-baseline_profile.json",
+                "media-type" : "application/oscal+json"}
+            ]}
+        ]
+    }
+    
+  }
+}

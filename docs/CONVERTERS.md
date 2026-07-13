@@ -1,164 +1,194 @@
-# OSCAL Format Converter
+# OSCAL Format Converters
 
-Converts between OSCAL XML and JSON formats in either direction. 
+All conversion logic lives in `oscal_converter.py`:
 
-**Current state**: Conversion uses the NIST-published XSLT 3.x format conversion files, processed using the `saxonche` library.
+| Functionality | API |
+|---|---|
+| XML ↔ JSON format conversion | `OSCALConverter` class |
+| OSCAL markup-line / markup-multiline ↔ CommonMark | `oscal_markdown_to_html`, `oscal_html_to_markdown` |
 
-**Target state**: Conversion uses pure Python code and the NIST-published OSCAL metaschema files.
+When using the OSCAL content classes (`Catalog`, `Profile`, etc.), both converters are
+invoked automatically — you do not need to call them directly. This document covers
+their APIs for cases where direct access is useful.
 
-See [usage notes](#usage) below for more information.
+---
 
-## Overview
+## XML ↔ JSON Conversion (`oscal_converter.py`)
 
-This module provides Python functions to perform bidirectional conversion between OSCAL XML and JSON formats using:
-- **saxonche**: Open-source Python bindings for Saxon XSLT 3.0 processor
-- **NIST OSCAL XSLT Converters**: Official format converters from NIST
+Format conversion is pure Python, driven by the parsed NIST resolved-metaschema index
+stored in the support database. No external XSLT processor is required.
 
-All conversion functions work entirely in memory with string inputs and outputs, making them perfect for web APIs, microservices, database operations, and stream processing.
+### `OSCALConverter` class
 
-## Features
+The primary API. Build an instance from the support database using `from_support()`,
+then call `xml_to_json()` or `json_to_xml()` on the instance.
 
-- ✅ **In-Memory Operation**: All conversions use string inputs/outputs (no file I/O)
-- ✅ **Full XSLT 3.0 Support**: Uses saxonche for complete XSLT 3.0/XPath 3.1 compliance
-- ✅ **Bidirectional Conversion**: XML ↔ JSON for all OSCAL models
-- ✅ **All OSCAL Models Supported**:
-  - Catalog
-  - Profile
-  - System Security Plan (SSP)
-  - Component Definition
-  - Assessment Plan (SAP)
-  - Assessment Results (SAR)
-  - Plan of Action and Milestones (POA&M)
-- ✅ **Error Handling**: Comprehensive exception handling and validation
-- ✅ **Type Hints**: Full type annotations for better IDE support
-- ✅ **API-Ready**: Perfect for web services, databases, and streaming applications
-
-## Usage
-
-When using the OSCAL content classes, there is no setup to use the converters. The OSCAL support module maintains the NIST OSCAL XSLT converters in its support database. The OSCAL class and support module work together and use the converters as needed. 
-
-**The information below is only necessary for using the `oscal_converters.py` module separate from the the rest of the OSCAL library.**
-
-### Requirements
-
-- Python 3.9+
-- saxonche library
-- NIST OSCAL XSLT converters
-
-### Setup
-
-Place `oscal_converter.py` in your project directory or Python path.
-
-Install SaxonC-HE
-
-```bash
-
-pip install saxonche
-
-```
-
-### Download OSCAL XSLT Converters
-
-Download the official NIST OSCAL XSLT converters from the OSCAL releases.
-
-There is a separate XSLT conversion file for each OSCAL model. These are updated with each published version of OSCAL. 
-
-While you can likely just use the latest OSCAL 1.x.x files for all prior 1.x.x versions of OSCAL, it is best to use the converter for the OSCAL syntax version declared in the OSCAL content you are converting. 
-
-```bash
-# Download the latest OSCAL release
-wget https://github.com/usnistgov/OSCAL/releases/download/{version}/oscal-{version}.zip
-
-# Extract converters
-unzip oscal-{version}.zip "xml/convert/*"
-```
-
-Replace `{version}` with the desired OSCAL version, expressed as `v1.#.#`, such as `v1.2.1`.
-
-The converters are XSLT files named:
-- `oscal_{model}_xml-to-json-converter.xsl`
-- `oscal_{model}_json-to-xml-converter.xsl`
-
-
-
-### Basic XML to JSON Conversion
+#### `OSCALConverter.from_support(model, version, support=None)`
 
 ```python
-from oscal_converter import oscal_xml_to_json
+from oscal.oscal_converter import OSCALConverter
 
-# Load the XSLT converter as a string (from file, database, API, etc.)
-with open('oscal_catalog_xml-to-json-converter.xsl', 'r') as f:
-    xslt_converter = f.read()
-
-# Your OSCAL XML content as a string (from any source)
-xml_content = '''<?xml version="1.0"?>
-<catalog xmlns="http://csrc.nist.gov/ns/oscal/1.0">
-    <metadata>
-        <title>My Catalog</title>
-    </metadata>
-</catalog>'''
-
-# Convert in memory - returns JSON string
-json_result = oscal_xml_to_json(
-    xml_content=xml_content,
-    xsl_converter=xslt_converter,
-    json_indent=True
-)
-
-# Use the result (send to API, store in DB, etc.)
-print(json_result)
+converter = OSCALConverter.from_support("catalog", "v1.1.3")
 ```
 
-### Basic JSON to XML Conversion
+Parameters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `model` | `str` | OSCAL model name, e.g. `"catalog"`, `"system-security-plan"` |
+| `version` | `str` | OSCAL version string, e.g. `"v1.1.3"` |
+| `support` | `OSCALSupport \| None` | Support singleton; uses `get_support()` if `None` |
+
+Returns an `OSCALConverter` instance, or `None` when no metaschema index exists for
+the requested version and model. Run `support.update()` to populate missing indexes.
+
+For versions older than `v1.1.1` (before NIST published resolved metaschema files),
+`from_support` automatically falls back to the `v1.1.1` index as the closest
+approximation and logs a warning.
+
+#### `xml_to_json(xml_content) → str | None`
+
+Convert an OSCAL XML document string to OSCAL JSON.
 
 ```python
-from oscal_converter import oscal_json_to_xml
+with open("catalog.xml") as f:
+    xml_str = f.read()
 
-# Load the XSLT converter as a string
-with open('oscal_profile_json-to-xml-converter.xsl', 'r') as f:
-    xslt_converter = f.read()
+converter = OSCALConverter.from_support("catalog", "v1.1.3")
+json_str  = converter.xml_to_json(xml_str)
 
-# Your OSCAL JSON content as a string
-json_content = '''{
-  "profile": {
-    "uuid": "...",
-    "metadata": {...}
-  }
-}'''
-
-# Convert in memory - returns XML string
-xml_result = oscal_json_to_xml(
-    json_content=json_content,
-    xsl_converter=xslt_converter,
-    validate_json=True
-)
-
-# Use the result
-print(xml_result)
+if json_str:
+    with open("catalog.json", "w") as f:
+        f.write(json_str)
 ```
 
+Returns the JSON string on success, or `None` on parse/conversion error.
+
+**Markup fields**: OSCAL `markup-line` and `markup-multiline` XML content is
+automatically converted to CommonMark during this step (via `oscal_converters.py`).
+
+#### `json_to_xml(json_content) → str | None`
+
+Convert an OSCAL JSON document string to OSCAL XML.
+
+```python
+with open("catalog.json") as f:
+    json_str = f.read()
+
+converter = OSCALConverter.from_support("catalog", "v1.1.3")
+xml_str   = converter.json_to_xml(json_str)
+```
+
+Returns the XML string (with `<?xml ...?>` declaration) on success, or `None` on error.
+
+**Markup fields**: CommonMark content in JSON `markup-line` and `markup-multiline`
+fields is automatically converted to OSCAL-conformant XML child elements.
+
+---
+
+### Constructing from a model index directly
+
+If you already have a parsed model index dict (e.g. from `support.get_metaschema_index()`),
+you can construct a converter directly:
+
+```python
+from oscal.oscal_support import get_support
+from oscal.oscal_converter import OSCALConverter
+
+support = get_support()
+index   = support.get_metaschema_index("v1.1.3", "catalog")
+converter = OSCALConverter(index)
+```
+
+---
+
+### Module-level convenience functions
+
+Three module-level functions are available for one-off conversions:
+
+```python
+from oscal.oscal_converter import xml_to_json, json_to_xml, converter_for
+
+# One-off conversion — builds a temporary converter instance each call
+json_str = xml_to_json(xml_str, model_index)
+xml_str  = json_to_xml(json_str, model_index)
+
+# Obtain a reusable converter (equivalent to OSCALConverter.from_support)
+converter = converter_for("catalog", "v1.1.3")
+```
+
+`xml_to_json` and `json_to_xml` each accept a `model_index` dict (from
+`support.get_metaschema_index()`). Use `converter_for` when you need a reusable
+converter without the class syntax.
+
+---
+
+### All-in-one pattern (recommended)
+
+The simplest way to convert files is to load with an OSCAL content class, then `dump()`
+in the target format. This handles version detection, model identification, and
+converter selection automatically:
+
+```python
+from oscal import OSCAL
+
+# Load any supported format (XML, JSON, or YAML)
+doc = OSCAL.load("catalog.xml")
+
+# Save in a different format — conversion happens automatically
+doc.dump("catalog.json", format="json", pretty_print=True)
+doc.dump("catalog.yaml", format="yaml")
+```
+
+---
+
+## Markup Conversion
+
+OSCAL `markup-line` and `markup-multiline` fields use OSCAL-flavoured CommonMark in
+JSON/YAML and equivalent HTML/XML mixed-content in XML. These functions handle the
+conversion between them.
+
+These are called automatically by `OSCALConverter` during XML↔JSON conversion. Call
+them directly only when working with OSCAL markup strings outside of format conversion.
+
+### `oscal_markdown_to_html(markdown_text, multiline=False) → str`
+
+Convert an OSCAL CommonMark string to an HTML fragment.
+
+```python
+from oscal.oscal_converters import oscal_markdown_to_html
+
+# markup-line (inline only, no block elements)
+html = oscal_markdown_to_html("This is **bold** and `code`.", multiline=False)
+
+# markup-multiline (block elements preserved)
+html = oscal_markdown_to_html("# Heading\n\nParagraph text.", multiline=True)
+```
+
+| `multiline` | Behaviour |
+|---|---|
+| `False` (default) | Inline elements only; outer `<p>` tags stripped |
+| `True` | Block elements preserved; bare text wrapped in `<p>` |
+
+Raw HTML/XML tags in the source (e.g. `<BREAK>`) are escaped as `&lt;BREAK&gt;` so
+they survive the round-trip unmodified.
+
+### `oscal_html_to_markdown(html_text, multiline=True) → str`
+
+Convert an HTML fragment to OSCAL CommonMark.
+
+```python
+from oscal.oscal_converters import oscal_html_to_markdown
+
+md = oscal_html_to_markdown("<p>This is <strong>bold</strong>.</p>", multiline=True)
+```
+
+OSCAL `<insert>` elements are converted to `{{ insert: type, id-ref }}` syntax.
+
+---
 
 ## References
 
 - **OSCAL Project**: https://pages.nist.gov/OSCAL/
 - **OSCAL GitHub**: https://github.com/usnistgov/OSCAL
-- **Saxon Documentation**: https://www.saxonica.com/documentation/
-- **saxonche PyPI**: https://pypi.org/project/saxonche/
-
-## License
-
-This code is provided under the MIT License and carries no warranty.
-
-NIST OSCAL work products are in the public domain.
-
-The saxonche library is licensed under the Mozilla Public License 2.0 (MPL-2.0).
-
-## Support
-
-For OSCAL-specific questions:
-- OSCAL Gitter: https://gitter.im/usnistgov-OSCAL/Lobby
-- OSCAL Issues: https://github.com/usnistgov/OSCAL/issues
-
-For saxonche issues:
-- Saxon Support: https://saxonica.plan.io
-- Stack Overflow: Use tag `saxon`
+- **NIST Metaschema**: https://pages.nist.gov/metaschema/

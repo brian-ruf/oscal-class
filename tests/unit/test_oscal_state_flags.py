@@ -13,7 +13,6 @@ class TestOscalStateFlags:
         assert hasattr(obj, "is_local")
         assert hasattr(obj, "is_cached")
         assert hasattr(obj, "is_read_only")
-        assert hasattr(obj, "is_synced")
         assert hasattr(obj, "is_unsaved")
 
     def test_read_only_is_settable(self):

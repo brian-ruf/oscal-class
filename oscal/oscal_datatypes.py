@@ -1,17 +1,39 @@
-from loguru import logger
+"""
+oscal_datatypes — OSCAL Metaschema data type definitions and helpers.
+
+Defines the OSCAL Metaschema primitive data types and their validation
+patterns, and provides a helper for producing OSCAL-conformant timezone-aware
+date-time strings.
+
+Module constants:
+    OSCAL_DATATYPES (dict): Mapping of OSCAL Metaschema data type name (str) to
+        a definition dict. Each definition contains the keys ``base-type`` (str),
+        ``xml-pattern`` (str regex), ``json-pattern`` (str regex),
+        ``recommended-pattern`` (str regex), ``documentation`` (str),
+        ``remarks`` (str), and ``links`` (list of {"title", "url"} dicts).
+        Covers types such as ``string``, ``token``, ``uuid``, ``uri``,
+        ``date-time-with-timezone``, ``integer``, ``boolean``, ``markup-line``,
+        and ``markup-multiline``.
+"""
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
     """
-    Converts a date and time to UTC and outputs an OSCAL date-time-with-timezone string.
-    Optional Parameters:
-    - date_time (datetime or str): A date and time to convert to a formatted string.
-       Can be a datetime object or a string that can be parsed into datetime.
-       Default is the current date and time
-    - format (str): The formatting string to use
-        default is "%Y-%m-%dT%H:%M:%SZ" (OSCAL standard format)
+    Convert a date/time to UTC and format it as an OSCAL date-time-with-timezone string.
 
-    Returns a formatted date time string.
-    If an error occurs, returns an empty string.
+    Args:
+        date_time (datetime | str, optional): The date and time to convert. May be a
+            ``datetime`` object or an ISO-8601 string parseable into one. Naive values
+            are assumed to be UTC. Defaults to the current date and time.
+        format (str, optional): The ``strftime`` format string to apply.
+            Defaults to ``"%Y-%m-%dT%H:%M:%SZ"`` (the OSCAL standard format).
+
+    Returns:
+        str: The formatted date-time string, or an empty string if parsing or
+            formatting fails.
     """
     from datetime import datetime, timezone
 
@@ -95,7 +117,7 @@ OSCAL_DATATYPES = {
     "date-time": {
         "base-type": "string",
         "xml-pattern": r"(((2000|2400|2800|(19|2[0-9](0[48]|[2468][048]|[13579][26])))-02-29)|(((19|2[0-9])[0-9]{2})-02-(0[1-9]|1[0-9]|2[0-8]))|(((19|2[0-9])[0-9]{2})-(0[13578]|10|12)-(0[1-9]|[12][0-9]|3[01]))|(((19|2[0-9])[0-9]{2})-(0[469]|11)-(0[1-9]|[12][0-9]|30)))T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(\.[0-9]+)?(Z|(-((0[0-9]|1[0-2]):00|0[39]:30)|\+((0[0-9]|1[0-4]):00|(0[34569]|10):30|(0[58]|12):45)))?",
-        "json-pattern": r"^(((2000|2400|2800|(19|2[0-9](0[48]|[2468][048]|[13579][26])))-02-29)|(((19|2[0-9])[0-9]{2})-02-(0[1-9]|1[0-9]|2[0-8]))|(((19|2[0-9])[0-9]{2})-(0[13578]|10|12)-(0[1-9]|[12][0-9]|3[01]))|(((19|2[0-9])[0-9]{2})-(0[469]|11)-(0[1-9]|[12][0-9]|30)))T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(\\.[0-9]+)?(Z|(-((0[0-9]|1[0-2]):00|0[39]:30)|\\+((0[0-9]|1[0-4]):00|(0[34569]|10):30|(0[58]|12):45)))?$",
+        "json-pattern": r"^(((2000|2400|2800|(19|2[0-9](0[48]|[2468][048]|[13579][26])))-02-29)|(((19|2[0-9])[0-9]{2})-02-(0[1-9]|1[0-9]|2[0-8]))|(((19|2[0-9])[0-9]{2})-(0[13578]|10|12)-(0[1-9]|[12][0-9]|3[01]))|(((19|2[0-9])[0-9]{2})-(0[469]|11)-(0[1-9]|[12][0-9]|30)))T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(\.[0-9]+)?(Z|(-((0[0-9]|1[0-2]):00|0[39]:30)|\+((0[0-9]|1[0-4]):00|(0[34569]|10):30|(0[58]|12):45)))?$",
         "recommended-pattern": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[-+]\d{2}:\d{2})",
         "documentation": "A string representing a point in time, optionally qualified by a timezone. This date and time value is formatted according to “date-time” as defined RFC3339, except the timezone (time-offset) is optional.\n\nThis is the same as date-time-with-timezone, except the timezone portion is optional. This can be used to support formats that have ambiguous timezones for date/time values.",
         "remarks": "",
@@ -109,7 +131,7 @@ OSCAL_DATATYPES = {
     "date-time-with-timezone": {
         "base-type": "string",
         "xml-pattern": r"(((2000|2400|2800|(19|2[0-9](0[48]|[2468][048]|[13579][26])))-02-29)|(((19|2[0-9])[0-9]{2})-02-(0[1-9]|1[0-9]|2[0-8]))|(((19|2[0-9])[0-9]{2})-(0[13578]|10|12)-(0[1-9]|[12][0-9]|3[01]))|(((19|2[0-9])[0-9]{2})-(0[469]|11)-(0[1-9]|[12][0-9]|30)))T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(\.[0-9]+)?(Z|(-((0[0-9]|1[0-2]):00|0[39]:30)|\+((0[0-9]|1[0-4]):00|(0[34569]|10):30|(0[58]|12):45)))",
-        "json-pattern": r"^(((2000|2400|2800|(19|2[0-9](0[48]|[2468][048]|[13579][26])))-02-29)|(((19|2[0-9])[0-9]{2})-02-(0[1-9]|1[0-9]|2[0-8]))|(((19|2[0-9])[0-9]{2})-(0[13578]|10|12)-(0[1-9]|[12][0-9]|3[01]))|(((19|2[0-9])[0-9]{2})-(0[469]|11)-(0[1-9]|[12][0-9]|30)))T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(\\.[0-9]+)?(Z|(-((0[0-9]|1[0-2]):00|0[39]:30)|\\+((0[0-9]|1[0-4]):00|(0[34569]|10):30|(0[58]|12):45)))$",
+        "json-pattern": r"^(((2000|2400|2800|(19|2[0-9](0[48]|[2468][048]|[13579][26])))-02-29)|(((19|2[0-9])[0-9]{2})-02-(0[1-9]|1[0-9]|2[0-8]))|(((19|2[0-9])[0-9]{2})-(0[13578]|10|12)-(0[1-9]|[12][0-9]|3[01]))|(((19|2[0-9])[0-9]{2})-(0[469]|11)-(0[1-9]|[12][0-9]|30)))T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(\.[0-9]+)?(Z|(-((0[0-9]|1[0-2]):00|0[39]:30)|\+((0[0-9]|1[0-4]):00|(0[34569]|10):30|(0[58]|12):45)))$",
         "recommended-pattern": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[-+]\d{2}:\d{2})",
         "documentation": "A string representing a point in time in a given timezone. This date and time value is formatted according to “date-time” as defined RFC3339\n\nThis type requires that the time-offset (timezone) is always provided. This use of timezone ensures that date/time information exchanged across timezones is unambiguous.",
         "remarks": "",
@@ -123,7 +145,7 @@ OSCAL_DATATYPES = {
     "day-time-duration": {
         "base-type": "string",
         "xml-pattern": r"-?P([0-9]+D(T(([0-9]+H([0-9]+M)?(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+M(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+|[0-9]+(\.[0-9]+)?)S))?)|T(([0-9]+H([0-9]+M)?(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+M(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+|[0-9]+(\.[0-9]+)?)S)",
-        "json-pattern": r"^-?P([0-9]+D(T(([0-9]+H([0-9]+M)?(([0-9]+|[0-9]+(\\.[0-9]+)?)S)?)|([0-9]+M(([0-9]+|[0-9]+(\\.[0-9]+)?)S)?)|([0-9]+|[0-9]+(\\.[0-9]+)?)S))?)|T(([0-9]+H([0-9]+M)?(([0-9]+|[0-9]+(\\.[0-9]+)?)S)?)|([0-9]+M(([0-9]+|[0-9]+(\\.[0-9]+)?)S)?)|([0-9]+|[0-9]+(\\.[0-9]+)?)S)$",
+        "json-pattern": r"^-?P([0-9]+D(T(([0-9]+H([0-9]+M)?(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+M(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+|[0-9]+(\.[0-9]+)?)S))?)|T(([0-9]+H([0-9]+M)?(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+M(([0-9]+|[0-9]+(\.[0-9]+)?)S)?)|([0-9]+|[0-9]+(\.[0-9]+)?)S)$",
         "recommended-pattern": r"([+-]?)(\\d+)((?:\\.|e|E)\\d+)?",
         "documentation": "An amount of time quantified in days, hours, minutes, and seconds based on ISO-8601 durations (see also RFC3339 appendix A).",
         "remarks": "",
@@ -137,7 +159,7 @@ OSCAL_DATATYPES = {
     "decimal": {
         "base-type": "number",
         "xml-pattern": r"\S(.*\S)?",
-        "json-pattern": r"(\\+|-)?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)",
+        "json-pattern": r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$",
         "recommended-pattern": r"([+-]?)(\\d+)((?:\\.|e|E)\\d+)?",
         "documentation": "A real number.",
         "remarks": "A real number expressed using a whole and optional fractional part separated by a period.",
@@ -160,7 +182,7 @@ OSCAL_DATATYPES = {
     "hostname": {
         "base-type": "string",
         "xml-pattern": r"",
-        "json-pattern": r"^\\S(.*\\S)?$",
+        "json-pattern": r"^\S(.*\S)?$",
         "recommended-pattern": r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*",
         "documentation": "An internationalized Internet host name string formatted according to section 2.3.2.3 of RFC5890.",
         "remarks": "",
@@ -229,7 +251,7 @@ OSCAL_DATATYPES = {
     "string": {
         "base-type": "string",
         "xml-pattern": r"\S(.*\S)?",
-        "json-pattern": r"^\\S(.*\\S)?$",
+        "json-pattern": r"^\S(.*\S)?$",
         "recommended-pattern": r".*",
         "documentation": "A non-empty string of unicode characters with leading and trailing whitespace disallowed.\n\nWhitespace is: `U+9`, `U+10`, `U+32` or `[ \n\t]+`.",
         "remarks": "",
@@ -238,7 +260,7 @@ OSCAL_DATATYPES = {
     "token": {
         "base-type": "string",
         "xml-pattern": r"(\p{L}|_)(\p{L}|\p{N}|[.\-_])*",
-        "json-pattern": r"^(\\p{L}|_)(\\p{L}|\\p{N}|[.\\-_])*$",
+        "json-pattern": r"^[a-zA-Z_][a-zA-Z0-9.\-_]*$",
         "recommended-pattern": r"(\p{L}|_)(\p{L}|\p{N}|[.\-_])*",
         "documentation": "A non-colonized name as defined by XML Schema Part 2: Datatypes Second Edition.",
         "remarks": "",
