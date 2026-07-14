@@ -1,109 +1,235 @@
 # The OSCAL Support Module
 
-The OSCAL Support Module acquires, stores, and serves local copies of NIST-published OSCAL support files used for validation and format conversion.
+The OSCAL Support Module acquires, stores, and serves local copies of NIST-published
+OSCAL support files used for validation and format conversion.
 
-The support database distributed with this library is pre-populated with all OSCAL versions available at release time, enabling offline and air-gapped operation.
+The support database distributed with this library is pre-populated with all OSCAL
+versions available at release time, enabling offline and air-gapped operation.
 
-## Designed For Air-Gapped Environments
+---
 
-The module keeps OSCAL support artifacts in a local database so applications can validate and convert OSCAL content without a live network dependency.
+## Designed for Air-Gapped Environments
 
-When needed, you can update support content from an internet-connected machine and then move the updated database to offline environments.
+The module keeps OSCAL support artifacts in a local SQLite database so applications
+can validate and convert OSCAL content without a live network dependency.
+
+When needed, you can update support content from an internet-connected machine and
+then move the updated database to offline environments.
+
+---
 
 ## Database Defaults
 
-- Default support DB path: ./support/oscal_support.db (relative to runtime working directory)
-- Default DB type: sqlite3
-- Support files are cached in the database and may be compressed for size efficiency
+| Setting | Default |
+|---|---|
+| Path | `./support/oscal_support.db` (relative to runtime working directory) |
+| Type | `sqlite3` |
+| Compression | Support files are compressed in the database for size efficiency |
+
+> **Path note**: `get_support()` resolves the default path relative to the **current
+> working directory at runtime**, not the package root. When running `pytest` from the
+> repo root the DB is `support/oscal_support.db`; when running scripts from inside
+> `tests/` the DB used is `tests/support/oscal_support.db`. Both copies exist in the
+> repo.
+
+---
 
 ## Primary API
 
-The canonical class name is OSCALSupport.
-
-The module also exposes a singleton configuration/access pattern:
+The canonical class name is `OSCALSupport`. Always access it through the module-level
+functions rather than instantiating it directly.
 
 ```python
 from oscal.oscal_support import configure_support, get_support
 
-# Optional explicit configuration before loading any OSCAL content
-configure_support(db_path="/path/support.db", init_mode="auto")
+# Optional explicit configuration — call before loading any OSCAL content
+# if you need non-default settings.
+configure_support(db_path="/path/to/support.db", init_mode="auto")
 
-# Shared support object used by OSCAL classes
+# Obtain the shared support singleton (creates it with defaults if needed)
 support = get_support()
 ```
 
-configure_support supports both naming styles for compatibility:
+### `configure_support`
 
-- Pythonic aliases: db_path, init_mode
-- Legacy names: support_file, db_init_mode
+```python
+configure_support(
+    db_path="./support/oscal_support.db",  # path to the SQLite database file
+    init_mode="auto",                       # database initialization mode
+)
+```
 
-Supported init_mode values:
+Both Pythonic keyword names and legacy positional names are accepted:
 
-- auto: extract packaged DB when missing/empty, otherwise use existing DB
-- extract: always try packaged extraction; create empty DB if extraction fails
-- create: create an empty DB from scratch
+| Pythonic | Legacy positional |
+|---|---|
+| `db_path` | `support_file` |
+| `init_mode` | `db_init_mode` |
+
+**`init_mode` values:**
+
+| Value | Behaviour |
+|---|---|
+| `"auto"` | Extract packaged DB when file is missing or empty; use existing file otherwise |
+| `"extract"` | Always try to extract the packaged DB; create an empty DB if extraction fails |
+| `"create"` | Always create an empty DB from scratch |
+
+### `get_support`
+
+Returns the shared `OSCALSupport` singleton, creating it with default settings if it
+does not yet exist. This is the function called internally by all OSCAL content classes.
+
+---
 
 ## Updating Support Content
-
-Use update on OSCALSupport to refresh support data:
 
 ```python
 support = get_support()
 
-# Check for new OSCAL releases (default)
+# Check for new OSCAL releases and fetch any that are not yet in the DB (default)
 support.update()
-support.update(mode="new")
+support.update(mode="new")    # same as default
 
 # Re-fetch all supported versions
 support.update(mode="all")
 
-# Re-fetch a specific version
-support.update(mode="v1.0.0")
+# Re-fetch a specific version only
+support.update(mode="v1.0.4")
 ```
 
-For compatibility, update(fetch="...") is still accepted.
+For backward compatibility, `update(fetch="...")` is also accepted as an alias for
+`update(mode="...")`.
+
+---
 
 ## Core Methods
 
-Commonly used methods include:
+### `get_asset(version, model, asset_type) → str | None`
 
-- get_asset(version, model, asset_type)
-- list_models(version="all")
-- is_valid_model(model, version="all")
-- latest_version()
-- load_file(name, as_bytes=False)
+Return the stored support file content for the given version, model, and asset type.
+Returns `None` if the asset is not found.
 
-Compatibility wrappers remain available:
+```python
+content = support.get_asset("v1.1.3", "catalog", "metaschema")
+```
 
-- asset(...)
-- enumerate_models(...)
-- is_model_valid(...)
-- get_latest_version()
-- load_file(..., binary=...)
+Common asset types stored in the database:
 
-## Compatibility Notes
+| Type | Contents |
+|---|---|
+| `"metaschema"` | NIST resolved-metaschema XML |
+| `"document-model"` | Model root-name registration (internal) |
+| `"processed"` | Parsed metaschema index (JSON) used for validation and conversion |
 
-The previous class name OSCAL_support is retained as an alias to OSCALSupport for backward compatibility.
+### `list_models(version="all") → list[str]`
 
-Likewise, setup_support(...) is retained as a compatibility helper and forwards to configure_support(...).
+Return the list of OSCAL model names available for the given version.
+
+```python
+support.list_models("v1.1.3")
+# → ["catalog", "profile", "system-security-plan", ...]
+
+support.list_models()          # all models across all versions
+support.list_models("all")     # same
+```
+
+### `is_valid_model(model, version="all") → bool`
+
+```python
+support.is_valid_model("catalog", "v1.1.3")  # True
+support.is_valid_model("bogus")              # False
+```
+
+### `is_valid_version(version) → bool`
+
+```python
+support.is_valid_version("v1.1.3")  # True
+support.is_valid_version("v9.9.9")  # False
+```
+
+### `latest_version() → str | None`
+
+Return the highest version string in the support database.
+
+```python
+support.latest_version()   # e.g. "v1.2.1"
+```
+
+### `get_metaschema_index(version, model) → dict | None`
+
+Return the parsed metaschema index for a given version and model. Results are cached
+in memory for up to 24 hours. Returns `None` when no index has been built for the
+requested combination.
+
+```python
+index = support.get_metaschema_index("v1.1.3", "catalog")
+```
+
+### `add_asset(version, model, asset_type, content, filename=None) → bool`
+
+Store a new or replacement asset in the support database. `content` may be `str` or
+`bytes`. Returns `True` on success.
+
+### `load_file(name, binary=False, *, as_bytes=None) → str | bytes | None`
+
+Load a file from the packaged `oscal.data` resources (not from the support database).
+Used internally to load template files for `new()`. Results are cached in memory.
+
+```python
+content     = support.load_file("catalog.xml")            # str (default)
+raw_bytes   = support.load_file("catalog.xml", binary=True)
+raw_bytes   = support.load_file("catalog.xml", as_bytes=True)  # compat alias
+```
+
+`as_bytes` is a keyword-only compatibility alias for `binary`; either form works.
+
+### `export_support_files(export_path="./support_files") → bool`
+
+Export all support files to the filesystem, organized by version. Useful for
+inspection or air-gapped transfer.
+
+### `download_schemas(support_dir, fetch="all") → bool`
+
+Download OSCAL XML and JSON schema files directly from GitHub to the filesystem.
+These are stored on disk (not in the support DB) and can be used for external
+validation tools.
+
+```python
+support.download_schemas("./schemas")            # all versions
+support.download_schemas("./schemas", fetch="v1.2.1")  # one version
+```
+
+---
+
+## Compatibility Aliases
+
+| Current name | Deprecated alias |
+|---|---|
+| `OSCALSupport` | `OSCAL_support` |
+| `configure_support(...)` | `setup_support(...)` |
+| `get_asset(...)` | `asset(...)` |
+| `list_models(...)` | `enumerate_models(...)` |
+| `is_valid_model(...)` | `is_model_valid(...)` |
+| `latest_version()` | `get_latest_version()` |
+| `load_file(..., binary=True)` | `load_file(..., as_bytes=True)` |
+
+---
 
 ## Packaging Update Utility
 
-This repository includes an internal utility script that updates support assets and re-zips the distributable support DB payload:
-
-- oscal/update_support.py
-
-That utility is intended for library maintenance workflows, not typical library consumers.
-
-Current usage:
+The repository includes an internal maintenance script that re-fetches support assets
+and rebuilds the distributable support DB:
 
 ```bash
-python oscal/update_support.py --new
-python oscal/update_support.py --all
+python oscal/update_support.py --new   # fetch any new OSCAL versions
+python oscal/update_support.py --all   # re-fetch all versions
 ```
 
-It configures support via configure_support(db_path=..., init_mode="auto") and calls support_obj.update(mode=...).
+This script is intended for library maintainers, not library consumers.
+
+---
 
 ## Future Direction
 
-The support layer currently targets SQLite while using ANSI SQL-oriented patterns intended to ease future support for additional relational backends.
+The support layer currently targets SQLite while using ANSI SQL-oriented patterns
+intended to ease future support for additional relational backends.

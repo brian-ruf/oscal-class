@@ -1,10 +1,5 @@
 """Regression tests for HTML -> markdown conversion in oscal_markup."""
-import sys
-from pathlib import Path
-
-# Import directly from module file to avoid package-level dependencies.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "oscal"))
-from oscal_converters import oscal_html_to_markdown
+from oscal.oscal_converter import oscal_html_to_markdown
 
 
 def test_insert_self_closing_standard_order():

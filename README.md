@@ -1,139 +1,212 @@
 # OSCAL Python Library
 
-This is a collection of python modules for [OSCAL](https://pages.nist.gov/OSCAL) XML, JSON and YAML content. It provides classes to perform validation, format conversion and some content manipulation. 
+A Python library for working with [OSCAL](https://pages.nist.gov/OSCAL) (Open Security
+Controls Assessment Language) content. Provides classes to load, validate, convert, and
+manipulate OSCAL XML, JSON, and YAML documents for all published OSCAL versions and
+models.
 
-It handles all published OSCAL versions, and can "learn" new versions as they are published by NIST.
+---
 
-Please submit feedback, bug reports and enhancement requests as [GitHub issues](https://github.com/brian-ruf/oscal-class/issues). Bug fixes and backward-compatible code contributions are welcome. Please consider collaborating on any breaking enhancements.
+## Features
 
-### Designed for Air Gapped Environments
+- **All OSCAL models**: Catalog, Profile, Mapping, Component Definition, SSP, Assessment Plan, Assessment Results, POA&M
+- **All OSCAL formats**: XML, JSON, and YAML — load any, save to any
+- **All published OSCAL versions**: pre-populated support database covers every NIST release; update to learn new versions as they are published
+- **Pure-Python format conversion**: no external XSLT processor required
+- **Metaschema-based validation**: structure, data-type, allowed-value, and cardinality checks against the NIST metaschema
+- **Import resolution**: automatically loads referenced catalogs, profiles, and other documents; surfaces structured failure details when imports cannot be resolved
+- **Path-based querying**: XPath-inspired syntax for navigating OSCAL content using either XML element names or JSON key names
+- **Air-gapped operation**: the bundled support database enables full offline use; update from an internet-connected machine and transfer the database file
 
-The `OSCAL_support` class includes an _OSCAL Support Module_. This is a single SQLite3 database file that contains the NIST-published support files for all OSCAL formats, versions and models. The module enables support functionality in an air gapped environment.
+---
 
-When a new version of OSCAL is published, the support module can be updated on an Internet-connected computer and conveyed into an air gapped environment for use.
-
-#### Inspection
-
-Inspection of the OSCAL Support Module is possible using any SQLite database viewer. Note that the support files are ZIP compressed within the database; however, no encryption is used in order to facilitate inspection. 
-
-For more information see the [Support Module](docs/SUPPORT_MODULE.md) documentation.
-
-## Setup
-
-The Python OSCAL Class is intended to be used as a library for your OSCAL python projects. 
-
-Add the following to your `requirements.txt` file or `pyproject.toml` file:
-
-- Latest published version use: `oscal`
-
-- Most up-to-date, unpublished version use: `git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal`
-
-Please see the [Setup documentation](./docs/SETUP.md) for setup instructions and related details.
-
-## Usage: Quick Start
-
-Installation
+## Installation
 
 ```bash
 pip install oscal
 ```
 
-To use the OSCAL classes in your code, import from the `oscal` library:
+Latest unreleased development version:
+
+```bash
+pip install git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal
+```
+
+---
+
+## Quick Start
+
+### Create a new catalog
 
 ```python
 from oscal import Catalog
 
-# Create a new catalog object
 catalog = Catalog.new(
-    title="My Catalog", 
-    version="DRAFT-1.0", 
-    published="2026-03-02T00:00:00Z"
+    title="My Catalog",
+    version="1.0.0",
+    published="2026-03-02T00:00:00Z",
 )
 
-# Create a control group and controls
-catalog.create_control_group("", "ac", "Access Control", 
-                             props=[{"name":"label", "value": "AC"}, 
-                                    {"name":"sort-id", "value": "001"}])
+catalog.create_control_group(
+    parent_id="", id="ac", title="Access Control",
+    props=[{"name": "label", "value": "AC"},
+           {"name": "sort-id", "value": "001"}],
+)
+catalog.create_control(
+    parent_id="ac", id="ac-1",
+    title="Access Control Policy and Procedures",
+    props=[{"name": "label", "value": "AC-1"},
+           {"name": "sort-id", "value": "001-001"}],
+    statements=["Develop, document, and disseminate an access control policy."],
+)
 
-catalog.create_control("ac", "ac-1", "Access Control Policy and Procedures",
-                       props=[{"name":"label", "value": "AC-1"}, 
-                              {"name":"sort-id", "value": "001-001"}],
-                       statements=["The organization develops, documents, and disseminates an access control policy that addresses purpose, scope, roles, responsibilities, management commitment, coordination among organizational entities, and compliance."])
-
-catalog.create_control("ac", "ac-2", "Access Control Enforcement",
-                       props=[{"name":"label", "value": "AC-2"}, 
-                              {"name":"sort-id", "value": "001-002"}],
-                       statements=["The organization enforces access control policies through technical and administrative mechanisms."])
-
-# Save to multiple formats
-catalog.dump("test_catalog.json", format="json", pretty_print=True)
-catalog.dump("test_catalog.xml",  format="xml",  pretty_print=True)
-catalog.dump("test_catalog.yaml", format="yaml", pretty_print=True)
-
+# Save to XML, JSON, and YAML in one step each
+catalog.dump("catalog.json", format="json", pretty_print=True)
+catalog.dump("catalog.xml",  format="xml",  pretty_print=True)
+catalog.dump("catalog.yaml", format="yaml")
 ```
 
-### Load OSCAL content from a file
-
-Open OSCAL content directly from a local file:
+### Load and convert existing content
 
 ```python
 from oscal import Catalog
 
-# Load from file
+# Load from any supported format
 catalog = Catalog.load("./catalog.xml")
 
-# Save to other formats
-catalog.dump("test_catalog.json", format="json", pretty_print=True)
-catalog.dump("test_catalog.xml", format="xml", pretty_print=True)
-catalog.dump("test_catalog.yaml", format="yaml", pretty_print=True)
-
+if catalog:
+    print(f"{catalog.title} ({catalog.oscal_version})")
+    catalog.dump("catalog.json", format="json", pretty_print=True)
+else:
+    print(f"Load failed: {catalog.content_state.name}")
 ```
 
-### Parse OSCAL content from a string
-
-Use `loads()` with OSCAL content already in memory:
+### Load in-memory content
 
 ```python
 from oscal import OSCAL
 
-oscal_content = """
-<?xml version="1.0" encoding="UTF-8"?>
-<catalog xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="8e38fb28-f88e-4c3b-ac72-c39511a51f65">
-   <metadata>
-      <title>Control Catalog Template</title>
-      <published>2025-09-10T12:00:00-04:00</published>
-      <last-modified>2025-09-10T12:00:00-04:00</last-modified>
-      <version>DRAFT</version>
-      <oscal-version>1.1.3</oscal-version>
-   </metadata>
-</catalog>
-"""
+xml_str = """<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="8e38fb28-...">
+  <metadata>
+    <title>My Catalog</title>
+    <version>DRAFT</version>
+    <oscal-version>1.1.3</oscal-version>
+  </metadata>
+</catalog>"""
 
-catalog = OSCAL.loads(oscal_content)
-
+doc = OSCAL.loads(xml_str)
+print(doc.model, doc.title)   # catalog   My Catalog
 ```
 
-## Use of AI for Creating/Maintaining This Library
+### Acquire from a URI
 
-**No portion of this library was "vibe coded".**
+```python
+from oscal import OSCAL
 
-Early versions of this library were written entirely without the use of AI tools.
+doc = OSCAL.acquire("https://raw.githubusercontent.com/.../catalog.json")
 
-Claude/Claude Code and GitHub Co-pilot have been used in a manner similar to pair-programming. This includes:
-- options analysis when planning approaches
-- improving alignment with "pythonic" best practices
-- targeted code reviews
-- resolving linter issues
-- aid in debugging and testing
-- drafting individual functions/methods that I refine and test 
-- drafting portions of documentation
-- drafting/creating unit tests
+# Fallback list — first successful source wins
+doc = OSCAL.acquire([
+    "https://primary.example.com/catalog.json",
+    "./local-fallback/catalog.json",
+])
+```
+
+### Query content
+
+```python
+# XML element name syntax
+ctrl  = catalog.query_one('//control[@id="ac-2"]')
+title = catalog.query_one('/*/metadata/title')
+
+# JSON key name syntax
+ctrl  = catalog.json_query_one('//controls[id="ac-2"]')
+stmts = catalog.json_query('//parts[name="statement"]')
+```
 
 ---
+
+## Model Classes
+
+| Class | OSCAL model |
+|---|---|
+| `Catalog` | `catalog` |
+| `Profile` | `profile` |
+| `Mapping` | `mapping-collection` |
+| `ComponentDefinition` | `component-definition` |
+| `SSP` | `system-security-plan` |
+| `AssessmentPlan` | `assessment-plan` |
+| `AssessmentResults` | `assessment-results` |
+| `POAM` | `plan-of-action-and-milestones` |
+
+Use the base `OSCAL` class when the model is not known in advance.
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Getting Started](docs/GETTING_STARTED.md) | Installation, loading patterns, saving, and a walkthrough example |
+| [OSCAL Class API](docs/CONTENT.md) | Complete class reference: factory methods, states, querying, mutation, import handling |
+| [Querying Content](docs/QUERY_CONTENT.md) | Full path syntax for `query()` and `json_query()` |
+| [Import Resolution](docs/IMPORTS.md) | How imports are resolved, failure codes, and retry API |
+| [Format Converters](docs/CONVERTERS.md) | `OSCALConverter` and markup conversion internals |
+| [Support Module](docs/SUPPORT_MODULE.md) | Support database configuration, updates, and API |
+| [Logging](docs/LOGGING.md) | Enabling Loguru logging |
+
+---
+
+## Designed for Air-Gapped Environments
+
+The `OSCALSupport` class manages a local SQLite database of NIST-published metaschema
+and support files for every OSCAL version. The database ships pre-populated, enabling
+full offline operation from the moment you install the library.
+
+To learn a newly published OSCAL version:
+
+```python
+from oscal.oscal_support import get_support
+
+support = get_support()
+support.update()           # fetch any new NIST releases
+```
+
+Run `update()` on an internet-connected machine, then copy the updated
+`support/oscal_support.db` into the air-gapped environment.
+
+---
+
+## Feedback and Contributions
+
+Please submit bug reports and feature requests as
+[GitHub issues](https://github.com/brian-ruf/oscal-class/issues).
+Bug fixes and backward-compatible contributions are welcome.
+Please open an issue before starting work on any breaking changes.
+
+---
+
+## Use of AI in This Library
+
+**No portion of this library was "vibe coded."**
+
+Early versions were written entirely without AI tools. Claude / Claude Code and GitHub
+Copilot have since been used in a manner similar to pair programming:
+
+- Options analysis when planning approaches
+- Alignment with Pythonic best practices
+- Targeted code reviews and linter resolution
+- Debugging and testing support
+- Drafting individual functions and methods (reviewed and tested before merge)
+- Drafting documentation and unit tests
+
+---
+
 <div align="center">
 <img width="10%" align="center" alt="Ruf Risk Logo" src="https://github.com/user-attachments/assets/d4b19372-3a77-40aa-978f-c986b7ded260" /><br />
 
-_Cybersecurity Consulting_  <br />
+_Cybersecurity Consulting_<br />
 https://RufRisk.com<br />
 https://www.linkedin.com/company/rufrisk/<br />
 

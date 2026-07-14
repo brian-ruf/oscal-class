@@ -56,21 +56,23 @@ The OSCAL class uses JSON for processing of OSCAL Content internally.
 ## Acquisition
 
 Upon acquisition, OSCAL JSON and YAML are immediately converted to a Python dict. 
-`JSON or YAML -> dict -> validation`
+`JSON or YAML -> dict -> validation -> handle imports`
 
-Upon acquisition, OSCAL XML is initially converted to an ElementTree object, validated, then converted to OSCAL JSON and then to a Python dict. 
-`XML -> ET -> validation -> converter -> JSON -> dict`
+Upon acquisition, OSCAL XML is initially converted to an ElementTree object, verified only as well-formed, then converted to `dict` equivalent to OSCAL JSON and validated. 
+`XML -> ET -> -> converter -> dict (OSCAL JSON equivalent) -> validation -> handle imports`
 
 ## Exportation
 
 When exporting to OSCAL JSON or YAML, the Python dict is serialized directly to JSON or YAML. 
-`dict -> JSON or YAML`
+`dict -> JSON`; or
+`dict -> YAML`
 
 When exporting to OSCAL XML, the Python dict is serialized to JSON and converted to XML. 
-`dict -> JSON -> converter -> XML`
+`dict -> converter -> XML`
 
 ## Metaschema Validation (Future)
 
-When using metaschema to validate OSCAL content, the dict is serialized to JSON, converted to XML, converted to an ElemenetTree and processed using metaschema xPath.  
-`dict -> JSON -> converter -> XML -> ET`
+For more complex metaschema validation requiring xPath 3.x processing, the dict is converted to XML, then converted to an ElemenetTree and processed using metaschema xPath (Metapath).  
+`dict -> converter -> XML -> ET -> metaschema processing`
 
+This is only done when complete metaschema validation is triggered due to resource intensiveness.

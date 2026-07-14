@@ -3007,8 +3007,8 @@
           ],
           "rlinks": [
             {
-              "href": "FedRAMP_rev5_catalog_tailoring_profile.xml",
-              "media-type": "application/oscal+xml"
+              "href": "FedRAMP_rev5_catalog_tailoring_profile.json",
+              "media-type": "application/oscal+json"
             }
           ]
         }

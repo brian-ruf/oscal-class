@@ -1,15 +1,9 @@
 """
-Unit tests for oscal.oscal_converters markdown helpers
+Unit tests for oscal.oscal_converter markup helpers
 """
-import sys
-from pathlib import Path
-
 import pytest
 
-# Import directly from the module file to avoid triggering oscal/__init__.py,
-# which requires ruf_common (a heavy dependency not needed for these tests).
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "oscal"))
-from oscal_converters import (
+from oscal.oscal_converter import (
     convert_markup_line,
     convert_markup_multiline,
     escape_for_json,

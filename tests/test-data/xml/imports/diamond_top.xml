@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="dddddddd-0000-4000-a000-0000000000d0">
+  <metadata>
+    <title>Diamond Top</title>
+    <last-modified>2026-01-01T00:00:00Z</last-modified>
+    <version>1.0</version>
+    <oscal-version>1.2.1</oscal-version>
+  </metadata>
+  <import href="diamond_left.xml"><include-all/></import>
+  <import href="diamond_right.xml"><include-all/></import>
+  <merge><combine method="keep"/><as-is>true</as-is></merge>
+</profile>

@@ -4,7 +4,7 @@ Unit tests for SSP and implementation-specific methods:
     - SSP.append_component()
     - SSP.append_impl_requirement()
 
-    Module-level functions (take raw Element or SSP object):
+    Module-level functions (take raw dict or SSP object):
     - append_component()      (oscal_implementation module fn)
     - append_impl_requirement() (oscal_implementation module fn)
     - append_by_component()
@@ -16,8 +16,6 @@ require those sections return None on a fresh SSP. These tests verify
 the documented behavior: no exception is raised and the return value
 signals failure via None.
 """
-from xml.etree import ElementTree
-
 import pytest
 
 from oscal.oscal_implementation import (
@@ -39,12 +37,12 @@ def fresh_ssp():
 
 
 @pytest.fixture
-def impl_req_element():
-    """A bare implemented-requirement Element for use with append_by_component."""
-    el = ElementTree.Element("implemented-requirement")
-    el.set("uuid", "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff")
-    el.set("control-id", "ac-1")
-    return el
+def impl_req_dict():
+    """A bare implemented-requirement dict for use with append_by_component."""
+    return {
+        "uuid": "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff",
+        "control-id": "ac-1",
+    }
 
 
 # ===========================================================================
@@ -92,10 +90,10 @@ class TestSSPAppendImplRequirement:
         except Exception:
             pytest.fail("SSP.append_impl_requirement() raised unexpectedly on a fresh SSP")
 
-    def test_returns_element_or_none(self, fresh_ssp):
-        """SSP.append_impl_requirement() returns an Element or None (not raises)."""
+    def test_returns_dict_or_none(self, fresh_ssp):
+        """SSP.append_impl_requirement() returns a dict or None (not raises)."""
         result = fresh_ssp.append_impl_requirement("ac-2")
-        assert result is None or isinstance(result, ElementTree.Element)
+        assert result is None or isinstance(result, dict)
 
     def test_accepts_remarks(self, fresh_ssp):
         """SSP.append_impl_requirement() accepts remarks without raising."""
@@ -150,10 +148,10 @@ class TestModuleAppendImplRequirement:
         except Exception:
             pytest.fail("Module-level append_impl_requirement() raised unexpectedly")
 
-    def test_returns_element_or_none(self, fresh_ssp):
-        """Module-level append_impl_requirement() returns an Element or None (not raises)."""
+    def test_returns_dict_or_none(self, fresh_ssp):
+        """Module-level append_impl_requirement() returns a dict or None (not raises)."""
         result = append_impl_requirement(fresh_ssp, "ac-2")
-        assert result is None or isinstance(result, ElementTree.Element)
+        assert result is None or isinstance(result, dict)
 
     def test_accepts_remarks(self, fresh_ssp):
         """Module-level append_impl_requirement() accepts remarks without raising."""
@@ -168,73 +166,63 @@ class TestModuleAppendImplRequirement:
 # ===========================================================================
 class TestAppendByComponent:
 
-    def test_returns_element(self, impl_req_element):
-        """append_by_component() returns a by-component Element."""
+    def test_returns_dict(self, impl_req_dict):
+        """append_by_component() returns a dict."""
         comp_uuid = "aaaaaaaa-1111-4222-8333-444444444444"
-        result = append_by_component(impl_req_element, comp_uuid, "Description text.")
+        result = append_by_component(impl_req_dict, comp_uuid, "Description text.")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_element_tag_is_by_component(self, impl_req_element):
-        """append_by_component() creates an element tagged 'by-component'."""
-        result = append_by_component(impl_req_element, "comp-uuid-1234", "Desc")
-        assert "by-component" in result.tag
-
-    def test_component_uuid_attribute(self, impl_req_element):
-        """append_by_component() sets the component-uuid attribute."""
+    def test_component_uuid_set(self, impl_req_dict):
+        """append_by_component() stores the component-uuid."""
         comp_uuid = "bbbbbbbb-2222-4333-8444-555555555555"
-        result = append_by_component(impl_req_element, comp_uuid, "Desc")
+        result = append_by_component(impl_req_dict, comp_uuid, "Desc")
         assert result.get("component-uuid") == comp_uuid
 
-    def test_uuid_attribute_set(self, impl_req_element):
-        """append_by_component() sets a uuid attribute on the element."""
-        result = append_by_component(impl_req_element, "comp-uuid", "Desc")
-        assert result.get("uuid") != ""
+    def test_uuid_set(self, impl_req_dict):
+        """append_by_component() sets a uuid on the result."""
+        result = append_by_component(impl_req_dict, "comp-uuid", "Desc")
+        assert result.get("uuid") not in (None, "")
 
-    def test_explicit_uuid_used(self, impl_req_element):
+    def test_explicit_uuid_used(self, impl_req_dict):
         """append_by_component() uses the provided by_component_uuid."""
         explicit_uuid = "cccccccc-3333-4444-8555-666666666666"
-        result = append_by_component(impl_req_element, "comp-uuid", "Desc",
+        result = append_by_component(impl_req_dict, "comp-uuid", "Desc",
                                      by_component_uuid=explicit_uuid)
         assert result.get("uuid") == explicit_uuid
 
-    def test_has_description_child(self, impl_req_element):
-        """append_by_component() adds a <description> child element."""
-        result = append_by_component(impl_req_element, "comp-uuid", "Description text.")
-        desc_nodes = [c for c in result if "description" in c.tag]
-        assert len(desc_nodes) == 1
+    def test_has_description(self, impl_req_dict):
+        """append_by_component() stores the description string."""
+        result = append_by_component(impl_req_dict, "comp-uuid", "Description text.")
+        assert result.get("description") == "Description text."
 
-    def test_has_implementation_status_child(self, impl_req_element):
-        """append_by_component() adds an <implementation-status> child."""
-        result = append_by_component(impl_req_element, "comp-uuid", "Desc")
-        status_nodes = [c for c in result if "implementation-status" in c.tag]
-        assert len(status_nodes) == 1
+    def test_has_implementation_status(self, impl_req_dict):
+        """append_by_component() adds an implementation-status dict."""
+        result = append_by_component(impl_req_dict, "comp-uuid", "Desc")
+        assert "implementation-status" in result
 
-    def test_implementation_status_default_is_implemented(self, impl_req_element):
+    def test_implementation_status_default_is_implemented(self, impl_req_dict):
         """append_by_component() defaults implementation_status to 'implemented'."""
-        result = append_by_component(impl_req_element, "comp-uuid", "Desc")
-        status_nodes = [c for c in result if "implementation-status" in c.tag]
-        assert status_nodes[0].get("state") == "implemented"
+        result = append_by_component(impl_req_dict, "comp-uuid", "Desc")
+        assert result["implementation-status"]["state"] == "implemented"
 
-    def test_custom_implementation_status(self, impl_req_element):
+    def test_custom_implementation_status(self, impl_req_dict):
         """append_by_component() sets a custom implementation_status."""
-        result = append_by_component(impl_req_element, "comp-uuid", "Desc",
+        result = append_by_component(impl_req_dict, "comp-uuid", "Desc",
                                      implementation_status="planned")
-        status_nodes = [c for c in result if "implementation-status" in c.tag]
-        assert status_nodes[0].get("state") == "planned"
+        assert result["implementation-status"]["state"] == "planned"
 
-    def test_remarks_added_when_provided(self, impl_req_element):
-        """append_by_component() adds a <remarks> child when remarks is provided."""
-        result = append_by_component(impl_req_element, "comp-uuid", "Desc",
+    def test_remarks_added_when_provided(self, impl_req_dict):
+        """append_by_component() stores remarks when provided."""
+        result = append_by_component(impl_req_dict, "comp-uuid", "Desc",
                                      remarks="These are remarks.")
-        remarks_nodes = [c for c in result if "remarks" in c.tag]
-        assert len(remarks_nodes) == 1
+        assert result.get("remarks") == "These are remarks."
 
-    def test_appended_to_impl_req(self, impl_req_element):
-        """append_by_component() appends itself as a child of the impl-req element."""
-        before = len(list(impl_req_element))
-        append_by_component(impl_req_element, "comp-uuid", "Desc")
-        after = len(list(impl_req_element))
+    def test_appended_to_impl_req(self, impl_req_dict):
+        """append_by_component() appends itself to impl_req's by-components list."""
+        before = len(impl_req_dict.get("by-components", []))
+        append_by_component(impl_req_dict, "comp-uuid", "Desc")
+        after = len(impl_req_dict.get("by-components", []))
         assert after == before + 1
 
 
@@ -243,68 +231,55 @@ class TestAppendByComponent:
 # ===========================================================================
 class TestAppendResponsibleRole:
 
-    def test_returns_element(self):
-        """append_responsible_role() returns an Element."""
-        parent = ElementTree.Element("component")
+    def test_returns_dict(self):
+        """append_responsible_role() returns a dict."""
+        parent = {}
         result = append_responsible_role(parent, "isso")
         assert result is not None
-        assert isinstance(result, ElementTree.Element)
+        assert isinstance(result, dict)
 
-    def test_element_tag(self):
-        """append_responsible_role() creates a 'responsible-role' element."""
-        parent = ElementTree.Element("component")
-        result = append_responsible_role(parent, "isso")
-        assert "responsible-role" in result.tag
-
-    def test_role_id_attribute(self):
-        """append_responsible_role() sets the role-id attribute."""
-        parent = ElementTree.Element("component")
+    def test_role_id_stored(self):
+        """append_responsible_role() stores the role-id."""
+        parent = {}
         result = append_responsible_role(parent, "system-owner")
         assert result.get("role-id") == "system-owner"
 
     def test_appended_to_parent(self):
-        """append_responsible_role() appends the element as a child of parent."""
-        parent = ElementTree.Element("component")
-        before = len(list(parent))
+        """append_responsible_role() appends the role to parent's responsible-roles list."""
+        parent = {}
+        before = len(parent.get("responsible-roles", []))
         append_responsible_role(parent, "isso")
-        after = len(list(parent))
+        after = len(parent.get("responsible-roles", []))
         assert after == before + 1
 
     def test_party_uuids_added(self):
-        """append_responsible_role() adds <party-uuid> children for each uuid."""
-        parent = ElementTree.Element("component")
+        """append_responsible_role() stores the party-uuids list."""
+        parent = {}
         uuids = ["uuid-1111", "uuid-2222"]
         result = append_responsible_role(parent, "isso", party_uuids=uuids)
-        party_uuid_nodes = [c for c in result if "party-uuid" in c.tag]
-        assert len(party_uuid_nodes) == 2
-        assert party_uuid_nodes[0].text == "uuid-1111"
-        assert party_uuid_nodes[1].text == "uuid-2222"
+        assert result.get("party-uuids") == ["uuid-1111", "uuid-2222"]
 
     def test_no_party_uuids_by_default(self):
-        """append_responsible_role() with no party_uuids has no party-uuid children."""
-        parent = ElementTree.Element("component")
+        """append_responsible_role() with no party_uuids omits the key."""
+        parent = {}
         result = append_responsible_role(parent, "isso")
-        party_uuid_nodes = [c for c in result if "party-uuid" in c.tag]
-        assert len(party_uuid_nodes) == 0
+        assert "party-uuids" not in result
 
     def test_remarks_added_when_provided(self):
-        """append_responsible_role() adds a <remarks> child when remarks is provided."""
-        parent = ElementTree.Element("component")
+        """append_responsible_role() stores remarks when provided."""
+        parent = {}
         result = append_responsible_role(parent, "isso", remarks="Role remarks here.")
-        remarks_nodes = [c for c in result if "remarks" in c.tag]
-        assert len(remarks_nodes) == 1
+        assert result.get("remarks") == "Role remarks here."
 
     def test_no_remarks_by_default(self):
-        """append_responsible_role() with no remarks has no remarks child."""
-        parent = ElementTree.Element("component")
+        """append_responsible_role() with no remarks omits the key."""
+        parent = {}
         result = append_responsible_role(parent, "isso")
-        remarks_nodes = [c for c in result if "remarks" in c.tag]
-        assert len(remarks_nodes) == 0
+        assert "remarks" not in result
 
     def test_multiple_roles_on_same_parent(self):
         """append_responsible_role() can be called multiple times on the same parent."""
-        parent = ElementTree.Element("component")
+        parent = {}
         append_responsible_role(parent, "isso")
         append_responsible_role(parent, "system-owner")
-        role_nodes = [c for c in parent if "responsible-role" in c.tag]
-        assert len(role_nodes) == 2
+        assert len(parent.get("responsible-roles", [])) == 2
