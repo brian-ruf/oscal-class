@@ -54,7 +54,10 @@ target-version = "py39"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
+# FA102 guards the py39 target: it flags PEP 604 (`X | Y`) unions used in
+# annotations without `from __future__ import annotations`, which raise at runtime
+# on Python 3.9.
+select = ["E", "F", "W", "FA102"]
 ignore = ["W291", "W293", "E501"]
 
 [tool.ruff.lint.per-file-ignores]

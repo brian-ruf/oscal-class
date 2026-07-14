@@ -39,6 +39,8 @@ Module constants:
     OSCAL_DATA_TYPES (dict): Data-type registry populated at runtime from parsed
         metaschemas.
 """
+from __future__ import annotations
+
 import json
 import os
 import xml.etree.ElementTree as ET
