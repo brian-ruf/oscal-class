@@ -33,6 +33,8 @@ Module constants:
     GREEN, BLUE, YELLOW, RED, ORANGE, MAGENTA, CYAN, PURPLE, BOLD, RESET (str):
         ANSI terminal escape codes used for colorized diagnostic output.
 """
+from __future__ import annotations
+
 import sys
 import re
 import json
@@ -620,7 +622,7 @@ class MetaschemaParser:
         """
 
 
-        return cast(ET.Element | list[ET.Element] | None, xpath(self.tree, self.nsmap, xExpr, context))
+        return cast("ET.Element | list[ET.Element] | None", xpath(self.tree, self.nsmap, xExpr, context))
 
     # -------------------------------------------------------------------------
     def get_markup_content(self, xExpr, context=None):
