@@ -1,416 +1,464 @@
-import asyncio
-import sys
-import json
-from html import escape
-import html
+"""OSCAL Metaschema documentation views.
+
+Generates HTML fragments from the parsed metaschema index for embedding in a
+front-end:
+
+* :func:`render_outline` — a clickable, format-flavored tree (XML/JSON/YAML syntax)
+  of a model's structure, annotated with data types and cardinality. Every element
+  links to its node via a stable reference id.
+* :func:`render_detail` — a one-level detail view of a single node (formal name,
+  description, format-appropriate representation, data type + regex, constraints,
+  and clickable immediate parent/children), addressed by that reference id.
+
+Reference ids are the deterministic ``ref`` UUIDs assigned to every index node by
+``metaschema_parser._assign_node_refs`` (surfaced when the index is loaded), so a
+link in an outline unambiguously resolves to exactly one node.
+
+All returned HTML is wrapped in a ``<div>`` and never includes ``<html>``/``<body>``,
+so it can be dropped straight into a page. Prefer the ``OSCALSupport.view_outline``
+and ``OSCALSupport.view_detail`` methods, which resolve the index for you.
+"""
+from __future__ import annotations
+
 import logging
-from time import sleep
-from oscal_support import *
-from common import *
+import sys
+from html import escape
+
+from .oscal_datatypes import OSCAL_DATATYPES
 
 logger = logging.getLogger(__name__)
 
-""" OSCAL Metaschema Documentation Generator
-This script generates HTML documentation for OSCAL metaschemas.
-It processes JSON files containing the metaschema definitions and generates a collapsible HTML tree view for each schema.
-It supports multiple formats (XML, JSON, YAML) and can handle various OSCAL versions.
-"""
+SUPPORTED_FORMATS = ("xml", "json", "yaml")
 
-DATA_LOCATION = "./"
+# JSON/YAML scalar types that are rendered without surrounding quotes.
+_UNQUOTED_TYPES = {
+    "boolean", "integer", "non-negative-integer", "positive-integer", "decimal", "number",
+}
 
-# TODO:
-# - Handle group-as on output
-# - Handle choicie on output
-# - Handle unwrapped on output
-
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-async def generate_documentation(support=None, oscal_version=None) -> int:
-    """
-    Generate documentation from processed OSCAL metaschema.
-    """
-
-    status = False
-    ret_value = 1
-
-    # If support object is not provided, we have to instantiate it.
-    if support is None:
-        base_url = "./support/support.oscal"
-        support = await setup_support(base_url)
-
-    if support.ready:
-        logger.debug("Support file is ready.")
-        status = True
-    else:
-        logger.error("Support object is not ready.")
-
-    # If the support object is ready, we can proceed.
-    if status:
-        logger.info("Generating documentation from OSCAL metaschema.")
-
-        if oscal_version is None: # If no version is specified, process all supported versions.
-            logger.info("Processing all supported OSCAL versions.")
-            for version in support.versions.keys():
-                logger.info(f"Version: {version}")
-                status = await parse_metaschema_specific(support, version)
-                if not status:
-                    logger.error(f"Failed to parse metaschema for version {version}.")
-                    break
-
-        elif oscal_version in support.versions: # If a valid version is specified, process only that version.
-            logger.info(f"Processing OSCAL version: {oscal_version}")
-            status = await parse_metaschema_specific(support, oscal_version)
-
-        else: # If an invalid version is specified, log an error and exit.
-            logger.error(f"Specified version {oscal_version} is not supported. Available versions: {', '.join(support.versions.keys())}")
-            status = False
+_STYLE = (
+    "<style>"
+    ".ms-outline,.ms-detail{font-family:system-ui,Arial,sans-serif;font-size:14px;color:#1a202c}"
+    ".ms-tree{list-style:none;margin:0;padding-left:18px}"
+    ".ms-root{padding-left:0}"
+    ".ms-item{margin:2px 0}"
+    ".ms-node{color:#2b6cb0;text-decoration:none;cursor:pointer}"
+    ".ms-node:hover{text-decoration:underline}"
+    ".ms-meta{color:#718096;font-size:.85em}"
+    ".ms-muted{color:#718096}"
+    ".ms-header,.ms-detail-name{font-weight:700}"
+    ".ms-detail-name{font-size:1.1em}"
+    ".ms-regex{white-space:pre-wrap;word-break:break-all}"
+    ".ms-repr{background:#f7fafc;border:1px solid #e2e8f0;padding:8px;border-radius:4px;overflow:auto}"
+    ".ms-detail-section{margin-top:12px}"
+    ".ms-detail-section h4{margin:0 0 4px;font-size:.75em;letter-spacing:.04em;text-transform:uppercase;color:#718096}"
+    ".ms-values,.ms-child-list{margin:4px 0;padding-left:18px}"
+    ".ms-error{color:#c53030;font-family:system-ui,Arial,sans-serif}"
+    ".ms-dep{color:#c05621;font-size:.85em}"
+    "</style>"
+)
 
 
+# ---------------------------------------------------------------------------
+# Small structural helpers
+# ---------------------------------------------------------------------------
+def _normalize_format(oscal_format: str) -> str | None:
+    """Return a canonical format string (xml|json|yaml), or None if unrecognized."""
+    if not isinstance(oscal_format, str):
+        return None
+    fmt = oscal_format.strip().lower()
+    if fmt == "yml":
+        fmt = "yaml"
+    return fmt if fmt in SUPPORTED_FORMATS else None
 
 
+def _json_key(node: dict) -> str:
+    """The JSON/YAML key for a node (group-as wins for arrays)."""
+    return node.get("group-as") or node.get("use-name") or node.get("name") or "?"
 
 
-    if status:
-        ret_value = 0
-    else:
-        logger.error("Failed to generate documentation. Exiting with error code 1.")
-        ret_value = 1
-
-    return ret_value
-
-# -------------------------------------------------------------------------
+def _xml_name(node: dict) -> str:
+    """The XML element/flag name for a node."""
+    return node.get("use-name") or node.get("name") or "?"
 
 
+def _is_array(node: dict) -> bool:
+    return str(node.get("max-occurs", "1")) == "unbounded"
 
-# -------------------------------------------------------------------------
-def generate_tree_view(metaschema_model_tree, oscal_version, format):
-    """Generate HTML with collapsible tree from OSCAL JSON data."""
-    
-    style = """
-        .tree-view {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-        }
-        .tree-item {
-            margin-left: 20px;
-        }
-        .collapsible {
-            cursor: pointer;
-            user-select: none;
-            padding: 5px;
-            margin: 2px 0;
-            background-color: #f1f1f1;
-            border-radius: 4px;
-            display: block; /* Changed from inline-block to block */
-            width: calc(100% - 10px); /* Account for padding */
-        }
-        .collapsible:hover {
-            background-color: #ddd;
-        }
-        .content {
-            display: none;
-            margin-left: 20px;
-        }
-        .element-name {
-            font-weight: bold;
-            color: #2c5282;
-            text-decoration: none;
-        }
-        .element-name:hover {
-            text-decoration: underline;
-        }
-        .element-details {
-            color: #4a5568;
-            font-size: 0.9em;
-        }
-        .active {
-            display: block;
-        }
-        .type-assembly { color: #3182ce; }
-        .type-field { color: #805ad5; }
-        .type-flag { color: #dd6b20; }
-        .expander {
-            display: inline-block;
-            width: 15px;
-            text-align: center;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        .spacer {
-            display: inline-block;
-            width: 15px;
-        }
-"""
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{oscal_version} {metaschema_model_tree.get("schema_name", "[EMPTY]")} ({format.upper()})</title>
-    <style>
-{style}
-    </style>
-</head>
-<body>
-    <h1>{metaschema_model_tree.get("schema_name", "EMPTY")} {format.upper()}</h1>
-    <h3>OSCAL Version: {oscal_version}</h3>
-    
-    <div class="tree-view">
-"""
-    
-    # Process the root element
-    if "nodes" in metaschema_model_tree:
-        match format:
-            case "xml":
-                logger.info("Processing XML format")
-                html += process_xml_element(metaschema_model_tree["nodes"], level=0)
-            case "json" | "yaml":
-                pass
-                # html += process_json_element(metaschema_tree["nodes"], format, level=0)
-    else:
-        html += "<p>Model is empty.</p>"
-        logger.error("No 'nodes' found in the metaschema model tree.")
+def _cardinality(node: dict) -> str:
+    """Human-readable ``min..max`` for a node (e.g. ``0..1``, ``1..*``)."""
+    mn = str(node.get("min-occurs", "0"))
+    mx = str(node.get("max-occurs", "1"))
+    table = {
+        ("0", "1"): "0..1",
+        ("1", "1"): "1..1",
+        ("0", "unbounded"): "0..*",
+        ("1", "unbounded"): "1..*",
+    }
+    return table.get((mn, mx), f"{mn}..{mx}")
 
-    html += """
-    </div>
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            var expanders = document.getElementsByClassName("expander");
-            for (var i = 0; i < expanders.length; i++) {
-                expanders[i].addEventListener("click", function(e) {
-                    e.stopPropagation(); // Prevent event bubbling
-                    var content = this.parentElement.nextElementSibling;
-                    
-                    if (content.style.display === "block") {
-                        // Collapsing
-                        content.style.display = "none";
-                        this.textContent = "+";
-                    } else {
-                        // Expanding
-                        content.style.display = "block";
-                        this.textContent = "-";
-                    }
-                });
-            }
-            
-            // Stop propagation for element name clicks
-            var elementNames = document.getElementsByClassName("element-name");
-            for (var i = 0; i < elementNames.length; i++) {
-                elementNames[i].addEventListener("click", function(e) {
-                    e.stopPropagation();
-                    // You can add your click handler for the path here
-                    console.log("Clicked on path:", this.getAttribute("data-path"));
-                });
-            }
-            
-            // Add click handler for the collapsible divs (optional)
-            var collapsibles = document.getElementsByClassName("collapsible");
-            for (var i = 0; i < collapsibles.length; i++) {
-                collapsibles[i].addEventListener("click", function(e) {
-                    if (e.target.classList.contains('element-name')) return;
-                    
-                    // Find the expander in this collapsible and trigger its click
-                    var expander = this.querySelector('.expander');
-                    if (expander) {
-                        expander.click();
-                    }
-                });
-            }
-        });
-    </script>
-</body>
-</html>
-"""
-    return html
 
-# -------------------------------------------------------------------------
-def process_json_element(element, format, level=0):
-    """Process a single element in the OSCAL schema."""
-    if not isinstance(element, dict):
+def _description(node: dict) -> str:
+    """Join a node's description (stored as a list of strings) into one string."""
+    desc = node.get("description")
+    if isinstance(desc, list):
+        desc = " ".join(str(d) for d in desc if d)
+    return (desc or "").strip()
+
+
+def _choice_members(choice_node: dict) -> list:
+    """Flatten a choice's alternative member nodes (recursing nested choices)."""
+    members = []
+    for member in choice_node.get("children", []) or []:
+        if isinstance(member, dict) and member.get("structure-type") == "choice":
+            members.extend(_choice_members(member))
+        elif isinstance(member, dict):
+            members.append(member)
+    return members
+
+
+def _choice_required(choice_node: dict) -> bool:
+    """True when a choice requires a selection (every member is ``min-occurs=1``)."""
+    members = _choice_members(choice_node)
+    return bool(members) and all((m.get("min-occurs") or "0") == "1" for m in members)
+
+
+# ---------------------------------------------------------------------------
+# Reference lookup
+# ---------------------------------------------------------------------------
+def _ref_map(index: dict) -> dict:
+    """Build a ``ref`` -> node map for one index (walks the tree once)."""
+    root = (index or {}).get("nodes")
+    mapping: dict = {}
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return
+        ref = node.get("ref")
+        if ref and ref not in mapping:
+            mapping[ref] = node
+        for child in node.get("children", []) or []:
+            walk(child)
+
+    walk(root)
+    return mapping
+
+
+def find_node_by_ref(index: dict, ref: str):
+    """Return the node in ``index`` whose reference id is ``ref``, or None."""
+    return _ref_map(index).get(ref)
+
+
+# ---------------------------------------------------------------------------
+# Labels / representation
+# ---------------------------------------------------------------------------
+def _node_label_html(node: dict, fmt: str) -> str:
+    """HTML for a node's own token, flavored for the format."""
+    stype = node.get("structure-type", "")
+    if stype == "choice":
+        return "&lt;choice&gt;" if fmt == "xml" else "(choice)"
+    if stype == "any":
+        return "&lt;any&gt;" if fmt == "xml" else "(any)"
+    if stype == "recursive":
+        return escape(node.get("use-name") or node.get("name") or "?") + ' <span class="ms-muted">(recursive)</span>'
+    if fmt == "xml":
+        if stype == "flag":
+            return "@" + escape(_xml_name(node))
+        return "&lt;" + escape(_xml_name(node)) + "&gt;"
+    return escape(_json_key(node))
+
+
+def _node_label_text(node: dict, fmt: str) -> str:
+    """Plain-text token (used inside representation snippets)."""
+    stype = node.get("structure-type", "")
+    if fmt == "xml":
+        if stype == "flag":
+            return "@" + _xml_name(node)
+        return "<" + _xml_name(node) + ">"
+    return _json_key(node)
+
+
+def _meta_html(node: dict, fmt: str) -> str:
+    """The muted annotation after a node: structure-type, data type, cardinality."""
+    stype = node.get("structure-type", "")
+    if stype == "choice":
+        detail = "select one (required)" if _choice_required(node) else "select at most one"
+        return escape(f"choice · {detail}")
+    bits = [stype] if stype else []
+    if stype in ("field", "flag") and node.get("datatype"):
+        bits.append(str(node["datatype"]))
+    if stype not in ("choice", "any"):
+        bits.append("[" + _cardinality(node) + "]")
+    return escape(" · ".join(b for b in bits if b))
+
+
+def _json_placeholder(datatype: str) -> str:
+    token = f"‹{datatype}›"
+    return token if datatype in _UNQUOTED_TYPES else f'"{token}"'
+
+
+def _representation(node: dict, fmt: str) -> str:
+    """A short, format-appropriate snippet showing how the node appears."""
+    stype = node.get("structure-type", "")
+    datatype = node.get("datatype") or "string"
+
+    if stype == "choice":
+        return "one of: " + " | ".join(_node_label_text(m, fmt) for m in _choice_members(node))
+    if stype in ("any", "recursive"):
         return ""
-    
-    html = ""
-    
-    # Get element properties
-    use_name = element.get('use-name', element.get('name', 'unknown'))
-    structure_type = element.get('structure-type', 'unknown')
-    datatype = element.get('datatype', '')
-    min_occurs = element.get('min-occurs', '')
-    max_occurs = element.get('max-occurs', '')
-    path = element.get('path', '')
-    
-    # Format occurrence information
-    occurrence = ""
-    if min_occurs == "0" and (max_occurs == "1" or max_occurs == "unbounded"):
-        occurrence = "[0 or 1]" if max_occurs == "1" else "[0 or more]"
-    elif min_occurs == "1" and max_occurs == "1":
-        occurrence = "[exactly 1]"
-    elif min_occurs == "1" and max_occurs == "unbounded":
-        occurrence = "[1 or more]"
-    else:
-        occurrence = f"[{min_occurs}..{max_occurs}]"
-    
-    # Check if element has children or flags to determine if we need expansion control
-    has_expandable = (element.get('flags', []) or element.get('children', []))
-    
-    # Create the element header with details
-    html += '<div class="collapsible">'
-    if has_expandable:
-        # Set the initial expander symbol based on level
-        expander_symbol = "-" if level == 0 else "+"
-        html += f'<span class="expander">{expander_symbol}</span> '
-    else:
-        html += '<span class="spacer">&nbsp;</span> '
-    html += f'<a href="#" class="element-name" data-path="{escape(path)}">{escape(use_name)}</a> '
-    html += f'<span class="element-details type-{structure_type}">({structure_type})</span> '
-    html += f'<span class="element-details">{escape(str(datatype))} {occurrence}</span>'
-    html += '</div>'
-    
-    # Create content div for children and flags together
-    if has_expandable:
-        # Set initial display style based on level
-        display_style = "block" if level == 0 else "none"
-        html += f'<div class="content tree-item" style="display: {display_style};">'
-        
-        # Process flags (attributes)
-        flags = element.get('flags', [])
-        for flag in flags:
-            html += process_json_element(flag, format, level + 1)
-        
-        # Process children
-        children = element.get('children', [])
-        for child in children:
-            html += process_json_element(child, format, level + 1)
-        
-        html += '</div>'
-    
-    return html
 
-# -------------------------------------------------------------------------
-def process_xml_element(element, level=0):
-    """Process a single element in the OSCAL schema."""
-    if not isinstance(element, dict):
+    if fmt == "xml":
+        name = _xml_name(node)
+        if stype == "flag":
+            return f'{name}="‹{datatype}›"'
+        if stype == "assembly":
+            return f"<{name}>\n  …\n</{name}>"
+        return f"<{name}>‹{datatype}›</{name}>"
+
+    key = _json_key(node)
+    if fmt == "json":
+        if stype == "assembly":
+            return f'"{key}": [ … ]' if _is_array(node) else f'"{key}": {{ … }}'
+        return f'"{key}": {_json_placeholder(datatype)}'
+
+    # yaml
+    if stype == "assembly":
+        return f"{key}:\n  - …" if _is_array(node) else f"{key}:\n  …"
+    return f"{key}: ‹{datatype}›"
+
+
+def _ref_link(node: dict, fmt: str) -> str:
+    """An anchor that unambiguously references ``node`` (front-end wires the click)."""
+    ref = escape(str(node.get("ref", "")))
+    return (f'<a class="ms-node" href="#" data-ref="{ref}" data-format="{escape(fmt)}">'
+            f"{_node_label_html(node, fmt)}</a>")
+
+
+# ---------------------------------------------------------------------------
+# Public: error fragment
+# ---------------------------------------------------------------------------
+def error_html(message: str) -> str:
+    """Return a ``<div>`` error fragment (front-end-safe)."""
+    return f'<div class="ms-error">{escape(str(message))}</div>'
+
+
+# ---------------------------------------------------------------------------
+# Public: outline
+# ---------------------------------------------------------------------------
+def _outline_item(node: dict, fmt: str) -> str:
+    if not isinstance(node, dict):
         return ""
-    
-    html = ""
-    
-    # Get element properties
-    use_name = element.get('use-name', element.get('name', 'unknown'))
-    structure_type = element.get('structure-type', 'unknown')
-    datatype = element.get('datatype', '')
-    min_occurs = element.get('min-occurs', '')
-    max_occurs = element.get('max-occurs', '')
-    path = element.get('path', '')
-    logger.info(f"Processing element: {path}")
-    
-    # Format occurrence information
-    occurrence = ""
-    if min_occurs == "0" and (max_occurs == "1" or max_occurs == "unbounded"):
-        occurrence = "[0 or 1]" if max_occurs == "1" else "[0 or more]"
-    elif min_occurs == "1" and max_occurs == "1":
-        occurrence = "[exactly 1]"
-    elif min_occurs == "1" and max_occurs == "unbounded":
-        occurrence = "[1 or more]"
+    stype = escape(node.get("structure-type", ""))
+    parts = [f'<li class="ms-item ms-{stype}">', _ref_link(node, fmt)]
+    meta = _meta_html(node, fmt)
+    if meta:
+        parts.append(f' <span class="ms-meta">{meta}</span>')
+    children = [c for c in (node.get("children") or []) if isinstance(c, dict)]
+    if children:
+        parts.append('<ul class="ms-tree">')
+        parts.extend(_outline_item(c, fmt) for c in children)
+        parts.append("</ul>")
+    parts.append("</li>")
+    return "".join(parts)
+
+
+def render_outline(index: dict, oscal_format: str, version: str = "", model: str = "") -> str:
+    """Return an HTML ``<div>`` outline tree for a model in the given format.
+
+    Each element is a clickable link carrying its node ``ref`` (and the format), so a
+    front-end can request the corresponding detail view. The tree is flavored for the
+    format — XML shows ``<element>``/``@flag`` tokens, JSON/YAML show their keys — and
+    every node is annotated with its structure type, data type, and cardinality.
+    ``choice`` groups are shown explicitly with their mutual-exclusivity/required note.
+
+    Args:
+        index (dict, required): A parsed metaschema index (from
+            ``OSCALSupport.get_metaschema_index``).
+        oscal_format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+        version (str, optional): OSCAL version, for the header/data attributes.
+        model (str, optional): OSCAL model name, for the header/data attributes.
+
+    Returns:
+        str: A ``<div class="ms-outline">`` fragment (or a ``<div class="ms-error">``).
+    """
+    fmt = _normalize_format(oscal_format)
+    if fmt is None:
+        return error_html(f"Unknown format '{oscal_format}'. Use one of: {', '.join(SUPPORTED_FORMATS)}.")
+    root = (index or {}).get("nodes")
+    if not isinstance(root, dict):
+        return error_html("Cannot build outline: the metaschema index has no nodes.")
+
+    ver = version or index.get("oscal_version", "")
+    mdl = model or index.get("oscal_model", "")
+    schema = index.get("schema_name") or mdl
+    header = f"{schema} — {fmt.upper()} outline (OSCAL {ver})"
+    return (
+        f'<div class="ms-outline" data-format="{escape(fmt)}" '
+        f'data-oscal-version="{escape(str(ver))}" data-model="{escape(str(mdl))}">'
+        f"{_STYLE}"
+        f'<div class="ms-header">{escape(header)}</div>'
+        f'<ul class="ms-tree ms-root">{_outline_item(root, fmt)}</ul>'
+        f"</div>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public: detail
+# ---------------------------------------------------------------------------
+def _datatype_section(node: dict, fmt: str) -> str:
+    if node.get("structure-type") not in ("field", "flag"):
+        return ""
+    datatype = node.get("datatype")
+    if not datatype:
+        return ""
+    info = OSCAL_DATATYPES.get(datatype, {})
+    base = info.get("base-type")
+    pattern = info.get("json-pattern") if fmt in ("json", "yaml") else info.get("xml-pattern")
+    pattern = pattern or info.get("recommended-pattern")
+    doc = info.get("documentation")
+
+    rows = [f'<div><strong>Type:</strong> <code>{escape(str(datatype))}</code>'
+            + (f' (base <code>{escape(str(base))}</code>)' if base and base != datatype else "")
+            + "</div>"]
+    if doc:
+        rows.append(f'<div class="ms-muted">{escape(str(doc))}</div>')
+    if pattern:
+        rows.append(f'<div><strong>Pattern:</strong> <code class="ms-regex">{escape(str(pattern))}</code></div>')
+    return '<div class="ms-detail-section"><h4>Data type</h4>' + "".join(rows) + "</div>"
+
+
+def _constraints_section(node: dict) -> str:
+    constraints = [c for c in (node.get("constraints") or []) if isinstance(c, dict) and c.get("type")]
+    if not constraints:
+        return ""
+    out = ['<div class="ms-detail-section"><h4>Constraints</h4>']
+    for constraint in constraints:
+        ctype = constraint.get("type")
+        if ctype == "allowed-values":
+            openness = "others permitted" if constraint.get("allow-other") else "closed set"
+            out.append(f'<div><strong>Allowed values</strong> <span class="ms-muted">({openness})</span>'
+                       '<ul class="ms-values">')
+            for value in constraint.get("values", []):
+                val = escape(str(value.get("value", "")))
+                vdesc = _description({"description": value.get("description")})
+                dep = ' <span class="ms-dep">(deprecated)</span>' if value.get("deprecated") else ""
+                tail = f' — <span class="ms-muted">{escape(vdesc)}</span>' if vdesc else ""
+                out.append(f"<li><code>{val}</code>{dep}{tail}</li>")
+            out.append("</ul></div>")
+        else:
+            target = escape(str(constraint.get("target", "")))
+            message = escape(str(constraint.get("message", "") or ""))
+            tail = f" target <code>{target}</code>" if target else ""
+            tail += f' — <span class="ms-muted">{message}</span>' if message else ""
+            out.append(f"<div><strong>{escape(str(ctype))}</strong>{tail}</div>")
+    out.append("</div>")
+    return "".join(out)
+
+
+def render_detail(index: dict, ref: str, oscal_format: str) -> str:
+    """Return an HTML ``<div>`` detail view of a single node, addressed by ``ref``.
+
+    Includes the node's formal name and description, a format-appropriate
+    representation, its data type (with the associated regex where available),
+    constraints, and its immediate parent and children (one level deep). The parent
+    (unless the node is the root) and every child are clickable using their own
+    reference ids so the caller can drill in.
+
+    Args:
+        index (dict, required): A parsed metaschema index.
+        ref (str, required): The reference id of the node to describe.
+        oscal_format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+
+    Returns:
+        str: A ``<div class="ms-detail">`` fragment (or a ``<div class="ms-error">``).
+    """
+    fmt = _normalize_format(oscal_format)
+    if fmt is None:
+        return error_html(f"Unknown format '{oscal_format}'. Use one of: {', '.join(SUPPORTED_FORMATS)}.")
+
+    mapping = _ref_map(index)
+    node = mapping.get(ref)
+    if node is None:
+        return error_html(f"No metaschema node found for reference '{ref}'.")
+
+    name = node.get("use-name") or node.get("name") or ""
+    formal = node.get("formal-name") or name or node.get("structure-type", "node")
+    desc = _description(node)
+
+    parts = [
+        f'<div class="ms-detail" data-format="{escape(fmt)}" data-ref="{escape(str(ref))}">',
+        _STYLE,
+        f'<div class="ms-detail-header"><span class="ms-detail-name">{escape(str(formal))}</span> '
+        f'<span class="ms-meta">{_meta_html(node, fmt)}</span></div>',
+    ]
+    if name:
+        parts.append(f'<div><code>{escape(str(name))}</code></div>')
+    if desc:
+        parts.append(f'<div class="ms-detail-desc">{escape(desc)}</div>')
+
+    representation = _representation(node, fmt)
+    if representation:
+        parts.append('<div class="ms-detail-section"><h4>Representation (' + escape(fmt.upper())
+                     + ')</h4><pre class="ms-repr">' + escape(representation) + "</pre></div>")
+
+    parts.append(_datatype_section(node, fmt))
+    parts.append(_constraints_section(node))
+
+    # Immediate parent (clickable unless root)
+    parent_ref = node.get("parent-ref")
+    parts.append('<div class="ms-detail-section"><h4>Parent</h4>')
+    parent = mapping.get(parent_ref) if parent_ref else None
+    if parent is not None:
+        parts.append(_ref_link(parent, fmt) + f' <span class="ms-meta">{_meta_html(parent, fmt)}</span>')
     else:
-        occurrence = f"[{min_occurs}..{max_occurs}]"
-    
-    # Check if element has children or flags to determine if we need expansion control
-    has_expandable = (element.get('flags', []) or element.get('children', []))
-    
-    # Create the element header with details
-    html += '<div class="collapsible">'
-    if has_expandable:
-        # Set the initial expander symbol based on level
-        expander_symbol = "-" if level == 0 else "+"
-        html += f'<span class="expander">{expander_symbol}</span> '
-    else:
-        html += '<span class="spacer">&nbsp;</span> '
-    html += f'<a href="#" class="element-name" data-path="{escape(path)}">{escape(use_name)}</a> '
-    html += f'<span class="element-details type-{structure_type}">({structure_type})</span> '
-    html += f'<span class="element-details">{escape(str(datatype))} {occurrence}</span>'
-    html += '</div>'
-    
-    # Create content div for children and flags together
-    if has_expandable:
-        # Set initial display style based on level
-        display_style = "block" if level == 0 else "none"
-        html += f'<div class="content tree-item" style="display: {display_style};">'
-        
-        # Process flags (attributes)
-        flags = element.get('flags', [])
-        for flag in flags:
-            html += process_xml_element(flag, level + 1)
-        
-        # Process children
-        children = element.get('children', [])
+        parts.append('<span class="ms-muted">(root — no parent)</span>')
+    parts.append("</div>")
+
+    # Immediate children (one level, each clickable)
+    children = [c for c in (node.get("children") or []) if isinstance(c, dict)]
+    parts.append('<div class="ms-detail-section"><h4>Children</h4>')
+    if children:
+        parts.append('<ul class="ms-child-list">')
         for child in children:
-            html += process_xml_element(child, level + 1)
-        
-        html += '</div>'
-    
-    return html
-
-# -------------------------------------------------------------------------
-
-async def generate_documentation(oscal_version=None, support=None) -> int:
-    ret_value = False
-
-    status = False
-    ret_value = 1
-
-    # If support object is not provided, we have to instantiate it.
-    if support is None:
-        base_url = "./support/support.oscal"
-        support = await setup_support(base_url)
-
-    if support.ready:
-        logger.debug("Support file is ready.")
-        status = True
+            parts.append(f'<li>{_ref_link(child, fmt)} <span class="ms-meta">{_meta_html(child, fmt)}</span></li>')
+        parts.append("</ul>")
     else:
-        logger.error("Support object is not ready.")
+        parts.append('<span class="ms-muted">(no children)</span>')
+    parts.append("</div></div>")
 
-    # If the support object is ready, we can proceed.
-    if status:
-        if oscal_version is None: # If no version is specified, process all supported versions.
-            logger.info("Processing all supported OSCAL versions.")
-            for version in support.versions.keys():
-                logger.info(f"Version: {version}")
-                # status = await parse_metaschema_specific(support, version)
-                metaschema_tree = json.loads(await support.asset(version, "complete", "processed"))
-                
-                for format in ["xml"]: # , "json", "yaml"]:
-                    for model in metaschema_tree["oscal_models"]:
-                        prefix = f"OSCAL_{metaschema_tree['oscal_version']}_{model}_{format}"
-                        html_output = generate_tree_view(metaschema_tree["oscal_models"][model], metaschema_tree["oscal_version"], format=format)
-                        output_file = f"{DATA_LOCATION}/{prefix}_outline_{format}.html"
-                        with open(output_file, 'w', encoding='utf-8') as f:
-                            f.write(html_output)
+    return "".join(parts)
 
 
-
-                if not status:
-                    logger.error(f"Failed to parse metaschema for version {version}.")
-                    break
-
-        elif oscal_version in support.versions: # If a valid version is specified, process only that version.
-            logger.info(f"Processing OSCAL version: {oscal_version}")
-            # status = await parse_metaschema_specific(support, oscal_version)
-            metaschema_tree = json.loads(await support.asset(oscal_version, "complete", "processed"))
-            for format in ["xml"]: # , "json", "yaml"]:
-                for model in metaschema_tree["oscal_models"]:
-                    prefix = f"OSCAL_{metaschema_tree['oscal_version']}_{model}_{format}"
-                    html_output = generate_tree_view(metaschema_tree["oscal_models"][model], metaschema_tree["oscal_version"], format=format)
-                    output_file = f"{DATA_LOCATION}/{prefix}_outline_{format}.html"
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        f.write(html_output)
+# ---------------------------------------------------------------------------
+# Manual entry point: write standalone outline pages for one version's models.
+# Run with:  python -m oscal.metaschema_gen_docs [version]
+# ---------------------------------------------------------------------------
+def _standalone_page(title: str, fragment: str) -> str:
+    return (f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+            f"<title>{escape(title)}</title></head><body>{fragment}</body></html>")
 
 
-        else: # If an invalid version is specified, log an error and exit.
-            logger.error(f"Specified version {oscal_version} is not supported. Available versions: {', '.join(support.versions.keys())}")
-            status = False
+def _main(oscal_version: str) -> int:
+    from .oscal_support import get_support
 
-    return ret_value
+    support = get_support()
+    if oscal_version not in support.versions:
+        logger.error("Version %s not available. Have: %s", oscal_version, ", ".join(support.versions))
+        return 1
+
+    for model in support.list_models(oscal_version):
+        index = support.get_metaschema_index(oscal_version, model)
+        if index is None:
+            logger.warning("No index for %s/%s; skipping.", oscal_version, model)
+            continue
+        for fmt in SUPPORTED_FORMATS:
+            html_fragment = render_outline(index, fmt, version=oscal_version, model=model)
+            out_path = f"{oscal_version}_{model}_{fmt}_outline.html"
+            with open(out_path, "w", encoding="utf-8") as handle:
+                handle.write(_standalone_page(f"{model} {fmt} outline", html_fragment))
+            logger.info("Wrote %s", out_path)
+    return 0
+
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -418,16 +466,5 @@ if __name__ == "__main__":
         stream=sys.stderr,
         format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s",
     )
-
-    try:
-        exit_code = asyncio.run(generate_documentation(oscal_version="v1.1.3"))
-        if exit_code == 0:
-            logger.info("Application exited successfully.")
-        elif exit_code == 1:
-            logger.warning("Application exited with warnings.")
-        else:
-            logger.error(f"Unexpected exit value of type {str(type(exit_code))}")
-        sys.exit(exit_code)
-    except Exception as e:
-        logger.exception(f"Fatal error: {e}")
-        sys.exit(1)
+    version_arg = sys.argv[1] if len(sys.argv) > 1 else "v1.1.3"
+    sys.exit(_main(version_arg))

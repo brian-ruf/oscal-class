@@ -248,7 +248,7 @@ def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
     md = re.sub(r"<[^>]+>", "", md)
 
     if multiline:
-        lines = [l.strip() for l in md.split("\n")]
+        lines = [ln.strip() for ln in md.split("\n")]
         cleaned: list[str] = []
         for line in lines:
             if line:
