@@ -719,6 +719,7 @@ class OSCALSupport:
         if nodes and isinstance(nodes, dict):
             from .metaschema_parser import (
                 _annotate_ns_conditions,
+                _assign_node_refs,
                 _compute_json_paths,
                 _index_uses_stale_allow_other_key,
                 _migrate_flags_to_children,
@@ -750,6 +751,7 @@ class OSCALSupport:
             _reroute_unresolved_constraints(nodes)
             _annotate_ns_conditions(nodes)
             _compute_json_paths(nodes, "")
+            _assign_node_refs(nodes, f"{version}/{model}")
 
         _metaschema_index_cache[key] = {
             "version": version,
@@ -759,6 +761,62 @@ class OSCALSupport:
         }
         logger.debug(f"Metaschema index cached for {version}/{model}.")
         return _metaschema_index_cache[key]["index"]
+
+    # -------------------------------------------------------------------------
+    def view_outline(self, version: str, model: str, format: str) -> str:
+        """Return an HTML ``<div>`` outline of a model's metaschema structure.
+
+        The outline is a clickable tree rendered in the requested format's syntax
+        (``"xml"``, ``"json"``, or ``"yaml"``), annotated with data types and
+        cardinality. Each element links to its node by a stable reference id, for use
+        with :meth:`view_detail`. Intended for a front-end: the HTML is a fragment
+        (wrapped in a ``<div>``), never a full page.
+
+        Args:
+            version (str, required): OSCAL version, e.g. ``"v1.1.3"``.
+            model (str, required): OSCAL model name, e.g. ``"catalog"``.
+            format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+
+        Returns:
+            str: An outline ``<div>`` fragment, or a ``<div class="ms-error">`` when
+                the model/version/format is unknown or the index is unavailable.
+        """
+        from . import metaschema_gen_docs as views
+
+        if not self.is_valid_model(model, version):
+            return views.error_html(f"Unknown OSCAL model '{model}' for version '{version}'.")
+        index = self.get_metaschema_index(version, model)
+        if index is None:
+            return views.error_html(f"No metaschema index available for {version}/{model}.")
+        return views.render_outline(index, format, version=version, model=model)
+
+    # -------------------------------------------------------------------------
+    def view_detail(self, version: str, model: str, format: str, reference_uuid: str) -> str:
+        """Return an HTML ``<div>`` detail view of a single metaschema node.
+
+        Given a node's reference id (as produced by :meth:`view_outline`), returns its
+        formal name and description, a format-appropriate representation, data type and
+        regex (where available), constraints, and its immediate parent and children —
+        each parent/child clickable by its own reference id.
+
+        Args:
+            version (str, required): OSCAL version, e.g. ``"v1.1.3"``.
+            model (str, required): OSCAL model name, e.g. ``"catalog"``.
+            format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+            reference_uuid (str, required): The node reference id to describe.
+
+        Returns:
+            str: A detail ``<div>`` fragment, or a ``<div class="ms-error">`` when the
+                model/version/format or reference is unknown.
+        """
+        from . import metaschema_gen_docs as views
+
+        if not self.is_valid_model(model, version):
+            return views.error_html(f"Unknown OSCAL model '{model}' for version '{version}'.")
+        index = self.get_metaschema_index(version, model)
+        if index is None:
+            return views.error_html(f"No metaschema index available for {version}/{model}.")
+        return views.render_detail(index, reference_uuid, format)
 
     # -------------------------------------------------------------------------
     def supported(self, oscal_version, assets):

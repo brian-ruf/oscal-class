@@ -1,6 +1,6 @@
 # oscal — Library Documentation API Context
 **Version:** 3.0.0
-**Generated:** 2026-07-12T23:15:28Z
+**Generated:** 2026-07-13T14:47:27Z
 Generated from: `./oscal`
 
 # Module: oscal.oscal_support
@@ -280,6 +280,42 @@ Args:
 Returns:
     bool: True if the update was successful, False otherwise.
 
+#### `def view_detail(self, version: str, model: str, format: str, reference_uuid: str) -> str`
+Return an HTML ``<div>`` detail view of a single metaschema node.
+
+Given a node's reference id (as produced by :meth:`view_outline`), returns its
+formal name and description, a format-appropriate representation, data type and
+regex (where available), constraints, and its immediate parent and children —
+each parent/child clickable by its own reference id.
+
+Args:
+    version (str, required): OSCAL version, e.g. ``"v1.1.3"``.
+    model (str, required): OSCAL model name, e.g. ``"catalog"``.
+    format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+    reference_uuid (str, required): The node reference id to describe.
+
+Returns:
+    str: A detail ``<div>`` fragment, or a ``<div class="ms-error">`` when the
+        model/version/format or reference is unknown.
+
+#### `def view_outline(self, version: str, model: str, format: str) -> str`
+Return an HTML ``<div>`` outline of a model's metaschema structure.
+
+The outline is a clickable tree rendered in the requested format's syntax
+(``"xml"``, ``"json"``, or ``"yaml"``), annotated with data types and
+cardinality. Each element links to its node by a stable reference id, for use
+with :meth:`view_detail`. Intended for a front-end: the HTML is a fragment
+(wrapped in a ``<div>``), never a full page.
+
+Args:
+    version (str, required): OSCAL version, e.g. ``"v1.1.3"``.
+    model (str, required): OSCAL model name, e.g. ``"catalog"``.
+    format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+
+Returns:
+    str: An outline ``<div>`` fragment, or a ``<div class="ms-error">`` when
+        the model/version/format is unknown or the index is unavailable.
+
 ## Class: OSCAL_support
 Access layer for the local OSCAL support-file database.
 
@@ -514,6 +550,42 @@ Args:
 
 Returns:
     bool: True if the update was successful, False otherwise.
+
+#### `def view_detail(self, version: str, model: str, format: str, reference_uuid: str) -> str`
+Return an HTML ``<div>`` detail view of a single metaschema node.
+
+Given a node's reference id (as produced by :meth:`view_outline`), returns its
+formal name and description, a format-appropriate representation, data type and
+regex (where available), constraints, and its immediate parent and children —
+each parent/child clickable by its own reference id.
+
+Args:
+    version (str, required): OSCAL version, e.g. ``"v1.1.3"``.
+    model (str, required): OSCAL model name, e.g. ``"catalog"``.
+    format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+    reference_uuid (str, required): The node reference id to describe.
+
+Returns:
+    str: A detail ``<div>`` fragment, or a ``<div class="ms-error">`` when the
+        model/version/format or reference is unknown.
+
+#### `def view_outline(self, version: str, model: str, format: str) -> str`
+Return an HTML ``<div>`` outline of a model's metaschema structure.
+
+The outline is a clickable tree rendered in the requested format's syntax
+(``"xml"``, ``"json"``, or ``"yaml"``), annotated with data types and
+cardinality. Each element links to its node by a stable reference id, for use
+with :meth:`view_detail`. Intended for a front-end: the HTML is a fragment
+(wrapped in a ``<div>``), never a full page.
+
+Args:
+    version (str, required): OSCAL version, e.g. ``"v1.1.3"``.
+    model (str, required): OSCAL model name, e.g. ``"catalog"``.
+    format (str, required): ``"xml"``, ``"json"``, or ``"yaml"``.
+
+Returns:
+    str: An outline ``<div>`` fragment, or a ``<div class="ms-error">`` when
+        the model/version/format is unknown or the index is unavailable.
 
 ## Module Functions
 

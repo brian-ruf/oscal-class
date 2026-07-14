@@ -29,7 +29,7 @@ import yaml
 import uuid
 import logging
 from typing             import Optional, Any, Literal, Protocol, runtime_checkable
-from datetime           import datetime, timezone
+from datetime           import datetime
 from functools          import wraps
 from enum               import Enum, IntEnum
 from urllib.parse       import urlparse, urljoin, urlunparse
@@ -47,7 +47,7 @@ from .oscal_registry    import get_registry
 from .oscal_cache       import get_local_cache, CacheDirective, CACHE_NEVER
 from .oscal_converter   import (
     oscal_markdown_to_html, OSCALConverter, _html_to_et,
-    OSCALPath, NativePath, native_path,
+    OSCALPath, native_path,
 )
 
 logger = logging.getLogger(__name__)

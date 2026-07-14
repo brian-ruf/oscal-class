@@ -36,6 +36,7 @@ Module constants:
 import sys
 import re
 import json
+import uuid
 from datetime import datetime, timezone
 # from html import escape
 # import html
@@ -44,7 +45,7 @@ from typing import cast
 import logging
 from .oscal_support import get_support
 from xml.etree import ElementTree as ET
-from ruf_common.helper import iif, has_repeated_ending, compare_semver
+from ruf_common.helper import iif, compare_semver
 from ruf_common.data import deserialize_xml, xpath, xpath_atomic, get_markup_content
 
 logger = logging.getLogger(__name__)
@@ -2251,6 +2252,44 @@ def _compute_json_paths(node: dict, parent_json: str, _seen: set | None = None) 
 
     for child in node.get("children", []):
         _compute_json_paths(child, json_path, _seen)
+
+
+# Stable namespace for deterministic metaschema node reference UUIDs (RFC-4122 URL namespace).
+_NODE_REF_NAMESPACE = uuid.UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+
+
+def _assign_node_refs(node: dict, base_seed: str, parent_ref: str | None = None,
+                      _seen: set | None = None) -> None:
+    """Assign a stable reference id (``ref``) and ``parent-ref`` to every node.
+
+    Each node receives a deterministic UUID (uuid5 over its positional path within the
+    index), so the same node always resolves to the same reference across index
+    rebuilds and process restarts. This gives the documentation views an unambiguous
+    handle for linking every element in an outline to its detail, and for walking from
+    a node to its immediate parent and children. ``parent-ref`` is None for the root.
+
+    Args:
+        node (dict, required): The current node (the model root on the first call).
+        base_seed (str, required): Seed uniquely identifying this index, e.g.
+            ``"v1.1.3/profile"``; each node extends it with its positional path.
+        parent_ref (str, optional): The parent node's ``ref``; None for the root.
+        _seen (set, optional): Cycle-guard accumulator.
+    """
+    if not isinstance(node, dict):
+        return
+    if _seen is None:
+        _seen = set()
+    node_id = id(node)
+    if node_id in _seen:
+        return
+    _seen.add(node_id)
+
+    node["ref"] = str(uuid.uuid5(_NODE_REF_NAMESPACE, base_seed))
+    node["parent-ref"] = parent_ref
+
+    for i, child in enumerate(node.get("children", []) or []):
+        if isinstance(child, dict):
+            _assign_node_refs(child, f"{base_seed}.{i}", node["ref"], _seen)
 
 def _index_uses_stale_allow_other_key(node: dict, _seen: set | None = None) -> bool:
     """Return True if any constraint in the subtree uses the deprecated 'allow-others' key.
