@@ -46,7 +46,7 @@ from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES
 from .oscal_registry    import get_registry
 from .oscal_cache       import get_local_cache, CacheDirective, CACHE_NEVER
 from .oscal_converter   import (
-    oscal_markdown_to_html, OSCALConverter, _html_to_et,
+    oscal_markdown_to_html, OSCALConverter, _html_to_et, _markup_to_md,
     OSCALPath, native_path,
 )
 
@@ -1700,11 +1700,6 @@ class OSCAL:
         status = False
         oscal_root = ""
         oscal_version = ""
-        content_title = ""
-        content_version = ""
-        content_publication = ""
-        content_uuid = ""
-        content_last_modified = ""
 
         # --- Step: acquired ---
         if not content or not content.strip():
@@ -1724,13 +1719,13 @@ class OSCAL:
                 self._tree = safe_load_xml(content)
                 if self._tree is not None:
                     status = True
+                    # Only the model (root element) and OSCAL version are read from XML here —
+                    # both are required to select the metaschema converter below. All summary
+                    # metadata is populated after XML→JSON conversion so it carries the JSON
+                    # (CommonMark) text form; the XML tree is consulted only as a fallback if
+                    # conversion fails (see _populate_summary_from_tree).
                     oscal_root = xpath_atomic(self._tree, _NSMAP, "/*/name()")
                     oscal_version = "v" + xpath_atomic(self._tree, _NSMAP, "/*/metadata/oscal-version/text()")
-                    content_title = xpath_atomic(self._tree, _NSMAP, "/*/metadata/title/text()")
-                    content_version = xpath_atomic(self._tree, _NSMAP, "/*/metadata/version/text()")
-                    content_publication = xpath_atomic(self._tree, _NSMAP, "/*/metadata/published/text()")
-                    content_uuid = xpath_atomic(self._tree, _NSMAP, "/*/@uuid")
-                    content_last_modified = xpath_atomic(self._tree, _NSMAP, "/*/metadata/last-modified/text()")
                 else:
                     status = False
                     logger.error("Content is not well-formed XML.")
@@ -1745,11 +1740,6 @@ class OSCAL:
                     root_obj = self._dict.get(oscal_root, {})
                     metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
                     oscal_version = f"v{metadata.get('oscal-version', '')}"
-                    content_title = metadata.get('title', '')
-                    content_version = metadata.get('version', '')
-                    content_publication = metadata.get('published', '')
-                    content_uuid = root_obj.get('uuid', '') if isinstance(root_obj, dict) else ''
-                    content_last_modified = metadata.get('last-modified', '')
                 else:
                     status = False
                     logger.error(f"Content is not well-formed {self.original_format.upper()}.")
@@ -1763,13 +1753,6 @@ class OSCAL:
                 self.oscal_version = oscal_version
                 if oscal_root in self._support.list_models(self.oscal_version):
                     self.model = oscal_root
-                    self.title = content_title
-                    self.version = content_version
-                    self.published = content_publication
-                    self.uuid = content_uuid
-                    # Composite content-identity key for the object registry: same tuple
-                    # means the same content revision regardless of format or location.
-                    self._identity = (content_uuid, content_last_modified, content_publication) if content_uuid else None
                     logger.debug(f"OSCAL model '{self.model}' and version '{self.oscal_version}' identified.")
                     status = True
                 else:
@@ -1784,8 +1767,6 @@ class OSCAL:
             self.content_state = ContentState.WELL_FORMED
 
         # For XML sources, immediately convert to dict so all manipulation operates on JSON-native data.
-        # Once dict is populated the parsed XML tree is released — it can be rebuilt on demand via
-        # _build_tree() if XML output is later requested.
         if status and self.original_format == "xml":
             converter = OSCALConverter.from_support(self.model, self.oscal_version, self._support)
             if converter is not None:
@@ -1793,17 +1774,84 @@ class OSCAL:
                 json_string = converter.xml_to_json(xml_string)
                 if json_string is not None:
                     self._dict = json.loads(json_string)
-                    self._tree = None
-                    logger.debug("XML source converted to dict; XML tree released.")
+                    logger.debug("XML source converted to dict.")
                 else:
                     logger.warning("XML→dict conversion failed; dict-based manipulation unavailable.")
             else:
                 logger.warning(f"No metaschema converter for {self.model} {self.oscal_version}; dict unavailable.")
 
+        # Populate summary metadata attributes. Normal path: from the converted JSON dict, so all
+        # text — including the markup fields title and remarks — keeps its JSON (CommonMark) form.
+        # Once the dict is authoritative the parsed XML tree is released (rebuildable on demand via
+        # _build_tree()). Fallback: if conversion did not produce a dict, read from the XML tree so
+        # error reports stay as complete as possible; markup fields are converted to CommonMark there
+        # too, so title/remarks always hold Markdown regardless of path.
+        if status:
+            if self._dict is not None:
+                self._populate_summary_from_dict()
+                if self.original_format == "xml":
+                    self._tree = None
+                    logger.debug("XML tree released after summary extraction.")
+            elif self._tree is not None:
+                logger.warning("Populating summary metadata from XML tree (conversion unavailable).")
+                self._populate_summary_from_tree()
+
         if status and self._dict is not None:
             self.validate(format="json")
 
         return status
+
+    # -------------------------------------------------------------------------
+    def _populate_summary_from_dict(self) -> None:
+        """Populate summary metadata attributes from the JSON dict (``self._dict``).
+
+        This is the normal path used for every successfully-parsed document (JSON/YAML
+        sources, and XML sources after XML→JSON conversion). All text — including the
+        markup fields ``title`` and ``remarks`` — is taken verbatim from the JSON, so it
+        keeps its OSCAL CommonMark (Markdown) form. Also builds the composite
+        content-identity key used by the object registry.
+        """
+        root_obj = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
+        self.title         = metadata.get('title', '')
+        self.version       = metadata.get('version', '')
+        self.published     = metadata.get('published', '')
+        self.last_modified = metadata.get('last-modified', '')
+        self.remarks       = metadata.get('remarks', '')
+        self.uuid          = root_obj.get('uuid', '') if isinstance(root_obj, dict) else ''
+        # Composite content-identity key for the object registry: same tuple means the
+        # same content revision regardless of format or location.
+        self._identity = (self.uuid, self.last_modified, self.published) if self.uuid else None
+
+    # -------------------------------------------------------------------------
+    def _populate_summary_from_tree(self) -> None:
+        """Fallback: populate summary metadata attributes from the XML tree (``self._tree``).
+
+        Used only when XML→JSON conversion did not produce a dict, so that error reports
+        remain as complete as possible. The markup fields ``title`` (markup-line) and
+        ``remarks`` (markup-multiline) are converted to OSCAL CommonMark so the attributes
+        always hold Markdown, consistent with the normal path. Plain-value fields are read
+        as text.
+        """
+        self.title         = self._markup_from_tree("title", "markup-line")
+        self.version       = xpath_atomic(self._tree, _NSMAP, "/*/metadata/version/text()")
+        self.published     = xpath_atomic(self._tree, _NSMAP, "/*/metadata/published/text()")
+        self.last_modified = xpath_atomic(self._tree, _NSMAP, "/*/metadata/last-modified/text()")
+        self.remarks       = self._markup_from_tree("remarks", "markup-multiline")
+        self.uuid          = xpath_atomic(self._tree, _NSMAP, "/*/@uuid")
+        self._identity = (self.uuid, self.last_modified, self.published) if self.uuid else None
+
+    # -------------------------------------------------------------------------
+    def _markup_from_tree(self, field: str, datatype: str) -> str:
+        """Return metadata markup field ``field`` from the XML tree as OSCAL CommonMark.
+
+        Locates ``/*/metadata/<field>`` in ``self._tree`` and converts its markup content
+        to Markdown via :func:`_markup_to_md`. Returns ``""`` when the element is absent.
+        """
+        element = self._tree.find(f"{{*}}metadata/{{*}}{field}")
+        if element is None:
+            return ""
+        return _markup_to_md(element, datatype)
 
     # -------------------------------------------------------------------------
     def validate(self, format: str = "") -> bool:

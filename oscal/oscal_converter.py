@@ -434,8 +434,8 @@ def _markup_to_md(element: Element, datatype: str) -> str:
         raw = _NS_ATTR_RE.sub("", raw)
         raw = _NS_PREFIX_RE.sub(r"<\1\2", raw)
         parts.append(raw)
-        if child.tail:
-            parts.append(child.tail)
+        # NOTE: ET.tostring(child, ...) already includes the child's tail text, so the
+        # tail must NOT be appended again here or it would be duplicated.
     html = "".join(parts).strip()
     if not html:
         return ""
