@@ -267,7 +267,7 @@ class TestDuplicateImportTree:
         assert two_same.import_tree["imports"][1]["status"] == ImportState.DUPLICATE
 
     def test_duplicate_tree_node_no_object(self, two_same):
-        assert two_same.import_tree["imports"][1]["object"] is None
+        assert two_same.import_tree["imports"][1]["object_uuid"] is None
 
     def test_duplicate_tree_node_empty_imports(self, two_same):
         """Cannot recurse into a DUPLICATE — it holds no object."""
@@ -512,10 +512,9 @@ class TestIgnoreImport:
         assert two_same.import_tree["imports"][1]["status"] == ImportState.IGNORED
 
     def test_tree_updated_in_place_after_ignore(self, two_same):
-        """The cached tree must be updated in-place — the same object is returned."""
-        tree_before = two_same.import_tree  # prime cache
+        """The cached tree is updated in-place, so the next (copied) access reflects it."""
+        _ = two_same.import_tree  # prime cache
         two_same.ignore_import(two_same.import_list[1]["href_original"])
-        assert two_same.import_tree is tree_before
         assert two_same.import_tree["imports"][1]["status"] == ImportState.IGNORED
 
 
@@ -654,9 +653,8 @@ class TestRemoveImport:
         assert len(two_same.import_tree["imports"]) == 1
 
     def test_tree_updated_in_place_after_remove(self, two_same):
-        tree_before = two_same.import_tree  # prime cache
+        _ = two_same.import_tree  # prime cache
         two_same.remove_import(two_same.import_list[1]["href_original"])
-        assert two_same.import_tree is tree_before
         assert len(two_same.import_tree["imports"]) == 1
 
     # --- prefers DUPLICATE over READY when hrefs match ---

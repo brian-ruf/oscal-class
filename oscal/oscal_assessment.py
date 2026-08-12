@@ -13,6 +13,24 @@ Module constants:
 from .oscal_content import OSCAL, register_model
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# DEVELOPER NOTE — assessment tasks not yet implemented (parking lot)
+# ---------------------------------------------------------------------------
+# These assessment classes are currently stubs (register + inherit base OSCAL).
+# Task accessors are NOT implemented yet.
+#
+# When tasks ARE implemented, mirror the catalog/profile control-getter pattern
+# for payload/ownership (see oscal_controls.get_control_by_id / get_group_by_id):
+#   * Add a `depth: int | None = None` parameter to task getters. Tasks can nest
+#     (a task may contain child `tasks`), so `depth` prunes ONLY the nested
+#     `tasks` collection — i.e. child_keys=("tasks",). The task node's own
+#     intrinsic content (props, links, activities, etc.) is always returned in
+#     full. `depth=None` = unlimited (mimics returning the whole subtree).
+#   * All getters return SAFE COPIES — never live references. Mutation must go
+#     through the enforcing (OSCAL-standard-aware) methods; the only live whole-
+#     document access remains the private `_dict` attribute.
+# The task nesting here is lighter than catalog control nesting, but the same
+# depth/ownership contract should apply for consistency across models.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class AssessmentPlan(OSCAL):
     """OSCAL Assessment Plan (AP / SAP) model.
 

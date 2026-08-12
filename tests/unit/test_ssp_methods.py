@@ -16,8 +16,11 @@ require those sections return None on a fresh SSP. These tests verify
 the documented behavior: no exception is raised and the return value
 signals failure via None.
 """
+import os
+
 import pytest
 
+from oscal import OSCAL
 from oscal.oscal_implementation import (
     SSP,
     append_by_component,
@@ -25,6 +28,9 @@ from oscal.oscal_implementation import (
     append_impl_requirement,
     append_responsible_role,
 )
+
+_HERE = os.path.dirname(__file__)
+_SSP_FIXTURE = os.path.join(_HERE, "..", "test-data", "sanitized_ssp_oscal.json")
 
 
 # ===========================================================================
@@ -283,3 +289,33 @@ class TestAppendResponsibleRole:
         append_responsible_role(parent, "isso")
         append_responsible_role(parent, "system-owner")
         assert len(parent.get("responsible-roles", [])) == 2
+
+
+# ===========================================================================
+# Safe-copy ownership: SSP mutators return copies, not live _dict nodes
+# ===========================================================================
+class TestSSPMutatorReturnsCopy:
+    """append_component()/append_impl_requirement() return a detached copy of the
+    created node; mutating it must not change the SSP stored in _dict."""
+
+    @staticmethod
+    def _loaded_ssp():
+        return OSCAL.load(_SSP_FIXTURE)
+
+    def test_append_component_returns_copy(self):
+        ssp = self._loaded_ssp()
+        comp = ssp.append_component("software", "CopyTestComp", "Desc")
+        assert comp is not None
+        comp["title"] = "MUTATED"
+        stored = ssp._dict["system-security-plan"]["system-implementation"]["components"]
+        assert any(c.get("title") == "CopyTestComp" for c in stored)
+        assert all(c.get("title") != "MUTATED" for c in stored)
+
+    def test_append_impl_requirement_returns_copy(self):
+        ssp = self._loaded_ssp()
+        ir = ssp.append_impl_requirement("copy-test-ctl")
+        assert ir is not None
+        ir["control-id"] = "MUTATED"
+        stored = ssp._dict["system-security-plan"]["control-implementation"]["implemented-requirements"]
+        assert any(r.get("control-id") == "copy-test-ctl" for r in stored)
+        assert all(r.get("control-id") != "MUTATED" for r in stored)
