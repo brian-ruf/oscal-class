@@ -119,3 +119,42 @@ class TestJsonQuery:
         obj = OSCAL.loads("")
         result = obj.json_query("/*/metadata/title")
         assert result == []
+
+
+# ===========================================================================
+# Safe-copy ownership: public query methods return copies; private return live
+# ===========================================================================
+class TestQueryReturnsCopies:
+    """Public query()/query_one()/json_query()/json_query_one() return detached copies;
+    the private _query()/_json_query() expose live references into _dict for internal use."""
+
+    def test_query_results_are_copies(self, catalog):
+        groups = catalog.query("//group")
+        assert groups and isinstance(groups[0], dict)
+        groups[0]["title"] = "MUTATED"
+        assert all(g.get("title") != "MUTATED" for g in catalog.query("//group"))
+
+    def test_query_one_result_is_copy(self, catalog):
+        catalog.query_one("//group")["title"] = "MUTATED"
+        assert catalog.query_one("//group").get("title") != "MUTATED"
+
+    def test_json_query_results_are_copies(self, catalog):
+        groups = catalog.json_query("//groups")   # json_query uses JSON key names
+        assert groups and isinstance(groups[0], dict)
+        groups[0]["title"] = "MUTATED"
+        assert all(g.get("title") != "MUTATED" for g in catalog.json_query("//groups"))
+
+    def test_private_query_returns_live_reference(self, catalog):
+        live = catalog._query("//group")
+        pub = catalog.query("//group")
+        assert live and pub
+        assert live[0] is not pub[0]                       # public is a copy
+        assert live[0] is catalog._dict[catalog.model]["groups"][0]   # private is the live node
+
+    def test_query_one_default_returned_as_is(self, catalog):
+        sentinel = object()
+        assert catalog.query_one("//nonexistent-xyz", default=sentinel) is sentinel
+
+    def test_json_query_one_default_returned_as_is(self, catalog):
+        sentinel = object()
+        assert catalog.json_query_one("//nonexistent-xyz", default=sentinel) is sentinel

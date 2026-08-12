@@ -246,6 +246,13 @@ if catalog.is_editable:
     catalog.dump()   # save back to the original file
 ```
 
+> **Getters and mutator returns are safe copies.** Read accessors (e.g.
+> `get_control_by_id`, `get_group_by_id`, query methods) and creation/mutation
+> methods (`create_control`, `create_control_group`, `add_part`, `set_title`,
+> `set_label`, …) all return a **detached copy** of the affected node. Editing that
+> copy does not change the document — make persistent changes by calling another
+> mutation method. The private `_dict` attribute is the only live-access hatch.
+
 See [CONTENT.md](CONTENT.md) for `append_child`, `append_resource`, and other
 mutation methods.
 

@@ -15,6 +15,7 @@ Module constants:
         media type from a referenced file's href.
 """
 import os
+import copy
 from urllib.parse import urlparse
 from dataclasses import dataclass
 import logging
@@ -24,7 +25,7 @@ from enum import Enum
 
 from .oscal_content import (
     OSCAL, requires, if_update_successful, append_props, append_links, new_uuid,
-    register_model, get_props, _OSCAL_NS,
+    register_model, get_props, prune_tree_copy, _OSCAL_NS,
 )
 from .oscal_datatypes import oscal_date_time_with_timezone
 
@@ -391,7 +392,8 @@ class Catalog(OSCAL):
 
             parent.setdefault("controls", []).append(control)
             self._build_controls_tree()
-            return control
+            # Return a safe copy — the live control stays in _dict; edits go through methods.
+            return copy.deepcopy(control)
 
         except Exception as error:
             logger.error(f"Error creating control '{id}': {type(error).__name__} - {error}")
@@ -477,44 +479,68 @@ class Catalog(OSCAL):
 
             target.setdefault("groups", []).append(group)
             self._build_controls_tree()
-            return group
+            # Return a safe copy — the live group stays in _dict; edits go through methods.
+            return copy.deepcopy(group)
 
         except Exception as error:
             logger.error(f"Error creating group '{id}': {type(error).__name__} - {error}")
             return None
 
     # -------------------------------------------------------------------------
-    def get_control_by_id(self, control_id: str) -> Optional[dict]:
-        """Retrieve a control dict by its ID, searching all groups recursively.
+    def get_control_by_id(self, control_id: str, depth: Optional[int] = None) -> Optional[dict]:
+        """Retrieve a control by its ID as a safe copy, searching all groups recursively.
+
+        The returned dict is a detached copy — mutating it does NOT change the catalog;
+        use the catalog's mutation methods to make persistent changes. The control's own
+        content (``parts``, ``props``, ``links``, ``params`` …) is always returned in full;
+        ``depth`` limits only nested child controls (enhancements).
 
         Args:
             control_id (str, required): The ``id`` of the control to find.
+            depth (int | None, optional): Nested-enhancement depth. ``None`` (default)
+                returns the full subtree; ``0`` omits enhancements; ``N`` keeps N levels.
 
         Returns:
-            Optional[dict]: The matching control dict, or None if not found.
+            Optional[dict]: A safe copy of the matching control, or None if not found.
         """
-        return _find_control(self._catalog_root(), control_id)
+        control = _find_control(self._catalog_root(), control_id)
+        return prune_tree_copy(control, depth, child_keys=("controls",))
 
     # -------------------------------------------------------------------------
-    def get_group_by_id(self, group_id: str) -> Optional[dict]:
-        """Retrieve a group dict by its ID, searching nested groups recursively.
+    def get_group_by_id(self, group_id: str, depth: Optional[int] = None) -> Optional[dict]:
+        """Retrieve a group by its ID as a safe copy, searching nested groups recursively.
+
+        The returned dict is a detached copy — mutating it does NOT change the catalog;
+        use the catalog's mutation methods to make persistent changes. The group's own
+        content (``props``, ``links`` …) is always returned in full; ``depth`` limits only
+        nested child groups and controls.
 
         Args:
             group_id (str, required): The ``id`` of the group to find.
+            depth (int | None, optional): Nested group/control depth. ``None`` (default)
+                returns the full subtree; ``0`` omits child groups/controls; ``N`` keeps
+                N levels.
 
         Returns:
-            Optional[dict]: The matching group dict, or None if not found.
+            Optional[dict]: A safe copy of the matching group, or None if not found.
         """
-        return _find_group(self._catalog_root().get("groups", []), group_id)
+        group = _find_group(self._catalog_root().get("groups", []), group_id)
+        return prune_tree_copy(group, depth, child_keys=("groups", "controls"))
 
     # -------------------------------------------------------------------------
     def get_control_list(self) -> list:
-        """Return a flat list of every control dict in the catalog, at all levels.
+        """Return a flat list of every control in the catalog, at all levels, as safe copies.
+
+        The returned list is detached from the document: each control is a copy, so
+        mutating any element does NOT change the catalog. A single deep copy of the whole
+        list preserves internal identity relationships (an enhancement nested inside its
+        parent is the same object as its own standalone entry). Use the catalog's mutation
+        methods to make persistent changes.
 
         Returns:
-            list: All control dicts found across the catalog and its groups.
+            list: Safe copies of all controls found across the catalog and its groups.
         """
-        return _all_controls(self._catalog_root())
+        return copy.deepcopy(_all_controls(self._catalog_root()))
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
@@ -591,7 +617,8 @@ class Catalog(OSCAL):
                 part["parts"] = list(parts)
 
             parent.setdefault("parts", []).append(part)
-            return part
+            # Return a safe copy — the live part stays in _dict; edits go through methods.
+            return copy.deepcopy(part)
 
         except Exception as error:
             logger.error(f"Error adding part '{name}' to '{parent_id}': {type(error).__name__} - {error}")
@@ -622,7 +649,8 @@ class Catalog(OSCAL):
             part["title"] = title
         else:
             part.pop("title", None)
-        return part
+        # Return a safe copy — the live part stays in _dict; edits go through methods.
+        return copy.deepcopy(part)
 
     # -------------------------------------------------------------------------
     def _find_group_or_control(self, id: str) -> Optional[dict]:
@@ -671,7 +699,8 @@ class Catalog(OSCAL):
             return None
         obj["title"] = title
         self._build_controls_tree()
-        return obj
+        # Return a safe copy — the live node stays in _dict; edits go through methods.
+        return copy.deepcopy(obj)
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
@@ -741,7 +770,8 @@ class Catalog(OSCAL):
                     new_prop["group"] = group
                 append_props(obj, [new_prop])
         self._build_controls_tree()
-        return obj
+        # Return a safe copy — the live node stays in _dict; edits go through methods.
+        return copy.deepcopy(obj)
 
     # -------------------------------------------------------------------------
     def _find_parent_and_obj(self, id: str) -> tuple:
@@ -1204,23 +1234,29 @@ class Profile(OSCAL):
         return ImportResult(status, entry=import_entry, resource=resource)
 
     # -------------------------------------------------------------------------
-    def control(self, control_id: str, with_history: bool = False) -> Optional[dict]:
-        """Retrieve a control by its ID from the resolved catalog.
+    def control(self, control_id: str, with_history: bool = False,
+                depth: Optional[int] = None) -> Optional[dict]:
+        """Retrieve a control by its ID from the resolved catalog, as a safe copy.
 
         The profile must be resolved first; returns None with a warning otherwise.
+        The returned dict is a detached copy (see :meth:`Catalog.get_control_by_id`) —
+        mutating it does NOT change the resolved catalog.
 
         Args:
             control_id (str, required): The ``id`` of the control to retrieve.
             with_history (bool, optional): Reserved for including tailoring history.
                 Defaults to False.
+            depth (int | None, optional): Nested-enhancement depth, forwarded to
+                :meth:`Catalog.get_control_by_id`. ``None`` (default) returns the full
+                subtree; ``0`` omits enhancements; ``N`` keeps N levels.
 
         Returns:
-            Optional[dict]: The control dict, or None if unresolved or not found.
+            Optional[dict]: A safe copy of the control, or None if unresolved or not found.
         """
         if self.resolution_status != ResolutionStatus.RESOLVED:
             logger.warning(f"Attempting to access control '{control_id}' before profile is resolved.")
             return None
-        return self.catalog.get_control_by_id(control_id)
+        return self.catalog.get_control_by_id(control_id, depth=depth)
 
     # -------------------------------------------------------------------------
     @staticmethod
@@ -1376,7 +1412,8 @@ class Profile(OSCAL):
             merge["custom"] = custom
 
         self._dict.setdefault(self.model, {})["merge"] = merge
-        return merge
+        # Return a safe copy — the live merge node stays in _dict; edits go through methods.
+        return copy.deepcopy(merge)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Mapping(OSCAL):
