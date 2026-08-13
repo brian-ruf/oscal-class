@@ -26,7 +26,7 @@ models.
 pip install oscal
 ```
 
-Latest unreleased development version:
+Latest pre-released development version:
 
 ```bash
 pip install git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal

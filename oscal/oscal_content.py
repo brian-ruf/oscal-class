@@ -1215,6 +1215,30 @@ class OSCAL:
         return self._identity
 
     # -------------------------------------------------------------------------
+    def _document_signature(self) -> tuple:
+        """Return the required-metadata signature used to distinguish documents that
+        share a root UUID: ``(title, oscal-version, last-modified, version)``.
+
+        Two documents with the same UUID and the same signature are the same document
+        (a legitimate duplicate import); a differing signature means a UUID collision
+        between genuinely different documents.
+        """
+        return (self.title, self.oscal_version, self.last_modified, self.version)
+
+    # -------------------------------------------------------------------------
+    def _reassign_uuid(self, new_uuid_value: str) -> None:
+        """Reassign this document's root UUID (both ``_dict`` and cached attributes).
+
+        Used to recover from a root-UUID collision between distinct documents so
+        resolution can continue. Importers reference documents by href (or back-matter
+        resource uuid), not by root uuid, so changing the root uuid is safe here.
+        """
+        if isinstance(self._dict, dict) and isinstance(self._dict.get(self.model), dict):
+            self._dict[self.model]["uuid"] = new_uuid_value
+        self.uuid = new_uuid_value
+        self._identity = (new_uuid_value, self.last_modified, self.published) if new_uuid_value else None
+
+    # -------------------------------------------------------------------------
     def _acquire_shared(self, resolved: str, cache_directive: "CacheDirective | None" = None) -> "OSCAL":
         """Load — or reuse from the registry — the OSCAL object for a resolved href.
 
@@ -1263,12 +1287,30 @@ class OSCAL:
                 if not force_reload:
                     existing = self._registry.get(key=key)
                     if existing is not None:
-                        logger.info(
-                            f"registry: '{canonical}' is the same content as an "
-                            "already-loaded object (identity hit) — reusing."
+                        # Same identity key. Confirm it is truly the same document by
+                        # comparing required metadata (title, oscal-version, last-modified,
+                        # version). If they match, it is a legitimate duplicate import and
+                        # we reuse the shared instance.
+                        if child._document_signature() == existing._document_signature():
+                            logger.info(
+                                f"registry: '{canonical}' is the same content as an "
+                                "already-loaded object (identity hit) — reusing."
+                            )
+                            self._registry.alias_href(canonical, existing)
+                            return existing
+                        # Otherwise two genuinely different documents share a root UUID.
+                        # Reassign this (subsequent) one a fresh uuid so resolution can
+                        # continue, and warn — the content should be corrected.
+                        old_uuid = child.uuid
+                        replacement = new_uuid()
+                        child._reassign_uuid(replacement)
+                        key = child._identity_key()
+                        logger.warning(
+                            f"registry: root UUID collision — '{canonical}' shares uuid "
+                            f"'{old_uuid}' with a different document (metadata differs). "
+                            f"Reassigned it to '{replacement}' to continue; fix the "
+                            "source content to use unique UUIDs."
                         )
-                        self._registry.alias_href(canonical, existing)
-                        return existing
                 self._registry.register(child, key=key, href=canonical)
             else:
                 logger.debug(f"registry: '{canonical}' has no identity key; not deduped.")
@@ -4202,6 +4244,10 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
     Returns a validated base OSCAL instance loaded from a template.
     Currently this is based on loading a template file from package data.
     In the future, this should be generated based on the latest metaschema definition.
+
+    The supplied ``title`` (and ``version``/``published`` when given) overwrite the
+    template's placeholder metadata, so ``Catalog.new("X")`` / ``Profile.new("X")`` set
+    the document title as expected.
 
     The returned instance is always a base OSCAL object. Callers that need a
     specific model subclass (e.g. Catalog, Profile) are responsible for

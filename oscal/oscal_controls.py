@@ -1905,10 +1905,43 @@ class Catalog(OSCAL):
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Profile(OSCAL):
-    """
-    Class representing an OSCAL Profile object.
-    Inherits common OSCAL functionality and adds profile-specific methods
-    for managing imports and control selections.
+    """Editable OSCAL Profile model with tree-driven, lazy resolution.
+
+    A profile selects and tailors controls from one or more imported catalogs/profiles.
+    Resolution is split into a cheap load-time step and an on-demand heavy step:
+
+    * **controls_tree (source of truth).** On load — and after any import/directive
+      change — :meth:`_build_controls_tree` reads each imported object's own
+      ``controls_tree`` and applies the profile's directives to produce this profile's
+      ``controls_tree``: the authoritative scope and organization. It is lightweight
+      (ids + hierarchy + an ``origin`` back to each node's immediate source); no control
+      content is copied. Directives applied here: ``import``/``include``/``exclude``
+      selection, ``merge`` (``as-is`` or ``flat``; ``custom`` is deferred and falls back
+      to ``as-is``), and ``combine`` duplicate handling (``keep`` renames the node id,
+      ``use-first`` drops later duplicates). When an ``as-is`` merge would place controls
+      and groups together at the root, root controls are wrapped in a synthetic
+      "ROOT CONTROLS" group.
+
+    * **resolve() (heavy, cacheable).** :meth:`resolve` walks the tree and materializes a
+      brand-new ``Catalog`` in :attr:`catalog`, fetching real content per node, applying
+      ``modify`` directives (removes → adds → set-parameters) and full internal id
+      renaming for duplicates, hoisting externally-defined cited parameters to the root,
+      carrying forward referenced back-matter resources, and rewriting out-of-scope
+      references to their source URIs. ``catalog`` is ``None`` until ``resolve`` is called.
+
+    * **Read-only Catalog surface.** :meth:`get_control_by_id`, :meth:`get_group_by_id`,
+      and :meth:`get_control_list` return safe copies from :attr:`catalog` when resolved,
+      or materialize them on demand from the source (through the same code path, so the
+      two agree) when unresolved. Content is changed via the profile's own directive
+      methods and re-resolved, not by editing returned copies.
+
+    Key attributes:
+        catalog (Catalog | None): The resolved catalog, or None until :meth:`resolve`.
+        controls_tree (list[dict]): Scope/organization nodes
+            ``{id, label, title, group, origin, children}``.
+        duplicates (dict): Controls/groups renamed or dropped by ``combine``, keyed by
+            original id (see :meth:`_record_duplicate`).
+        resolution_status (ResolutionStatus): UNRESOLVED / RESOLVING / RESOLVED / BLOCKED.
     """
     def _init_common(self):
         super()._init_common()
@@ -1955,6 +1988,10 @@ class Profile(OSCAL):
         mutation is deferred to :meth:`resolve`), tags every node with an ``origin``,
         and prunes empty groups. Populates :attr:`controls_tree` and :attr:`duplicates`.
 
+        For ``as-is`` merges, if the result would place controls and groups together at
+        the root (which OSCAL forbids), the root controls are wrapped in a synthetic
+        "ROOT CONTROLS" group via :meth:`_wrap_root_controls`.
+
         Best-effort: if content or imports are not yet available the tree is left empty
         and ``_tree_dirty`` stays set so it rebuilds on the next access.
         """
@@ -1986,8 +2023,9 @@ class Profile(OSCAL):
             mode = "as-is"
             wrap_root = False
 
-        seen_controls: set[str] = set()
-        seen_groups: set[str] = set()
+        # id -> placed node, shared across imports so duplicates merge/rename correctly.
+        ctrl_nodes: dict[str, dict] = {}
+        group_nodes: dict[str, dict] = {}
         result: list[dict[str, Any]] = []
 
         for idx, (imp, source_obj) in enumerate(sources):
@@ -2000,7 +2038,7 @@ class Profile(OSCAL):
             for w in warnings:
                 logger.warning(f"controls_tree: import {idx}: {w}")
             self._place_tree_import(result, src_tree, selected, source_obj.uuid,
-                                    mode, combine, idx, seen_controls, seen_groups)
+                                    mode, combine, idx, ctrl_nodes, group_nodes)
 
         result = _prune_empty_group_nodes(result)
         if wrap_root:
@@ -2407,29 +2445,26 @@ class Profile(OSCAL):
     # =========================================================================
     def _place_tree_import(self, result: list, src_tree: list, selected: set,
                            source_uuid: str, mode: str, combine: str, import_index: int,
-                           seen_controls: set, seen_groups: set) -> None:
+                           ctrl_nodes: dict, group_nodes: dict) -> None:
         """Place one import's selected control nodes into the profile ``result`` tree.
 
-        Operates purely on lightweight controls_tree nodes: under ``as-is`` each control
+        Operates purely on lightweight controls_tree nodes. Under ``as-is`` each control
         keeps its source group ancestry (groups created lazily, so empties never appear);
-        under ``flat`` controls go at the root. Duplicate ids are resolved by renaming the
-        node id only (``__<uuid>``) — internal-id mutation is deferred to :meth:`resolve`.
-        Every emitted node is tagged with an ``origin`` back to its immediate source.
-        """
-        group_map: dict[str, dict] = {}
+        under ``flat`` controls go at the root. Duplicates follow the ``combine`` directive:
 
-        def dedup_id(orig_id: str, kind: str, seen: set) -> Optional[str]:
-            if orig_id in seen:
-                if kind == "controls" and combine == "use-first":
-                    self._record_duplicate(kind, orig_id, None, import_index, dropped=True)
-                    return None
-                uid = new_uuid()
-                new_id = f"{orig_id}__{uid}"
-                self._record_duplicate(kind, orig_id, new_id, import_index, uuid=uid)
-                seen.add(new_id)
-                return new_id
-            seen.add(orig_id)
-            return orig_id
+          * ``use-first`` — the first instance is kept; a later duplicate control is dropped
+            but its NEW descendant enhancements are merged into the kept control, and a
+            later duplicate group's controls are merged into the kept group.
+          * ``keep`` — a later duplicate control/group is renamed (``__<uuid>``); its
+            children stay with it, except any child that itself collides is handled
+            independently.
+
+        ``ctrl_nodes``/``group_nodes`` map placed id → node and are shared across imports,
+        so merges and renames see everything placed so far. Every emitted node is tagged
+        with an ``origin`` back to its immediate source. Internal id renaming for ``keep``
+        duplicates is deferred to :meth:`resolve`.
+        """
+        import_group_map: dict[str, dict] = {}   # per-import: source gid -> group node used
 
         def make_node(src_node: dict, new_id: str, is_group: bool) -> dict:
             return {
@@ -2443,69 +2478,94 @@ class Profile(OSCAL):
                 "children": [],
             }
 
+        def resolve_group(gsrc: dict, parent_children: list) -> list:
+            """Return the child-list to descend into for one source group in the path."""
+            gid = gsrc.get("id")
+            if not gid:
+                logger.warning("controls_tree: source group without id skipped; "
+                               "its controls bubble up to the nearest parent.")
+                return parent_children
+            if combine == "use-first":
+                # Merge: all controls funnel into the single kept group with this id.
+                existing = group_nodes.get(gid)
+                if existing is not None:
+                    return existing["children"]
+                gnode = make_node(gsrc, gid, True)
+                parent_children.append(gnode)
+                group_nodes[gid] = gnode
+                return gnode["children"]
+            # keep: reuse this import's instance, else rename a new instance on collision.
+            reused = import_group_map.get(gid)
+            if reused is not None:
+                return reused["children"]
+            if gid in group_nodes:
+                uid = new_uuid()
+                new_gid = f"{gid}__{uid}"
+                self._record_duplicate("groups", gid, new_gid, import_index, uuid=uid)
+            else:
+                new_gid = gid
+            gnode = make_node(gsrc, new_gid, True)
+            parent_children.append(gnode)
+            group_nodes[new_gid] = gnode
+            import_group_map[gid] = gnode
+            return gnode["children"]
+
         def ensure_group(group_path: list) -> list:
-            # Lazily create/reuse the group ancestry; returns the child-list to append to.
             if mode != "as-is":
                 return result
             parent_children = result
             for gsrc in group_path:
-                gid = gsrc.get("id")
-                if not gid:
-                    logger.warning("controls_tree: source group without id skipped; "
-                                   "its controls bubble up to the nearest parent.")
-                    continue
-                existing = group_map.get(gid)
-                if existing is not None:
-                    parent_children = existing["children"]
-                    continue
-                new_gid = dedup_id(gid, "groups", seen_groups)  # groups never drop
-                gnode = make_node(gsrc, new_gid, True)
-                parent_children.append(gnode)
-                group_map[gid] = gnode
-                parent_children = gnode["children"]
+                parent_children = resolve_group(gsrc, parent_children)
             return parent_children
+
+        def place_control(src_node: dict, dest_children: list) -> None:
+            cid = src_node.get("id")
+            existing = ctrl_nodes.get(cid)
+            if existing is not None:
+                if combine == "use-first":
+                    # Drop this duplicate, but keep any NEW enhancements it introduces.
+                    self._record_duplicate("controls", cid, None, import_index, dropped=True)
+                    attach_enhancements(src_node, existing)
+                    return
+                # keep: rename this instance; its children ride along (colliding ones
+                # are handled independently when attached).
+                uid = new_uuid()
+                new_id = f"{cid}__{uid}"
+                self._record_duplicate("controls", cid, new_id, import_index, uuid=uid)
+                node = make_node(src_node, new_id, False)
+                dest_children.append(node)
+                ctrl_nodes[new_id] = node
+                attach_enhancements(src_node, node)
+                return
+            node = make_node(src_node, cid, False)
+            dest_children.append(node)
+            ctrl_nodes[cid] = node
+            attach_enhancements(src_node, node)
 
         def attach_enhancements(src_node: dict, node: dict) -> None:
             for child in src_node.get("children", []):
                 if child.get("group"):
                     continue
                 if child.get("id") in selected:
-                    place_nested(child, node["children"])
+                    place_control(child, node["children"])
                 else:
-                    promote_nested(child, node["children"])
+                    promote(child, node["children"])
 
-        def place_nested(src_node: dict, dest_children: list) -> None:
-            new_id = dedup_id(src_node.get("id"), "controls", seen_controls)
-            if new_id is None:
-                return
-            node = make_node(src_node, new_id, False)
-            dest_children.append(node)
-            attach_enhancements(src_node, node)
-
-        def promote_nested(src_node: dict, dest_children: list) -> None:
+        def promote(src_node: dict, dest_children: list) -> None:
             for child in src_node.get("children", []):
                 if child.get("group"):
                     continue
                 if child.get("id") in selected:
-                    place_nested(child, dest_children)
+                    place_control(child, dest_children)
                 else:
-                    promote_nested(child, dest_children)
-
-        def place_top(src_node: dict, group_path: list) -> None:
-            new_id = dedup_id(src_node.get("id"), "controls", seen_controls)
-            if new_id is None:
-                return
-            dest_children = ensure_group(group_path)   # group created only now
-            node = make_node(src_node, new_id, False)
-            dest_children.append(node)
-            attach_enhancements(src_node, node)
+                    promote(child, dest_children)
 
         def promote_top(src_node: dict, group_path: list) -> None:
             for child in src_node.get("children", []):
                 if child.get("group"):
                     continue
                 if child.get("id") in selected:
-                    place_top(child, group_path)
+                    place_control(child, ensure_group(group_path))
                 else:
                     promote_top(child, group_path)
 
@@ -2514,7 +2574,7 @@ class Profile(OSCAL):
                 if n.get("group"):
                     walk(n.get("children", []), group_path + [n])
                 elif n.get("id") in selected:
-                    place_top(n, group_path)
+                    place_control(n, ensure_group(group_path))
                 else:
                     promote_top(n, group_path)
 
@@ -2528,11 +2588,15 @@ class Profile(OSCAL):
 
         Resolution is the (future-cacheable) heavy step: it walks the profile's
         controls_tree — the authoritative scope/organization built at load — and for each
-        node fetches the real control/group content from its origin source, applying full
+        node fetches the real control/group content from its origin source, applies this
+        profile's ``modify`` directives (removes → adds → set-parameters), applies full
         internal ``__<uuid>`` id renaming for duplicates, then inserts it into a brand-new
-        ``Catalog``. Any previously resolved catalog is discarded and replaced. Metadata
-        and referenced back-matter resources are carried forward, then the catalog is
-        validated.
+        ``Catalog``. Any previously resolved catalog is discarded and replaced. After
+        placement it: hoists cited-but-externally-defined parameters to the catalog root
+        (:meth:`_insert_shared_params`), assembles metadata, carries forward referenced
+        back-matter resources (:meth:`_carry_backmatter`), rewrites references to
+        out-of-scope ids to their source URIs (:meth:`_rewrite_out_of_scope_refs`), and
+        validates.
 
         Because content is fetched through each source's own getters, imported *profiles*
         need not be pre-resolved — their load-time controls_tree and lazy getters suffice.
@@ -2746,13 +2810,17 @@ class Profile(OSCAL):
         profile author's ``control-id``/``param-id`` references are to the imported
         source, not to our internal de-duplication renaming. ``ancestors`` carries the
         source ids of enclosing control nodes so that an ancestor's ``by-id`` alter can
-        reach into this nested control.
+        reach into this nested control. Parameters cited here but defined elsewhere are
+        brought into scope via :meth:`_resolve_cited_params`.
 
         Args:
             node (dict, required): A control node from the profile's controls_tree.
             depth (int | None, optional): Enhancement depth — ``None`` full, ``0`` none,
                 ``N`` keeps N levels.
             ancestors (tuple, optional): Source ids of enclosing control nodes.
+            shared_sink (list | None, optional): When a list (resolve), cited-but-
+                externally-defined parameters are collected into it for hoisting to the
+                catalog root; when None (JIT), they are embedded in the control instead.
 
         Returns:
             Optional[dict]: The materialized control, or None when the source content
@@ -3111,9 +3179,8 @@ class Profile(OSCAL):
         otherwise materialized on demand from the source via the profile's controls_tree.
 
         Both paths return the same shape (the control with its in-scope enhancements
-        nested per ``depth``). When unresolved, the control is fetched from its origin
-        source; once ``modify`` processing exists, that fetch will also apply this
-        profile's alter directives.
+        nested per ``depth``, this profile's ``modify`` directives applied). When
+        unresolved, the control is materialized from its origin source on each call.
 
         Args:
             control_id (str, required): The control id (as it appears in this profile's

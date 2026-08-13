@@ -1,4 +1,4 @@
-# ROADMAP (_Updated Apl 26, 2026_)
+# ROADMAP (_Updated Aug 12, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
@@ -18,7 +18,6 @@ The sequencing of releases may change in response to client needs and other exte
     - Convert and save in any OSCAL format (XML, JSON, YAML)
         - Currently relies on SaxonC-HE and NIST XSLT 3.x Convertion files
 
-## Current: 
 
 ### Version 2.0.x: Refactoring, XML/JSON Parity
 
@@ -27,7 +26,7 @@ The sequencing of releases may change in response to client needs and other exte
 - Efficiency and maintainability improvements
 - Robust Loading from local file system and remote URLs
 
-## Next
+## Current:
 
 ### Version 3.0.x: Import Dependency Chain
 
@@ -38,7 +37,7 @@ The sequencing of releases may change in response to client needs and other exte
 - [ ] Failed import handling
 - [ ] Basic addressibility across imported files
 
-### Profile Resolution
+### Version 3.1.x Profile Resolution
 
 - [ ] Control Tree Generation/Caching
 - [ ] By-Control Tailoring

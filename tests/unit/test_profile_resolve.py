@@ -461,3 +461,126 @@ class TestMultiImport:
         assert {c["id"] for c in p.get_control_list()} == {"ac-1", "ac-2", "au-1", "au-2"}
         assert p.get_group_by_id("ac") is not None
         assert p.get_group_by_id("au") is not None
+
+
+# ===========================================================================
+# Combine semantics: use-first merges, keep renames (controls AND groups)
+# ===========================================================================
+class TestCombineSemantics:
+
+    def _cat(self, tmp_path, name, uuid, groups):
+        doc = {"catalog": {"uuid": uuid,
+               "metadata": {"title": name, "last-modified": "2026-01-01T00:00:00Z",
+                            "version": "1", "oscal-version": "1.1.3"},
+               "groups": [{"id": g, "title": g.upper(),
+                           "controls": ctrls} for g, ctrls in groups]}}
+        path = os.path.join(str(tmp_path), name)
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def _ids(self, prof):
+        def allc(nodes):
+            out = []
+            for n in nodes:
+                if not n["group"]:
+                    out.append(n["id"])
+                out += allc(n["children"])
+            return out
+        return allc(prof.controls_tree)
+
+    def _two(self, tmp_path, combine):
+        # both catalogs have family group 'ac'; ac-2 overlaps; ac-2.1 is a NEW
+        # enhancement of the (duplicated) ac-2 introduced by the second import.
+        a = self._cat(tmp_path, "a.json", "11111111-1111-4111-8111-111111111111",
+                      [("ac", [{"id": "ac-1", "title": "ac-1"},
+                               {"id": "ac-2", "title": "ac-2"}])])
+        b = self._cat(tmp_path, "b.json", "22222222-2222-4222-8222-222222222222",
+                      [("ac", [{"id": "ac-2", "title": "ac-2",
+                                "controls": [{"id": "ac-2.1", "title": "ac-2.1"}]},
+                               {"id": "ac-3", "title": "ac-3"}])])
+        p = Profile.new("C")
+        p.add_import(a, include_all=True)
+        p.add_import(b, include_all=True)
+        p.set_merge(as_is=True, combine=combine)
+        return p
+
+    def test_use_first_merges_groups(self, tmp_path):
+        p = self._two(tmp_path, "use-first")
+        # single merged 'ac' group, no rename
+        assert [n["id"] for n in p.controls_tree] == ["ac"]
+        assert not p.duplicates["groups"]
+
+    def test_use_first_keeps_new_enhancement_of_duplicate_parent(self, tmp_path):
+        p = self._two(tmp_path, "use-first")
+        ids = set(self._ids(p))
+        # ac-2 (duplicate) dropped-as-first-wins, but its NEW child ac-2.1 is kept
+        assert {"ac-1", "ac-2", "ac-3", "ac-2.1"} == ids
+        # ac-2.1 nested under the kept ac-2
+        ac = p.controls_tree[0]
+        ac2 = next(c for c in ac["children"] if c["id"] == "ac-2")
+        assert any(ch["id"] == "ac-2.1" for ch in ac2["children"])
+
+    def test_use_first_drops_true_duplicate(self, tmp_path):
+        p = self._two(tmp_path, "use-first")
+        assert p.duplicates["controls"].get("ac-2", [{}])[0].get("dropped") is True
+
+    def test_keep_renames_groups_and_controls(self, tmp_path):
+        p = self._two(tmp_path, "keep")
+        top = [n["id"] for n in p.controls_tree]
+        assert top[0] == "ac" and top[1].startswith("ac__")     # duplicate group renamed
+        assert "ac" in p.duplicates["groups"]
+        assert "ac-2" in p.duplicates["controls"]               # duplicate control renamed
+        ids = set(self._ids(p))
+        assert "ac-1" in ids and "ac-3" in ids
+        assert any(i.startswith("ac-2__") for i in ids)
+
+
+# ===========================================================================
+# Defensive root-UUID-collision handling
+# ===========================================================================
+class TestUuidCollision:
+
+    def _cat(self, tmp_path, name, uuid, ctrls, version, lm="2026-02-27T03:29:33Z",
+             title="Shared"):
+        doc = {"catalog": {"uuid": uuid,
+               "metadata": {"title": title, "last-modified": lm, "version": version,
+                            "oscal-version": "1.1.3"},
+               "groups": [{"id": "g", "title": "G",
+                           "controls": [{"id": c, "title": c} for c in ctrls]}]}}
+        path = os.path.join(str(tmp_path), name)
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def test_collision_reassigned_and_all_controls_kept(self, tmp_path, caplog):
+        U = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        # same uuid + last-modified, DIFFERENT version -> genuine collision
+        a = self._cat(tmp_path, "a.json", U, ["x1", "x2"], version="1.0.0")
+        b = self._cat(tmp_path, "b.json", U, ["y1", "y2"], version="2.0.0")
+        p = Profile.new("Coll")
+        p.add_import(a, include_all=True)
+        p.add_import(b, include_all=True)
+        p.set_merge(as_is=True, combine="use-first")
+        objs = [e.get("object").uuid for e in p.import_list if e.get("object")]
+        assert objs[0] != objs[1]        # subsequent doc reassigned a new uuid
+
+        def allc(nodes):
+            out = []
+            for n in nodes:
+                if not n["group"]:
+                    out.append(n["id"])
+                out += allc(n["children"])
+            return out
+        assert set(allc(p.controls_tree)) == {"x1", "x2", "y1", "y2"}
+
+    def test_identical_documents_dedup_to_one_instance(self, tmp_path):
+        U = "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        a = self._cat(tmp_path, "a.json", U, ["x1"], version="1.0.0")
+        b = self._cat(tmp_path, "b.json", U, ["x1"], version="1.0.0")  # identical signature
+        p = Profile.new("Dup")
+        p.add_import(a, include_all=True)
+        p.add_import(b, include_all=True)
+        p.set_merge(as_is=True)
+        # same identity + signature -> reused, both imports resolve to one instance
+        assert p.import_list[0].get("object") is p.import_list[1].get("object")
