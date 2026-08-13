@@ -2902,6 +2902,111 @@ class OSCAL:
                 return result
         return None
 
+    # -------------------------------------------------------------------------
+    # Kinds of element the import-tree resolver can locate, mapped to how they are
+    # identified (uuid vs id). Extensible for model-specific needs.
+    _RESOLVE_KINDS = ("resource", "role", "party", "control", "group", "param", "part")
+
+    def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None) -> Optional[dict]:
+        """Resolve an id/uuid by searching this document and its import tree.
+
+        OSCAL cross-references (``href="#..."``) can point at content that lives in an
+        imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
+        id) or ``party`` (by uuid), or a ``control``/``group``/``param``/``part`` (by id).
+        This walks ``self`` first, then each imported document depth-first (de-duplicated,
+        cycle-safe), and returns the first match together with the document that owns it.
+
+        Args:
+            fragment_id (str, required): The bare id/uuid to resolve (no leading ``#``).
+            kinds (Iterable[str] | None, optional): Restrict the search to these element
+                kinds (subset of :attr:`_RESOLVE_KINDS`); ``None`` searches all.
+            _seen (set | None, optional): Internal cycle-guard.
+
+        Returns:
+            Optional[dict]: ``{"element", "kind", "id", "object_uuid", "href"}`` — a safe
+                copy of the found element, its kind, the owning document's root uuid and
+                resolved href — or None when not found anywhere in the tree.
+        """
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return None
+        _seen.add(id(self))
+
+        local = self._find_local_element(fragment_id, kinds)
+        if local is not None:
+            local["object_uuid"] = self.uuid
+            local["href"] = self.href or self.href_original or ""
+            return local
+
+        for entry in self.import_list:
+            obj = entry.get("object")
+            if obj is None:
+                continue
+            found = obj.find_in_import_tree(fragment_id, kinds, _seen)
+            if found is not None:
+                return found
+        return None
+
+    # -------------------------------------------------------------------------
+    def get_parameter_by_id(self, param_id: str) -> Optional[dict]:
+        """Return a safe copy of a parameter defined anywhere in scope, or None.
+
+        Searches this document and its import tree for a ``param`` with the given id —
+        covering parameters defined at control, group, or catalog level (and reached
+        through imported catalogs/profiles). Subclasses may override to prefer resolved
+        content.
+        """
+        found = self.find_in_import_tree(param_id, kinds=["param"])
+        return found["element"] if found is not None else None
+
+    # -------------------------------------------------------------------------
+    def reachable_ids(self, _seen=None) -> set:
+        """Return every ``id``/``uuid`` value in this document and its import tree.
+
+        Used to decide whether a cross-reference resolves somewhere in scope. The walk
+        is de-duplicated and cycle-safe across the import graph.
+        """
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return set()
+        _seen.add(id(self))
+        ids: set[str] = set()
+        _collect_ids(self._dict, ids)
+        for entry in self.import_list:
+            obj = entry.get("object")
+            if obj is not None:
+                ids |= obj.reachable_ids(_seen)
+        return ids
+
+    # -------------------------------------------------------------------------
+    def _find_local_element(self, fragment_id: str, kinds=None) -> Optional[dict]:
+        """Find an element identified by ``fragment_id`` in THIS document only (no imports)."""
+        wanted = tuple(kinds) if kinds else self._RESOLVE_KINDS
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        if not isinstance(root, dict):
+            return None
+
+        if "resource" in wanted:
+            for res in root.get("back-matter", {}).get("resources", []):
+                if isinstance(res, dict) and res.get("uuid") == fragment_id:
+                    return {"element": copy.deepcopy(res), "kind": "resource", "id": fragment_id}
+        metadata = root.get("metadata", {}) if isinstance(root.get("metadata"), dict) else {}
+        if "role" in wanted:
+            for role in metadata.get("roles", []):
+                if isinstance(role, dict) and role.get("id") == fragment_id:
+                    return {"element": copy.deepcopy(role), "kind": "role", "id": fragment_id}
+        if "party" in wanted:
+            for party in metadata.get("parties", []):
+                if isinstance(party, dict) and party.get("uuid") == fragment_id:
+                    return {"element": copy.deepcopy(party), "kind": "party", "id": fragment_id}
+        if any(k in wanted for k in ("control", "group", "param", "part")):
+            found = _find_model_element(root, fragment_id, wanted)
+            if found is not None:
+                return found
+        return None
+
 
     # -------------------------------------------------------------------------
     def dumps(self, format: str = "", pretty_print: bool = False) -> str:
@@ -3695,6 +3800,68 @@ def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
     return True
 
 # -------------------------------------------------------------------------
+def _collect_ids(node, out: set) -> None:
+    """Recursively collect every ``id``/``uuid`` string value into ``out``."""
+    if isinstance(node, dict):
+        for key, val in node.items():
+            if key in ("id", "uuid") and isinstance(val, str):
+                out.add(val)
+            _collect_ids(val, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_ids(item, out)
+
+
+# -------------------------------------------------------------------------
+def _find_part_by_id(parts: list, fragment_id: str) -> dict | None:
+    """Recursively find a part by id within a list of parts (and their nested parts)."""
+    for part in parts or []:
+        if isinstance(part, dict):
+            if part.get("id") == fragment_id:
+                return part
+            found = _find_part_by_id(part.get("parts", []), fragment_id)
+            if found is not None:
+                return found
+    return None
+
+
+def _find_model_element(container: dict, fragment_id: str, kinds) -> dict | None:
+    """Find a control/group/param/part by id within a catalog-shaped container.
+
+    Searches ``container`` (a catalog root, group, or control) for a matching group,
+    control, param, or part — descending through nested groups and controls. Returns a
+    result dict ``{"element", "kind", "id"}`` (safe copy) or None.
+    """
+    if "group" in kinds:
+        for grp in container.get("groups", []):
+            if isinstance(grp, dict) and grp.get("id") == fragment_id:
+                return {"element": copy.deepcopy(grp), "kind": "group", "id": fragment_id}
+    if "control" in kinds:
+        for ctrl in container.get("controls", []):
+            if isinstance(ctrl, dict) and ctrl.get("id") == fragment_id:
+                return {"element": copy.deepcopy(ctrl), "kind": "control", "id": fragment_id}
+    if "param" in kinds:
+        for param in container.get("params", []):
+            if isinstance(param, dict) and param.get("id") == fragment_id:
+                return {"element": copy.deepcopy(param), "kind": "param", "id": fragment_id}
+    if "part" in kinds:
+        part = _find_part_by_id(container.get("parts", []), fragment_id)
+        if part is not None:
+            return {"element": copy.deepcopy(part), "kind": "part", "id": fragment_id}
+    for grp in container.get("groups", []):
+        if isinstance(grp, dict):
+            found = _find_model_element(grp, fragment_id, kinds)
+            if found is not None:
+                return found
+    for ctrl in container.get("controls", []):
+        if isinstance(ctrl, dict):
+            found = _find_model_element(ctrl, fragment_id, kinds)
+            if found is not None:
+                return found
+    return None
+
+
+# -------------------------------------------------------------------------
 def prune_tree_copy(node: dict | None, depth: int | None = None,
                     child_keys: tuple = ("groups", "controls")) -> dict | None:
     """Return a SAFE COPY of *node* with nested structural children limited to *depth*.
@@ -4058,6 +4225,17 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
             oscal = OSCAL.__new__(OSCAL)
             oscal.__init_common__()
             if oscal.initial_validation(raw):
+                # Apply the requested metadata onto the template (the template ships
+                # with placeholder title/version, which callers expect to override).
+                if isinstance(oscal._dict, dict):
+                    meta = oscal._dict.get(model_name, {}).get("metadata")
+                    if isinstance(meta, dict):
+                        if title:
+                            meta["title"] = title
+                        if version:
+                            meta["version"] = version
+                        if published:
+                            meta["published"] = published
                 return oscal
             logger.error(f"Template content failed validation for model: {model_name}")
             return None
