@@ -21,3 +21,4 @@ build/
 vendor/
 *_metaschema.json
 test/
+private/

@@ -233,7 +233,10 @@ def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
         md = re.sub(r"<blockquote>([^<]+)</blockquote>", r"\n\n> \1\n\n", md)
         md = re.sub(r"<ul><li>([^<]+)</li></ul>", r"\n\n- \1\n", md)
         md = re.sub(r"<ol><li>([^<]+)</li></ol>", r"\n\n1. \1\n", md)
-        md = re.sub(r"<p>([^<]+)</p>", r"\1\n\n", md)
+        # Match paragraphs even when they contain inline markup (links, <q>, <em>…),
+        # so the paragraph break is preserved; without DOTALL/.*? such <p> tags would
+        # fall through to the catch-all strip and adjacent paragraphs would merge.
+        md = re.sub(r"<p>(.*?)</p>", r"\1\n\n", md, flags=re.DOTALL)
 
     # Inline formatting
     md = re.sub(r'<img\s+alt="([^"]*)"\s+src="([^"]+)"\s+title="([^"]*)"\s*/>', r'![\1](\2 "\3")', md)
@@ -245,6 +248,9 @@ def oscal_html_to_markdown(html_text: str, multiline: bool = True) -> str:
     md = re.sub(r"<code>([^<]+)</code>", r"`\1`", md)
     md = re.sub(r"<sup>([^<]+)</sup>", r"^\1^", md)
     md = re.sub(r"<sub>([^<]+)</sub>", r"~\1~", md)
+    # OSCAL <q> (inline quotation) renders as literal double quotes in CommonMark;
+    # without this the quotes are lost when the catch-all below strips the tags.
+    md = re.sub(r"<q>(.*?)</q>", r'"\1"', md, flags=re.DOTALL)
     md = re.sub(r"<[^>]+>", "", md)
 
     if multiline:

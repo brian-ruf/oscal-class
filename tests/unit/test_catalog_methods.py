@@ -353,11 +353,19 @@ class TestGetControlList:
 # ===========================================================================
 class TestProfileControl:
 
-    def test_unresolved_profile_returns_none(self):
-        """Profile.control() returns None when the profile is not yet resolved."""
+    def test_unresolved_profile_materializes_from_source(self):
+        """Profile.control() on an unresolved profile materializes the control on demand
+        from its source (via the controls_tree), rather than returning None."""
         profile = Profile.load(_XML_PROFILE)
+        assert profile.catalog is None
         result = profile.control("ac-1")
-        assert result is None
+        assert result is not None and result["id"] == "ac-1"
+        assert profile.catalog is None  # fetching did not force a full resolve
+
+    def test_unresolved_profile_unknown_id_returns_none(self):
+        """An id outside the profile's scope still returns None when unresolved."""
+        profile = Profile.load(_XML_PROFILE)
+        assert profile.control("zz-999") is None
 
     def test_unresolved_profile_does_not_raise(self):
         """Profile.control() must not raise when called before resolution."""
