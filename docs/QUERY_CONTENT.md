@@ -7,6 +7,12 @@
 | `query()` / `query_one()` | OSCAL **XML element names** (`control`, `prop`, `part`) | Yes — metaschema index via support object |
 | `json_query()` / `json_query_one()` | **JSON key names** as they appear in the file (`controls`, `props`, `parts`) | No |
 
+> **Results are safe copies.** All four public query methods return detached
+> copies of the matched nodes — mutating a result does **not** change the
+> document. To make persistent changes, use the model's mutation methods. (The
+> live-reference variants `_query()` / `_json_query()` are private and for
+> internal use only.)
+
 ---
 
 ## Path Syntax

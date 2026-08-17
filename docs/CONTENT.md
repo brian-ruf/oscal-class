@@ -321,12 +321,23 @@ parts = catalog.query('part[@name="statement"]', context=ctrl)
 `query_one` and `json_query_one` return the first match or `None` (accepts an optional
 `default` argument).
 
+> **Safe-copy ownership.** Public getters and query methods return **detached copies**,
+> never live references into the internal `_dict` — this includes query results and the
+> node getters (`get_control_by_id`, `get_group_by_id`, `get_control_list`, and
+> `Profile.control`). Mutating a returned value does not change the document; all
+> mutation must go through the mutation methods below (which enforce the OSCAL standard).
+> The private `_dict` attribute is the only sanctioned live-access escape hatch. The
+> node getters also take an optional `depth` argument that prunes nested child
+> groups/controls (`None` = full subtree, `0` = node only, `N` = N levels).
+
 ---
 
 ## Mutating Content
 
 All mutation methods require `is_editable` to be `True` (content is valid, local, and
-not read-only). They return `None` and log an error when the guard fails.
+not read-only). They return `None` and log an error when the guard fails. Methods that
+return the created node return a **safe copy** of it — edit further via another method
+call, not by mutating the return value.
 
 ### `set_metadata`
 

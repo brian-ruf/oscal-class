@@ -700,3 +700,28 @@ class TestGetPropsWarnings:
         finally:
             remove()
         assert messages == []
+
+
+# ===========================================================================
+# Safe-copy ownership: base mutators return copies, not live _dict nodes
+# ===========================================================================
+class TestBaseMutatorReturnsCopy:
+    """append_child()/append_resource() return a detached copy of the created node;
+    mutating it must not change the document stored in _dict."""
+
+    def test_append_child_returns_copy(self, cat):
+        child = {"name": "label", "value": "AC-1"}
+        returned = cat.append_child("metadata/props", child)
+        assert returned is not None
+        returned["value"] = "MUTATED"
+        stored = cat._dict["catalog"]["metadata"]["props"][0]
+        assert stored["value"] == "AC-1"
+        assert returned is not stored
+
+    def test_append_resource_returns_copy(self, cat):
+        returned = cat.append_resource(title="Copy Test Resource")
+        assert returned is not None
+        returned["title"] = "MUTATED"
+        stored = cat._dict["catalog"]["back-matter"]["resources"][0]
+        assert stored["title"] == "Copy Test Resource"
+        assert returned is not stored

@@ -12,6 +12,7 @@ Module constants:
     (none exported)
 """
 from __future__ import annotations
+import copy
 import logging
 from typing import Any, Optional
 
@@ -93,7 +94,8 @@ class SSP(OSCAL):
         except Exception as error:
             logger.error(f"Error appending component (type={component_type}) {component_title}: {type(error).__name__} - {error}")
             component = None
-        return component
+        # Return a safe copy — the live component stays in _dict; further edits go through methods.
+        return copy.deepcopy(component)
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
@@ -133,7 +135,8 @@ class SSP(OSCAL):
         except Exception as error:
             logger.error(f"Error appending implemented-requirement for control {control_id}: {type(error).__name__} - {error}")
             impl_req = None
-        return impl_req
+        # Return a safe copy — the live impl-requirement stays in _dict; edits go through methods.
+        return copy.deepcopy(impl_req)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def append_component(ssp_obj: OSCAL, component_type: str, component_title: str, component_description: str, op_status: str = "operational", component_uuid: str = "", props: list = [], links: list = [], remarks: str = "") -> Optional[dict]:

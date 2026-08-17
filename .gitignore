@@ -20,4 +20,4 @@ build/
 .claude/
 vendor/
 *_metaschema.json
-test/
+private/

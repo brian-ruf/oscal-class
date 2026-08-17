@@ -1,0 +1,44 @@
+{
+  "profile": {
+    "uuid": "0be5a1a0-0004-4a00-8b00-000000000004",
+    "metadata": {
+      "title": "Org Privacy Overlay Profile",
+      "last-modified": "2026-01-01T00:00:00Z",
+      "version": "1.0.0",
+      "oscal-version": "1.1.3"
+    },
+    "imports": [
+      {
+        "href": "base-catalog.json",
+        "include-controls": [
+          {
+            "with-ids": [
+              "ac-1",
+              "ac-2",
+              "ac-2.2",
+              "pt-1",
+              "pt-2",
+              "pt-2.1"
+            ]
+          }
+        ]
+      },
+      {
+        "href": "overlay-catalog.json",
+        "include-controls": [
+          {
+            "with-ids": [
+              "sa-1_ov"
+            ]
+          }
+        ]
+      }
+    ],
+    "merge": {
+      "as-is": true,
+      "combine": {
+        "method": "use-first"
+      }
+    }
+  }
+}

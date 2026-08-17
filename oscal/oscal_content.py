@@ -23,6 +23,7 @@ from __future__         import annotations
 import os
 import re
 import json
+import copy
 import contextvars
 from contextlib         import contextmanager
 import yaml
@@ -46,7 +47,7 @@ from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES
 from .oscal_registry    import get_registry
 from .oscal_cache       import get_local_cache, CacheDirective, CACHE_NEVER
 from .oscal_converter   import (
-    oscal_markdown_to_html, OSCALConverter, _html_to_et,
+    oscal_markdown_to_html, OSCALConverter, _html_to_et, _markup_to_md,
     OSCALPath, native_path,
 )
 
@@ -878,14 +879,37 @@ class OSCAL:
         return ret_value
 
     # -------------------------------------------------------------------------
+    def _import_entry_view(self, entry: dict) -> dict:
+        """Safe copy of an import_list entry, shaped like an import_tree node.
+
+        The live ``object`` is replaced by ``object_uuid`` plus the six object-summary
+        fields (see :attr:`import_tree` for the full field schema); only the recursive
+        ``imports`` key is omitted, since these are flat entry lists. Callers cannot
+        mutate resolution state through the copy, and the (potentially large) imported
+        documents stay out of the payload; use :meth:`get_oscal_object` with
+        ``object_uuid`` to obtain the live document when one is actually needed.
+        """
+        obj = entry.get("object")
+        view = {k: v for k, v in entry.items() if k != "object"}
+        view["object_uuid"] = obj.uuid if obj is not None else None
+        view.update(self._object_summary(obj))
+        return copy.deepcopy(view)
+
+    # -------------------------------------------------------------------------
     @property
     def failed_imports(self) -> list[dict]:
         """Return import_list entries that failed, each carrying a populated 'failure' field.
 
         These are blocking: while any failed import remains, content_state stays
         at VALID and imports_resolved is False.
+
+        Each entry is a safe copy shaped like an :attr:`import_tree` node (same field
+        schema, but a flat list without the recursive ``imports`` key). Exception: a
+        failed import never acquires its document, so for every entry here ``object_uuid``
+        is always ``None`` and the six summary fields (``model``, ``title``,
+        ``oscal_version``, ``version``, ``published``, ``last_modified``) are always ``""``.
         """
-        return [e for e in self.import_list if e.get("failure") is not None]
+        return [self._import_entry_view(e) for e in self.import_list if e.get("failure") is not None]
 
     # -------------------------------------------------------------------------
     @property
@@ -895,8 +919,16 @@ class OSCAL:
         Duplicates are non-blocking — they do NOT prevent imports_resolved from
         becoming True — but they remain available for the caller to act on via
         retry_import (supply a different source), ignore_import, or remove_import.
+
+        Each entry is a safe copy shaped like an :attr:`import_tree` node (same field
+        schema, but a flat list without the recursive ``imports`` key). Exception: a
+        duplicate entry holds no document of its own (the original READY entry carries
+        it), so for every entry here ``object_uuid`` is always ``None`` and the six
+        summary fields (``model``, ``title``, ``oscal_version``, ``version``,
+        ``published``, ``last_modified``) are always ``""``.
         """
-        return [e for e in self.import_list if e.get("status") == ImportState.DUPLICATE]
+        return [self._import_entry_view(e) for e in self.import_list
+                if e.get("status") == ImportState.DUPLICATE]
 
     # -------------------------------------------------------------------------
     @property
@@ -912,9 +944,17 @@ class OSCAL:
         True because the only remaining items are non-blocking duplicates.
         Once every entry is READY or IGNORED, this list is empty and the
         resolution UI can close.
+
+        Each entry is a safe copy shaped like an :attr:`import_tree` node (same field
+        schema, but a flat list without the recursive ``imports`` key). Exception:
+        unresolved entries (failed or duplicate) never carry a loaded document, so for
+        every entry here ``object_uuid`` is always ``None`` and the six summary fields
+        (``model``, ``title``, ``oscal_version``, ``version``, ``published``,
+        ``last_modified``) are always ``""``.
         """
         actionable = (ImportState.INVALID, ImportState.DUPLICATE)
-        return [e for e in self.import_list if e.get("status") in actionable]
+        return [self._import_entry_view(e) for e in self.import_list
+                if e.get("status") in actionable]
 
     # -------------------------------------------------------------------------
     def retry_import(self, failed_href: str, replacement_href: str) -> bool:
@@ -1175,6 +1215,30 @@ class OSCAL:
         return self._identity
 
     # -------------------------------------------------------------------------
+    def _document_signature(self) -> tuple:
+        """Return the required-metadata signature used to distinguish documents that
+        share a root UUID: ``(title, oscal-version, last-modified, version)``.
+
+        Two documents with the same UUID and the same signature are the same document
+        (a legitimate duplicate import); a differing signature means a UUID collision
+        between genuinely different documents.
+        """
+        return (self.title, self.oscal_version, self.last_modified, self.version)
+
+    # -------------------------------------------------------------------------
+    def _reassign_uuid(self, new_uuid_value: str) -> None:
+        """Reassign this document's root UUID (both ``_dict`` and cached attributes).
+
+        Used to recover from a root-UUID collision between distinct documents so
+        resolution can continue. Importers reference documents by href (or back-matter
+        resource uuid), not by root uuid, so changing the root uuid is safe here.
+        """
+        if isinstance(self._dict, dict) and isinstance(self._dict.get(self.model), dict):
+            self._dict[self.model]["uuid"] = new_uuid_value
+        self.uuid = new_uuid_value
+        self._identity = (new_uuid_value, self.last_modified, self.published) if new_uuid_value else None
+
+    # -------------------------------------------------------------------------
     def _acquire_shared(self, resolved: str, cache_directive: "CacheDirective | None" = None) -> "OSCAL":
         """Load — or reuse from the registry — the OSCAL object for a resolved href.
 
@@ -1223,12 +1287,30 @@ class OSCAL:
                 if not force_reload:
                     existing = self._registry.get(key=key)
                     if existing is not None:
-                        logger.info(
-                            f"registry: '{canonical}' is the same content as an "
-                            "already-loaded object (identity hit) — reusing."
+                        # Same identity key. Confirm it is truly the same document by
+                        # comparing required metadata (title, oscal-version, last-modified,
+                        # version). If they match, it is a legitimate duplicate import and
+                        # we reuse the shared instance.
+                        if child._document_signature() == existing._document_signature():
+                            logger.info(
+                                f"registry: '{canonical}' is the same content as an "
+                                "already-loaded object (identity hit) — reusing."
+                            )
+                            self._registry.alias_href(canonical, existing)
+                            return existing
+                        # Otherwise two genuinely different documents share a root UUID.
+                        # Reassign this (subsequent) one a fresh uuid so resolution can
+                        # continue, and warn — the content should be corrected.
+                        old_uuid = child.uuid
+                        replacement = new_uuid()
+                        child._reassign_uuid(replacement)
+                        key = child._identity_key()
+                        logger.warning(
+                            f"registry: root UUID collision — '{canonical}' shares uuid "
+                            f"'{old_uuid}' with a different document (metadata differs). "
+                            f"Reassigned it to '{replacement}' to continue; fix the "
+                            "source content to use unique UUIDs."
                         )
-                        self._registry.alias_href(canonical, existing)
-                        return existing
                 self._registry.register(child, key=key, href=canonical)
             else:
                 logger.debug(f"registry: '{canonical}' has no identity key; not deduped.")
@@ -1502,20 +1584,53 @@ class OSCAL:
         return self.import_list
 
     # -------------------------------------------------------------------------
-    def _build_import_tree_recursive(self, _path: frozenset | None = None) -> list:
-        """Walk import_list recursively and return a nested tree of import entries.
+    @staticmethod
+    def _object_summary(obj: "OSCAL | None") -> dict:
+        """Summary metadata for an imported object, embedded in each import-tree node.
 
-        Each entry is a copy of the flat import_list dict with an added 'imports'
-        key containing the same structure for that child's own imports.
-        Path-based cycle detection prevents infinite recursion on circular refs.
+        Because the tree no longer carries the live object, it surfaces the key
+        identifying fields the caller would otherwise reach through it. Populated only
+        when the object was successfully acquired; otherwise every value is an empty
+        string. ``oscal_version`` is the clean OSCAL version (the internal ``v`` prefix
+        on ``OSCAL.oscal_version`` is stripped) to match the raw ``version``/``published``
+        values.
+        """
+        if obj is None:
+            return {"model": "", "title": "", "oscal_version": "",
+                    "version": "", "published": "", "last_modified": ""}
+        oscal_version = obj.oscal_version[1:] if obj.oscal_version.startswith("v") else obj.oscal_version
+        return {
+            "model":         obj.model,
+            "title":         obj.title,
+            "oscal_version": oscal_version,
+            "version":       obj.version,
+            "published":     obj.published,
+            "last_modified": obj.last_modified,
+        }
+
+    # -------------------------------------------------------------------------
+    def _build_import_tree_recursive(self, _path: frozenset | None = None) -> list:
+        """Walk import_list recursively and return a nested tree of import nodes.
+
+        Each node is a copy of the flat import_list entry with the live ``object``
+        replaced by ``object_uuid`` plus the summary fields from
+        :meth:`_object_summary`, and an added ``imports`` key holding the same
+        structure for that child's own imports. See :attr:`import_tree` for the full
+        node schema. Path-based cycle detection prevents infinite recursion on
+        circular refs.
         """
         if _path is None:
             _path = frozenset()
 
         result = []
         for entry in self.import_list:
-            node = {k: v for k, v in entry.items()}
             child: OSCAL | None = entry.get("object")
+            # The tree carries only the object's UUID, never the live OSCAL object —
+            # keeping the (potentially large) documents out of the serialized tree.
+            # Use get_oscal_object(uuid) to fetch the live instance when needed.
+            node = {k: v for k, v in entry.items() if k != "object"}
+            node["object_uuid"] = child.uuid if child is not None else None
+            node.update(self._object_summary(child))
             child_href: str = entry.get("href_valid") or entry.get("href_original", "")
 
             if child is not None and child_href and child_href not in _path:
@@ -1533,10 +1648,45 @@ class OSCAL:
     def import_tree(self) -> dict:
         """Recursive import tree built lazily on first access and cached.
 
-        Returns a root node dict representing this document, with an 'imports'
-        key holding the first-level imports (each following the same structure
-        recursively).  The root node fields mirror those of an import_list entry.
-        Use rebuild_import_tree() to force a fresh traversal.
+        Returns a root node dict representing this document, with an ``imports`` key
+        holding the first-level imports; each import is a node of the same shape,
+        recursively. The tree is a SAFE COPY of the cached structure — mutating it does
+        not affect the cache; use :meth:`rebuild_import_tree` to force a fresh traversal.
+
+        The tree carries no live OSCAL objects, so it stays small and safe to
+        serialize/transmit. Instead, each node identifies its document by UUID and
+        summary metadata; call :meth:`get_oscal_object` with ``object_uuid`` to obtain
+        the live instance when one is actually needed.
+
+        Each node (root and every import) has these keys:
+
+        * ``href_original`` (str): the import href as written in the source document.
+        * ``href_valid`` (str): the resolved href actually loaded, if any.
+        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``object_uuid`` (str | None): the imported document's root UUID, or None when
+          it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
+        * ``model`` (str): the imported document's model type (e.g. "catalog").
+        * ``title`` (str): the imported document's metadata title.
+        * ``oscal_version`` (str): the OSCAL version (no ``v`` prefix, e.g. "1.1.3").
+        * ``version`` (str): the document's own metadata version.
+        * ``published`` (str): the metadata publication timestamp (RFC-3339), if present.
+        * ``last_modified`` (str): the metadata last-modified timestamp (RFC-3339).
+        * ``failure`` (ImportFailure | None): the failure record when ``status`` is
+          INVALID, else None.
+        * ``imports`` (list[dict]): child import nodes (empty when none or unacquired).
+
+        The six summary fields (``model``, ``title``, ``oscal_version``, ``version``,
+        ``published``, ``last_modified``) are populated only when the object was
+        successfully acquired; otherwise each is an empty string ``""``.
+
+        This is the single source of truth for the node/entry field schema. The import
+        getters :attr:`failed_imports`, :attr:`duplicate_imports`, and
+        :attr:`unresolved_imports` return these same per-entry fields as flat lists
+        (without the recursive ``imports`` key). Note that those getters only ever hold
+        failed or duplicate entries, which carry no loaded document — so in their results
+        ``object_uuid`` is always ``None`` and the six summary fields are always ``""``.
         """
         if self._import_tree is None:
             _working_href = self.href or self.href_original
@@ -1554,11 +1704,12 @@ class OSCAL:
                 "is_local":      self.is_local,
                 "is_remote":     self.is_remote,
                 "is_cached":     self.is_cached,
-                "object":        self,
+                "object_uuid":   self.uuid,
+                **self._object_summary(self if self.is_acquired else None),
                 "failure":       None,
                 "imports":       self._build_import_tree_recursive(),
             }
-        return self._import_tree
+        return copy.deepcopy(self._import_tree)
 
     # -------------------------------------------------------------------------
     def rebuild_import_tree(self) -> dict:
@@ -1700,11 +1851,6 @@ class OSCAL:
         status = False
         oscal_root = ""
         oscal_version = ""
-        content_title = ""
-        content_version = ""
-        content_publication = ""
-        content_uuid = ""
-        content_last_modified = ""
 
         # --- Step: acquired ---
         if not content or not content.strip():
@@ -1724,13 +1870,13 @@ class OSCAL:
                 self._tree = safe_load_xml(content)
                 if self._tree is not None:
                     status = True
+                    # Only the model (root element) and OSCAL version are read from XML here —
+                    # both are required to select the metaschema converter below. All summary
+                    # metadata is populated after XML→JSON conversion so it carries the JSON
+                    # (CommonMark) text form; the XML tree is consulted only as a fallback if
+                    # conversion fails (see _populate_summary_from_tree).
                     oscal_root = xpath_atomic(self._tree, _NSMAP, "/*/name()")
                     oscal_version = "v" + xpath_atomic(self._tree, _NSMAP, "/*/metadata/oscal-version/text()")
-                    content_title = xpath_atomic(self._tree, _NSMAP, "/*/metadata/title/text()")
-                    content_version = xpath_atomic(self._tree, _NSMAP, "/*/metadata/version/text()")
-                    content_publication = xpath_atomic(self._tree, _NSMAP, "/*/metadata/published/text()")
-                    content_uuid = xpath_atomic(self._tree, _NSMAP, "/*/@uuid")
-                    content_last_modified = xpath_atomic(self._tree, _NSMAP, "/*/metadata/last-modified/text()")
                 else:
                     status = False
                     logger.error("Content is not well-formed XML.")
@@ -1745,11 +1891,6 @@ class OSCAL:
                     root_obj = self._dict.get(oscal_root, {})
                     metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
                     oscal_version = f"v{metadata.get('oscal-version', '')}"
-                    content_title = metadata.get('title', '')
-                    content_version = metadata.get('version', '')
-                    content_publication = metadata.get('published', '')
-                    content_uuid = root_obj.get('uuid', '') if isinstance(root_obj, dict) else ''
-                    content_last_modified = metadata.get('last-modified', '')
                 else:
                     status = False
                     logger.error(f"Content is not well-formed {self.original_format.upper()}.")
@@ -1763,13 +1904,6 @@ class OSCAL:
                 self.oscal_version = oscal_version
                 if oscal_root in self._support.list_models(self.oscal_version):
                     self.model = oscal_root
-                    self.title = content_title
-                    self.version = content_version
-                    self.published = content_publication
-                    self.uuid = content_uuid
-                    # Composite content-identity key for the object registry: same tuple
-                    # means the same content revision regardless of format or location.
-                    self._identity = (content_uuid, content_last_modified, content_publication) if content_uuid else None
                     logger.debug(f"OSCAL model '{self.model}' and version '{self.oscal_version}' identified.")
                     status = True
                 else:
@@ -1784,8 +1918,6 @@ class OSCAL:
             self.content_state = ContentState.WELL_FORMED
 
         # For XML sources, immediately convert to dict so all manipulation operates on JSON-native data.
-        # Once dict is populated the parsed XML tree is released — it can be rebuilt on demand via
-        # _build_tree() if XML output is later requested.
         if status and self.original_format == "xml":
             converter = OSCALConverter.from_support(self.model, self.oscal_version, self._support)
             if converter is not None:
@@ -1793,17 +1925,84 @@ class OSCAL:
                 json_string = converter.xml_to_json(xml_string)
                 if json_string is not None:
                     self._dict = json.loads(json_string)
-                    self._tree = None
-                    logger.debug("XML source converted to dict; XML tree released.")
+                    logger.debug("XML source converted to dict.")
                 else:
                     logger.warning("XML→dict conversion failed; dict-based manipulation unavailable.")
             else:
                 logger.warning(f"No metaschema converter for {self.model} {self.oscal_version}; dict unavailable.")
 
+        # Populate summary metadata attributes. Normal path: from the converted JSON dict, so all
+        # text — including the markup fields title and remarks — keeps its JSON (CommonMark) form.
+        # Once the dict is authoritative the parsed XML tree is released (rebuildable on demand via
+        # _build_tree()). Fallback: if conversion did not produce a dict, read from the XML tree so
+        # error reports stay as complete as possible; markup fields are converted to CommonMark there
+        # too, so title/remarks always hold Markdown regardless of path.
+        if status:
+            if self._dict is not None:
+                self._populate_summary_from_dict()
+                if self.original_format == "xml":
+                    self._tree = None
+                    logger.debug("XML tree released after summary extraction.")
+            elif self._tree is not None:
+                logger.warning("Populating summary metadata from XML tree (conversion unavailable).")
+                self._populate_summary_from_tree()
+
         if status and self._dict is not None:
             self.validate(format="json")
 
         return status
+
+    # -------------------------------------------------------------------------
+    def _populate_summary_from_dict(self) -> None:
+        """Populate summary metadata attributes from the JSON dict (``self._dict``).
+
+        This is the normal path used for every successfully-parsed document (JSON/YAML
+        sources, and XML sources after XML→JSON conversion). All text — including the
+        markup fields ``title`` and ``remarks`` — is taken verbatim from the JSON, so it
+        keeps its OSCAL CommonMark (Markdown) form. Also builds the composite
+        content-identity key used by the object registry.
+        """
+        root_obj = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        metadata = root_obj.get('metadata', {}) if isinstance(root_obj, dict) else {}
+        self.title         = metadata.get('title', '')
+        self.version       = metadata.get('version', '')
+        self.published     = metadata.get('published', '')
+        self.last_modified = metadata.get('last-modified', '')
+        self.remarks       = metadata.get('remarks', '')
+        self.uuid          = root_obj.get('uuid', '') if isinstance(root_obj, dict) else ''
+        # Composite content-identity key for the object registry: same tuple means the
+        # same content revision regardless of format or location.
+        self._identity = (self.uuid, self.last_modified, self.published) if self.uuid else None
+
+    # -------------------------------------------------------------------------
+    def _populate_summary_from_tree(self) -> None:
+        """Fallback: populate summary metadata attributes from the XML tree (``self._tree``).
+
+        Used only when XML→JSON conversion did not produce a dict, so that error reports
+        remain as complete as possible. The markup fields ``title`` (markup-line) and
+        ``remarks`` (markup-multiline) are converted to OSCAL CommonMark so the attributes
+        always hold Markdown, consistent with the normal path. Plain-value fields are read
+        as text.
+        """
+        self.title         = self._markup_from_tree("title", "markup-line")
+        self.version       = xpath_atomic(self._tree, _NSMAP, "/*/metadata/version/text()")
+        self.published     = xpath_atomic(self._tree, _NSMAP, "/*/metadata/published/text()")
+        self.last_modified = xpath_atomic(self._tree, _NSMAP, "/*/metadata/last-modified/text()")
+        self.remarks       = self._markup_from_tree("remarks", "markup-multiline")
+        self.uuid          = xpath_atomic(self._tree, _NSMAP, "/*/@uuid")
+        self._identity = (self.uuid, self.last_modified, self.published) if self.uuid else None
+
+    # -------------------------------------------------------------------------
+    def _markup_from_tree(self, field: str, datatype: str) -> str:
+        """Return metadata markup field ``field`` from the XML tree as OSCAL CommonMark.
+
+        Locates ``/*/metadata/<field>`` in ``self._tree`` and converts its markup content
+        to Markdown via :func:`_markup_to_md`. Returns ``""`` when the element is absent.
+        """
+        element = self._tree.find(f"{{*}}metadata/{{*}}{field}")
+        if element is None:
+            return ""
+        return _markup_to_md(element, datatype)
 
     # -------------------------------------------------------------------------
     def validate(self, format: str = "") -> bool:
@@ -2229,24 +2428,11 @@ class OSCAL:
             )
         return self._oscal_path
 
-    def query(self, path: str, context: dict | None = None) -> list:
-        """
-        Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
+    def _query(self, path: str, context: dict | None = None) -> list:
+        """Live-reference implementation of :meth:`query` (returns nodes inside ``self._dict``).
 
-        Steps use OSCAL XML element names (``control``, ``prop``, ``part``, …)
-        and the metaschema index translates them to the correct JSON keys
-        (``controls``, ``props``, ``parts``, …) including array/BY_KEY grouping.
-
-        Parameters
-        ----------
-        path : str
-            Path expression using XML element names, e.g.
-            ``"//control[@id='ac-2.2']"`` or ``"/*/metadata/title"``.
-        context : dict, optional
-            Sub-dict to query within.  Defaults to the full document dict
-            (``self._dict``).
-
-        Returns a list of matching JSON values, or ``[]`` on error / no match.
+        Internal callers that need to mutate matched nodes in place use this directly;
+        external callers use the public :meth:`query`, which returns safe copies.
         """
         engine = self._path_engine
         if engine is None:
@@ -2258,21 +2444,59 @@ class OSCAL:
             return []
         return engine.query(path, data)
 
+    def query(self, path: str, context: dict | None = None) -> list:
+        """
+        Query the JSON content using XML element name syntax (via :class:`OSCALPath`).
+
+        Steps use OSCAL XML element names (``control``, ``prop``, ``part``, …)
+        and the metaschema index translates them to the correct JSON keys
+        (``controls``, ``props``, ``parts``, …) including array/BY_KEY grouping.
+
+        The returned list contains SAFE COPIES — mutating a result does not change the
+        document; use the model's mutation methods for persistent edits. A single deep
+        copy of the whole result set preserves internal identity between overlapping
+        matches.
+
+        Parameters
+        ----------
+        path : str
+            Path expression using XML element names, e.g.
+            ``"//control[@id='ac-2.2']"`` or ``"/*/metadata/title"``.
+        context : dict, optional
+            Sub-dict to query within.  Defaults to the full document dict
+            (``self._dict``).
+
+        Returns a list of matching JSON values (as copies), or ``[]`` on error / no match.
+        """
+        return copy.deepcopy(self._query(path, context))
+
     def query_one(self, path: str, context: dict | None = None, default=None):
-        """Return the first result of :meth:`query`, or ``default`` when nothing matches.
+        """Return the first result of :meth:`query` as a safe copy, or ``default``.
 
         Args:
             path (str, required): Path expression using OSCAL XML element names.
             context (dict | None, optional): Sub-dict to query within. Defaults to the
                 full document dict.
-            default (Any, optional): Value to return when there is no match.
-                Defaults to None.
+            default (Any, optional): Value to return when there is no match. Returned
+                as-is (not copied). Defaults to None.
 
         Returns:
-            Any: The first matching JSON value, or ``default``.
+            Any: A safe copy of the first matching JSON value, or ``default``.
         """
-        results = self.query(path, context)
-        return results[0] if results else default
+        results = self._query(path, context)
+        return copy.deepcopy(results[0]) if results else default
+
+    def _json_query(self, path: str, context: dict | None = None) -> list:
+        """Live-reference implementation of :meth:`json_query` (nodes inside ``self._dict``).
+
+        Internal callers that need to mutate matched nodes in place use this directly;
+        external callers use the public :meth:`json_query`, which returns safe copies.
+        """
+        data = context if context is not None else self._dict
+        if data is None:
+            logger.error("json_query: no JSON content available.")
+            return []
+        return native_path.query(path, data)
 
     def json_query(self, path: str, context: dict | None = None) -> list:
         """
@@ -2283,6 +2507,9 @@ class OSCAL:
         transparently, so ``//controls[id='ac-2.2']`` navigates directly into
         any ``controls`` array at any depth.
 
+        The returned list contains SAFE COPIES — mutating a result does not change the
+        document; use the model's mutation methods for persistent edits.
+
         Parameters
         ----------
         path : str
@@ -2292,29 +2519,25 @@ class OSCAL:
             Sub-dict to query within.  Defaults to the full document dict
             (``self._dict``).
 
-        Returns a list of matching JSON values, or ``[]`` on error / no match.
+        Returns a list of matching JSON values (as copies), or ``[]`` on error / no match.
         """
-        data = context if context is not None else self._dict
-        if data is None:
-            logger.error("json_query: no JSON content available.")
-            return []
-        return native_path.query(path, data)
+        return copy.deepcopy(self._json_query(path, context))
 
     def json_query_one(self, path: str, context: dict | None = None, default=None):
-        """Return the first result of :meth:`json_query`, or ``default`` when nothing matches.
+        """Return the first result of :meth:`json_query` as a safe copy, or ``default``.
 
         Args:
             path (str, required): Path expression using JSON key names.
             context (dict | None, optional): Sub-dict to query within. Defaults to the
                 full document dict.
-            default (Any, optional): Value to return when there is no match.
-                Defaults to None.
+            default (Any, optional): Value to return when there is no match. Returned
+                as-is (not copied). Defaults to None.
 
         Returns:
-            Any: The first matching JSON value, or ``default``.
+            Any: A safe copy of the first matching JSON value, or ``default``.
         """
-        results = self.json_query(path, context)
-        return results[0] if results else default
+        results = self._json_query(path, context)
+        return copy.deepcopy(results[0]) if results else default
 
     # -------------------------------------------------------------------------
     @staticmethod
@@ -2622,7 +2845,8 @@ class OSCAL:
 
         target.append(child)
         logger.debug(f"append_child: appended to '{path}'.")
-        return child
+        # Return a safe copy — the live child stays in _dict; further edits go through methods.
+        return copy.deepcopy(child)
 
     # -------------------------------------------------------------------------
     @if_update_successful
@@ -2644,7 +2868,8 @@ class OSCAL:
         """
         if not self._can_mutate("append_resource"):
             return None
-        return append_resource(self, uuid, title, description, props, rlinks, base64, remarks)
+        # Return a safe copy — the live resource stays in _dict; further edits go through methods.
+        return copy.deepcopy(append_resource(self, uuid, title, description, props, rlinks, base64, remarks))
 
     # -------------------------------------------------------------------------
     def walk_imports(self, visitor_fn, depth=0, _seen=None, *, scope="successful"):
@@ -2683,34 +2908,145 @@ class OSCAL:
                 obj.walk_imports(visitor_fn, depth + 1, _seen, scope=scope)
 
     # -------------------------------------------------------------------------
-    def find_by_uuid(self, uuid, _seen=None):
-        """
-        Search the import tree for an imported document containing a matching UUID.
+    def get_oscal_object(self, uuid, _seen=None):
+        """Return the LIVE imported OSCAL document whose root UUID matches ``uuid``.
 
-        Performs a depth-first search across resolved imports, tracking visited
-        objects to avoid infinite loops on circular imports.
+        Searches this document and its resolved imports depth-first, de-duplicating
+        objects shared across multiple import paths (the same large catalog reached
+        two ways is visited once). This underpins the import mechanism's object reuse
+        and is the companion to :attr:`import_tree`: the tree carries each node's
+        ``object_uuid``; pass one here to obtain the corresponding live instance.
+
+        Unlike the model getters, this returns the LIVE object (not a copy) — it is a
+        document handle meant for working with that instance through its own methods.
 
         Args:
-            uuid (str, required): The UUID to search for.
-            _seen (set | None, optional): Object ids already visited; used internally.
-                Defaults to None.
+            uuid (str, required): The root UUID of the document to locate.
+            _seen (set | None, optional): Object ids already visited; used internally
+                for cycle-safety. Defaults to None.
 
         Returns:
-            OSCAL | None: The matching imported document, or None if not found.
+            OSCAL | None: The matching live document, or None if not found.
         """
         if _seen is None:
             _seen = set()
+        if id(self) in _seen:
+            return None
+        _seen.add(id(self))
+        if self.uuid == uuid:
+            return self
         for entry in self.import_list:
-            obj = entry["object"]
+            obj = entry.get("object")
             if obj is None:
                 continue
-            obj_id = id(obj)
-            if obj_id in _seen:
-                continue
-            _seen.add(obj_id)
-            result = obj.find_by_uuid(uuid, _seen)
-            if result:
+            result = obj.get_oscal_object(uuid, _seen)
+            if result is not None:
                 return result
+        return None
+
+    # -------------------------------------------------------------------------
+    # Kinds of element the import-tree resolver can locate, mapped to how they are
+    # identified (uuid vs id). Extensible for model-specific needs.
+    _RESOLVE_KINDS = ("resource", "role", "party", "control", "group", "param", "part")
+
+    def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None) -> Optional[dict]:
+        """Resolve an id/uuid by searching this document and its import tree.
+
+        OSCAL cross-references (``href="#..."``) can point at content that lives in an
+        imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
+        id) or ``party`` (by uuid), or a ``control``/``group``/``param``/``part`` (by id).
+        This walks ``self`` first, then each imported document depth-first (de-duplicated,
+        cycle-safe), and returns the first match together with the document that owns it.
+
+        Args:
+            fragment_id (str, required): The bare id/uuid to resolve (no leading ``#``).
+            kinds (Iterable[str] | None, optional): Restrict the search to these element
+                kinds (subset of :attr:`_RESOLVE_KINDS`); ``None`` searches all.
+            _seen (set | None, optional): Internal cycle-guard.
+
+        Returns:
+            Optional[dict]: ``{"element", "kind", "id", "object_uuid", "href"}`` — a safe
+                copy of the found element, its kind, the owning document's root uuid and
+                resolved href — or None when not found anywhere in the tree.
+        """
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return None
+        _seen.add(id(self))
+
+        local = self._find_local_element(fragment_id, kinds)
+        if local is not None:
+            local["object_uuid"] = self.uuid
+            local["href"] = self.href or self.href_original or ""
+            return local
+
+        for entry in self.import_list:
+            obj = entry.get("object")
+            if obj is None:
+                continue
+            found = obj.find_in_import_tree(fragment_id, kinds, _seen)
+            if found is not None:
+                return found
+        return None
+
+    # -------------------------------------------------------------------------
+    def get_parameter_by_id(self, param_id: str) -> Optional[dict]:
+        """Return a safe copy of a parameter defined anywhere in scope, or None.
+
+        Searches this document and its import tree for a ``param`` with the given id —
+        covering parameters defined at control, group, or catalog level (and reached
+        through imported catalogs/profiles). Subclasses may override to prefer resolved
+        content.
+        """
+        found = self.find_in_import_tree(param_id, kinds=["param"])
+        return found["element"] if found is not None else None
+
+    # -------------------------------------------------------------------------
+    def reachable_ids(self, _seen=None) -> set:
+        """Return every ``id``/``uuid`` value in this document and its import tree.
+
+        Used to decide whether a cross-reference resolves somewhere in scope. The walk
+        is de-duplicated and cycle-safe across the import graph.
+        """
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return set()
+        _seen.add(id(self))
+        ids: set[str] = set()
+        _collect_ids(self._dict, ids)
+        for entry in self.import_list:
+            obj = entry.get("object")
+            if obj is not None:
+                ids |= obj.reachable_ids(_seen)
+        return ids
+
+    # -------------------------------------------------------------------------
+    def _find_local_element(self, fragment_id: str, kinds=None) -> Optional[dict]:
+        """Find an element identified by ``fragment_id`` in THIS document only (no imports)."""
+        wanted = tuple(kinds) if kinds else self._RESOLVE_KINDS
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        if not isinstance(root, dict):
+            return None
+
+        if "resource" in wanted:
+            for res in root.get("back-matter", {}).get("resources", []):
+                if isinstance(res, dict) and res.get("uuid") == fragment_id:
+                    return {"element": copy.deepcopy(res), "kind": "resource", "id": fragment_id}
+        metadata = root.get("metadata", {}) if isinstance(root.get("metadata"), dict) else {}
+        if "role" in wanted:
+            for role in metadata.get("roles", []):
+                if isinstance(role, dict) and role.get("id") == fragment_id:
+                    return {"element": copy.deepcopy(role), "kind": "role", "id": fragment_id}
+        if "party" in wanted:
+            for party in metadata.get("parties", []):
+                if isinstance(party, dict) and party.get("uuid") == fragment_id:
+                    return {"element": copy.deepcopy(party), "kind": "party", "id": fragment_id}
+        if any(k in wanted for k in ("control", "group", "param", "part")):
+            found = _find_model_element(root, fragment_id, wanted)
+            if found is not None:
+                return found
         return None
 
 
@@ -3506,6 +3842,122 @@ def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
     return True
 
 # -------------------------------------------------------------------------
+def _collect_ids(node, out: set) -> None:
+    """Recursively collect every ``id``/``uuid`` string value into ``out``."""
+    if isinstance(node, dict):
+        for key, val in node.items():
+            if key in ("id", "uuid") and isinstance(val, str):
+                out.add(val)
+            _collect_ids(val, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_ids(item, out)
+
+
+# -------------------------------------------------------------------------
+def _find_part_by_id(parts: list, fragment_id: str) -> dict | None:
+    """Recursively find a part by id within a list of parts (and their nested parts)."""
+    for part in parts or []:
+        if isinstance(part, dict):
+            if part.get("id") == fragment_id:
+                return part
+            found = _find_part_by_id(part.get("parts", []), fragment_id)
+            if found is not None:
+                return found
+    return None
+
+
+def _find_model_element(container: dict, fragment_id: str, kinds) -> dict | None:
+    """Find a control/group/param/part by id within a catalog-shaped container.
+
+    Searches ``container`` (a catalog root, group, or control) for a matching group,
+    control, param, or part — descending through nested groups and controls. Returns a
+    result dict ``{"element", "kind", "id"}`` (safe copy) or None.
+    """
+    if "group" in kinds:
+        for grp in container.get("groups", []):
+            if isinstance(grp, dict) and grp.get("id") == fragment_id:
+                return {"element": copy.deepcopy(grp), "kind": "group", "id": fragment_id}
+    if "control" in kinds:
+        for ctrl in container.get("controls", []):
+            if isinstance(ctrl, dict) and ctrl.get("id") == fragment_id:
+                return {"element": copy.deepcopy(ctrl), "kind": "control", "id": fragment_id}
+    if "param" in kinds:
+        for param in container.get("params", []):
+            if isinstance(param, dict) and param.get("id") == fragment_id:
+                return {"element": copy.deepcopy(param), "kind": "param", "id": fragment_id}
+    if "part" in kinds:
+        part = _find_part_by_id(container.get("parts", []), fragment_id)
+        if part is not None:
+            return {"element": copy.deepcopy(part), "kind": "part", "id": fragment_id}
+    for grp in container.get("groups", []):
+        if isinstance(grp, dict):
+            found = _find_model_element(grp, fragment_id, kinds)
+            if found is not None:
+                return found
+    for ctrl in container.get("controls", []):
+        if isinstance(ctrl, dict):
+            found = _find_model_element(ctrl, fragment_id, kinds)
+            if found is not None:
+                return found
+    return None
+
+
+# -------------------------------------------------------------------------
+def prune_tree_copy(node: dict | None, depth: int | None = None,
+                    child_keys: tuple = ("groups", "controls")) -> dict | None:
+    """Return a SAFE COPY of *node* with nested structural children limited to *depth*.
+
+    Shared, model-agnostic helper for the node getters (catalog/profile groups and
+    controls; assessment ``tasks`` once implemented). The returned value shares no
+    references with *node*, so callers may read, mutate, or serialize it without
+    affecting the source document — mutation of live content must go through the
+    OSCAL-standard-enforcing methods, never through a getter's return value.
+
+    Only the collections named in *child_keys* are treated as structural children
+    subject to depth pruning. The node's own intrinsic content (e.g. ``props``,
+    ``links``, ``params``, ``parts``, ``title``) is always copied in full.
+
+        depth = None  -> unlimited: a full deep copy of the entire subtree (the
+                         default; mirrors the historical getter behavior).
+        depth = 0     -> node only: the *child_keys* collections are omitted.
+        depth = N     -> N levels of structural children retained, each recursively
+                         pruned at ``depth - 1``.
+
+    Args:
+        node (dict | None, required): The group/control/task dict to copy, or None.
+        depth (int | None, optional): Structural-child depth limit. Defaults to None.
+        child_keys (tuple, optional): Keys treated as structural children. Defaults
+            to ("groups", "controls"). Use ("tasks",) for assessment tasks.
+
+    Returns:
+        dict | None: A detached copy, or None when *node* is None.
+
+    Raises:
+        ValueError: If *depth* is a negative integer.
+    """
+    if node is None:
+        return None
+    if depth is None:
+        return copy.deepcopy(node)
+    if depth < 0:
+        raise ValueError(f"depth must be None or a non-negative integer, got {depth}")
+
+    result: dict = {}
+    for key, value in node.items():
+        if key in child_keys:
+            continue                      # pruned / handled below by depth
+        result[key] = copy.deepcopy(value)
+    if depth > 0:
+        for key in child_keys:
+            children = node.get(key)
+            if isinstance(children, list):
+                result[key] = [prune_tree_copy(child, depth - 1, child_keys)
+                               for child in children]
+    return result
+
+
+# -------------------------------------------------------------------------
 # -------------------------------------------------------------------------
 def append_props(parent_obj: dict, props: list) -> None:
     """
@@ -3793,6 +4245,10 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
     Currently this is based on loading a template file from package data.
     In the future, this should be generated based on the latest metaschema definition.
 
+    The supplied ``title`` (and ``version``/``published`` when given) overwrite the
+    template's placeholder metadata, so ``Catalog.new("X")`` / ``Profile.new("X")`` set
+    the document title as expected.
+
     The returned instance is always a base OSCAL object. Callers that need a
     specific model subclass (e.g. Catalog, Profile) are responsible for
     reassigning __class__ and calling _init_common() afterward.
@@ -3815,6 +4271,17 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
             oscal = OSCAL.__new__(OSCAL)
             oscal.__init_common__()
             if oscal.initial_validation(raw):
+                # Apply the requested metadata onto the template (the template ships
+                # with placeholder title/version, which callers expect to override).
+                if isinstance(oscal._dict, dict):
+                    meta = oscal._dict.get(model_name, {}).get("metadata")
+                    if isinstance(meta, dict):
+                        if title:
+                            meta["title"] = title
+                        if version:
+                            meta["version"] = version
+                        if published:
+                            meta["published"] = published
                 return oscal
             logger.error(f"Template content failed validation for model: {model_name}")
             return None

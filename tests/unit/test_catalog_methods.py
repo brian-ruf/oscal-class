@@ -13,12 +13,13 @@ import tempfile
 import pytest
 
 from oscal import Catalog, Profile
-from oscal.oscal_controls import _find_part
+from oscal.oscal_controls import _find_part, _find_control, _find_group
 
 _HERE = os.path.dirname(__file__)
 _DATA = os.path.join(_HERE, "..", "test-data")
 _XML_CATALOG = os.path.join(_DATA, "xml", "FedRAMP_rev5_LOW-baseline-resolved-profile_catalog.xml")
 _XML_PROFILE = os.path.join(_DATA, "xml", "FedRAMP_rev5_LOW-baseline_profile.xml")
+_NESTED_CATALOG = os.path.join(_DATA, "test", "nested_catalog.json")
 
 
 # ===========================================================================
@@ -332,17 +333,39 @@ class TestGetControlList:
         after = len(cat_with_group.get_control_list())
         assert after == before + 1
 
+    def test_returns_safe_copies(self):
+        """Mutating a control from get_control_list() does not change the catalog."""
+        c = Catalog.load(_NESTED_CATALOG)
+        c.get_control_list()[0]["title"] = "MUTATED"
+        assert all(ctrl["title"] != "MUTATED" for ctrl in c.get_control_list())
+
+    def test_preserves_internal_identity(self):
+        """A single deepcopy keeps an enhancement nested in its parent identical to its
+        own standalone entry in the flat list."""
+        c = Catalog.load(_NESTED_CATALOG)
+        lst = c.get_control_list()
+        by_id = {ctrl["id"]: ctrl for ctrl in lst}
+        assert by_id["c1"]["controls"][0] is by_id["c1.1"]
+
 
 # ===========================================================================
 # Profile.control()
 # ===========================================================================
 class TestProfileControl:
 
-    def test_unresolved_profile_returns_none(self):
-        """Profile.control() returns None when the profile is not yet resolved."""
+    def test_unresolved_profile_materializes_from_source(self):
+        """Profile.control() on an unresolved profile materializes the control on demand
+        from its source (via the controls_tree), rather than returning None."""
         profile = Profile.load(_XML_PROFILE)
+        assert profile.catalog is None
         result = profile.control("ac-1")
-        assert result is None
+        assert result is not None and result["id"] == "ac-1"
+        assert profile.catalog is None  # fetching did not force a full resolve
+
+    def test_unresolved_profile_unknown_id_returns_none(self):
+        """An id outside the profile's scope still returns None when unresolved."""
+        profile = Profile.load(_XML_PROFILE)
+        assert profile.control("zz-999") is None
 
     def test_unresolved_profile_does_not_raise(self):
         """Profile.control() must not raise when called before resolution."""
@@ -351,6 +374,27 @@ class TestProfileControl:
             profile.control("ac-1")
         except Exception:
             pytest.fail("Profile.control() raised unexpectedly on unresolved profile")
+
+    @staticmethod
+    def _resolved_profile():
+        """A real profile with a real nested catalog attached and marked resolved."""
+        from oscal.oscal_controls import ResolutionStatus
+        profile = Profile.load(_XML_PROFILE)
+        profile.catalog = Catalog.load(_NESTED_CATALOG)
+        profile.resolution_status = ResolutionStatus.RESOLVED
+        return profile
+
+    def test_resolved_forwards_depth(self):
+        """control(depth=0) forwards depth to the catalog getter (enhancements pruned)."""
+        profile = self._resolved_profile()
+        assert "controls" not in profile.control("c1", depth=0)
+        assert profile.control("c1", depth=1)["controls"][0]["id"] == "c1.1"
+
+    def test_resolved_returns_safe_copy(self):
+        """Mutating control()'s return value does not change the resolved catalog."""
+        profile = self._resolved_profile()
+        profile.control("c1")["title"] = "MUTATED"
+        assert profile.control("c1")["title"] == "Control One"
 
 
 # ===========================================================================
@@ -728,9 +772,10 @@ class TestControlsTree:
 
     def test_first_label_used_when_multiple(self, empty_cat):
         """When several matching label props exist, the first (best match) is used."""
-        grp = empty_cat.create_control_group("[root]", "ac", title="Access Control")
-        # Two label props in the default namespace, no class/group.
-        grp["props"] = [
+        empty_cat.create_control_group("[root]", "ac", title="Access Control")
+        # Two label props in the default namespace, no class/group. Set on the LIVE
+        # group (create_* returns a safe copy).
+        _find_group(empty_cat._catalog_root().get("groups", []), "ac")["props"] = [
             {"name": "label", "value": "FIRST"},
             {"name": "label", "value": "SECOND"},
         ]
@@ -812,8 +857,10 @@ class TestSetLabel:
     def test_plain_request_ignores_qualified_label(self, cat_with_group):
         """A class-qualified label does not satisfy a default (no class/group) set;
         a new plain label is created and the qualified one is left intact."""
-        ctrl = cat_with_group.create_control("ac", "ac-1", title="Policy")
-        ctrl["props"] = [{"name": "label", "value": "CLS", "class": "sort"}]
+        cat_with_group.create_control("ac", "ac-1", title="Policy")
+        # Set the qualified label on the LIVE control (create_* returns a safe copy).
+        _find_control(cat_with_group._catalog_root(), "ac-1")["props"] = [
+            {"name": "label", "value": "CLS", "class": "sort"}]
         cat_with_group.set_label("ac-1", "PLAIN")
         labels = {(p.get("value"), p.get("class"))
                   for p in cat_with_group.get_control_by_id("ac-1")["props"] if p["name"] == "label"}
@@ -928,7 +975,8 @@ class TestRemove:
         c = Catalog.new("T")
         c.create_control("[root]", "a", title="A")
         c.create_control("[root]", "b", title="B")
-        c.get_control_by_id("a").setdefault("links", []).append({"href": "#b", "rel": "related"})
+        # Build the reference on the LIVE tree (getters now return safe copies).
+        _find_control(c._catalog_root(), "a").setdefault("links", []).append({"href": "#b", "rel": "related"})
         return c
 
     def test_reference_blocks_delete(self):
@@ -955,7 +1003,7 @@ class TestRemove:
     def test_internal_reference_does_not_block(self, cat_tree):
         """A link from inside the removed subtree to another node in the subtree is
         not an external reference and must not block the cascade delete."""
-        cat_tree.get_control_by_id("ac-2").setdefault("links", []).append(
+        _find_control(cat_tree._catalog_root(), "ac-2").setdefault("links", []).append(
             {"href": "#ac-2.1", "rel": "related"})
         report = cat_tree.remove("ac-2", cascade=True)
         assert report["removed"] is True
@@ -964,7 +1012,7 @@ class TestRemove:
         c = Catalog.new("T")
         c.create_control("[root]", "x", title="X", statements=["s"])   # part id 'x_smt'
         c.create_control("[root]", "y", title="Y")
-        c.get_control_by_id("y").setdefault("links", []).append({"href": "#x_smt", "rel": "related"})
+        _find_control(c._catalog_root(), "y").setdefault("links", []).append({"href": "#x_smt", "rel": "related"})
         report = c.remove("x", cascade=True)       # cascade allowed, but part is referenced
         assert report["blocked_by"] == ["referential-integrity"]
         assert report["referenced_ids"] == ["x_smt"]
@@ -978,7 +1026,7 @@ class TestRemove:
         c.create_control("g", "c", title="C")
         c.create_control_group("[root]", "h", title="H")
         c.create_control("h", "e", title="E")
-        c.get_control_by_id("e").setdefault("links", []).append({"href": "#c", "rel": "related"})
+        _find_control(c._catalog_root(), "e").setdefault("links", []).append({"href": "#c", "rel": "related"})
         report = c.remove("g")            # g has child c (cascade) AND c is referenced by e
         assert set(report["blocked_by"]) == {"cascade", "referential-integrity"}
         assert report["children"] == ["c"]
@@ -1107,3 +1155,131 @@ class TestSetMerge:
         prof.is_unsaved = False
         prof.set_merge()          # rejected (no choice)
         assert prof.is_unsaved is False
+
+
+# ===========================================================================
+# get_control_by_id / get_group_by_id — depth pruning + safe-copy ownership
+# ===========================================================================
+class TestGetterDepthAndCopy:
+    """The by-id getters return depth-pruned SAFE COPIES.
+
+    depth prunes only nested child groups/controls; the node's own intrinsic
+    content (props, parts, params, links) is always returned in full. The return
+    value is detached — mutating it must never change the catalog.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        return Catalog.load(_NESTED_CATALOG)
+
+    # -- control depth ----------------------------------------------------
+    def test_control_default_depth_full_subtree(self, cat):
+        """depth=None (default) returns the full enhancement subtree."""
+        c1 = cat.get_control_by_id("c1")
+        assert c1["controls"][0]["id"] == "c1.1"
+        assert c1["controls"][0]["controls"][0]["id"] == "c1.1.1"
+
+    def test_control_depth0_strips_enhancements(self, cat):
+        c1 = cat.get_control_by_id("c1", depth=0)
+        assert "controls" not in c1
+
+    def test_control_depth0_keeps_intrinsic_content(self, cat):
+        """parts/props remain even when enhancements are pruned."""
+        c1 = cat.get_control_by_id("c1", depth=0)
+        assert "parts" in c1 and "props" in c1
+        assert c1["title"] == "Control One"
+
+    def test_control_depth1_keeps_one_level(self, cat):
+        c1 = cat.get_control_by_id("c1", depth=1)
+        assert c1["controls"][0]["id"] == "c1.1"
+        assert "controls" not in c1["controls"][0]   # grandchild pruned
+
+    def test_control_depth2_keeps_two_levels(self, cat):
+        c1 = cat.get_control_by_id("c1", depth=2)
+        assert c1["controls"][0]["controls"][0]["id"] == "c1.1.1"
+
+    # -- group depth ------------------------------------------------------
+    def test_group_depth0_strips_children(self, cat):
+        g1 = cat.get_group_by_id("g1", depth=0)
+        assert "groups" not in g1 and "controls" not in g1
+        assert "props" in g1                          # intrinsic retained
+
+    def test_group_depth1_prunes_grandchildren(self, cat):
+        g1 = cat.get_group_by_id("g1", depth=1)
+        assert g1["groups"][0]["id"] == "g1a"
+        assert "controls" not in g1["groups"][0]      # g1a's controls pruned
+
+    def test_group_depth1_controls_enhancements_pruned(self, cat):
+        g2 = cat.get_group_by_id("g2", depth=1)
+        assert g2["controls"][0]["id"] == "c1"
+        assert "controls" not in g2["controls"][0]    # c1's enhancements pruned
+
+    # -- safe-copy ownership ---------------------------------------------
+    def test_returned_control_is_a_copy(self, cat):
+        """Mutating a returned control does not change the catalog."""
+        c1 = cat.get_control_by_id("c1")
+        c1["title"] = "MUTATED"
+        c1["props"][0]["value"] = "MUTATED"
+        fresh = cat.get_control_by_id("c1")
+        assert fresh["title"] == "Control One"
+        assert fresh["props"][0]["value"] == "C1"
+
+    def test_returned_group_is_a_copy(self, cat):
+        g1 = cat.get_group_by_id("g1")
+        g1["groups"][0]["controls"][0]["title"] = "MUTATED"
+        fresh = cat.get_group_by_id("g1")
+        assert fresh["groups"][0]["controls"][0]["title"] == "Deep Control"
+
+    def test_full_depth_returned_control_is_a_copy(self, cat):
+        """Even the default full-subtree return is detached, not a live reference."""
+        assert cat.get_control_by_id("c1") is not cat.get_control_by_id("c1")
+
+    # -- edge cases -------------------------------------------------------
+    def test_missing_id_returns_none(self, cat):
+        assert cat.get_control_by_id("nope") is None
+        assert cat.get_group_by_id("nope", depth=0) is None
+
+    def test_negative_depth_raises(self, cat):
+        with pytest.raises(ValueError):
+            cat.get_control_by_id("c1", depth=-1)
+        with pytest.raises(ValueError):
+            cat.get_group_by_id("g1", depth=-1)
+
+
+# ===========================================================================
+# Mutator returns are safe copies (create_*/add_part/set_*)
+# ===========================================================================
+class TestMutatorReturnsCopy:
+    """Creation/mutation methods return a detached copy of the affected node;
+    mutating the return value must not change the catalog."""
+
+    def test_create_control_returns_copy(self, cat_with_group):
+        ctrl = cat_with_group.create_control("ac", "ac-1", title="Policy")
+        ctrl["title"] = "MUTATED"
+        assert cat_with_group.get_control_by_id("ac-1")["title"] == "Policy"
+
+    def test_create_control_group_returns_copy(self, empty_cat):
+        grp = empty_cat.create_control_group("[root]", "ac", title="Access Control")
+        grp["title"] = "MUTATED"
+        assert empty_cat.get_group_by_id("ac")["title"] == "Access Control"
+
+    def test_add_part_returns_copy(self, cat_with_group):
+        cat_with_group.create_control("ac", "ac-1", title="Policy")
+        part = cat_with_group.add_part("ac-1", name="guidance", prose="Original.")
+        part["prose"] = "MUTATED"
+        ctrl = cat_with_group.get_control_by_id("ac-1")
+        assert ctrl["parts"][0]["prose"] == "Original."
+
+    def test_set_title_returns_copy(self, cat_with_group):
+        cat_with_group.create_control("ac", "ac-1", title="Policy")
+        returned = cat_with_group.set_title("ac-1", "New Title")
+        returned["title"] = "MUTATED"
+        assert cat_with_group.get_control_by_id("ac-1")["title"] == "New Title"
+
+    def test_set_label_returns_copy(self, cat_with_group):
+        cat_with_group.create_control("ac", "ac-1", title="Policy")
+        returned = cat_with_group.set_label("ac-1", "AC-1")
+        returned["props"] = []
+        labels = [p for p in cat_with_group.get_control_by_id("ac-1")["props"]
+                  if p["name"] == "label"]
+        assert any(p["value"] == "AC-1" for p in labels)

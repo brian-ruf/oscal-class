@@ -97,7 +97,9 @@ class TestImportTreeNoImports:
         assert catalog.import_tree["imports"] == []
 
     def test_stable_on_repeated_access(self, catalog):
-        assert catalog.import_tree is catalog.import_tree
+        # import_tree returns a safe copy each access: equal content, distinct objects.
+        assert catalog.import_tree == catalog.import_tree
+        assert catalog.import_tree is not catalog.import_tree
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +122,33 @@ class TestImportTreeStructure:
     def test_node_has_status(self, profile_direct):
         assert "status" in profile_direct.import_tree["imports"][0]
 
-    def test_node_has_object(self, profile_direct):
-        assert "object" in profile_direct.import_tree["imports"][0]
+    def test_node_has_object_uuid(self, profile_direct):
+        node = profile_direct.import_tree["imports"][0]
+        assert "object_uuid" in node
+        assert "object" not in node                       # live object no longer embedded
+        assert node["object_uuid"] == profile_direct.import_list[0]["object"].uuid
 
     def test_node_has_failure(self, profile_direct):
         assert "failure" in profile_direct.import_tree["imports"][0]
+
+    def test_node_has_object_summary_fields(self, profile_direct):
+        node = profile_direct.import_tree["imports"][0]
+        for key in ("model", "title", "oscal_version", "version", "published", "last_modified"):
+            assert key in node
+
+    def test_acquired_node_summary_populated(self, profile_direct):
+        node = profile_direct.import_tree["imports"][0]
+        imported = profile_direct.import_list[0]["object"]
+        assert node["model"] == imported.model == "catalog"
+        assert node["title"] == imported.title
+        assert node["oscal_version"] == imported.oscal_version.lstrip("v")   # 'v' prefix stripped
+        assert node["version"] == imported.version
+        assert node["last_modified"] == imported.last_modified
+
+    def test_root_node_has_summary_fields(self, profile_direct):
+        tree = profile_direct.import_tree
+        assert tree["model"] == "profile"
+        assert tree["oscal_version"] == profile_direct.oscal_version.lstrip("v")
 
     def test_ready_node_status(self, profile_direct):
         assert profile_direct.import_tree["imports"][0]["status"] == ImportState.READY
@@ -147,10 +171,12 @@ class TestImportTreeStructure:
 # ---------------------------------------------------------------------------
 
 class TestImportTreeCaching:
-    def test_same_object_on_repeated_access(self, profile_direct):
+    def test_equal_copies_on_repeated_access(self, profile_direct):
+        # Cached internally, but each access returns an independent safe copy.
         t1 = profile_direct.import_tree
         t2 = profile_direct.import_tree
-        assert t1 is t2
+        assert t1 == t2
+        assert t1 is not t2
 
     def test_internal_cache_set_after_first_access(self, profile_direct):
         _ = profile_direct.import_tree
@@ -222,9 +248,12 @@ class TestImportTreeRecursive:
         leaf = three_level.import_tree["imports"][0]["imports"][0]
         assert leaf["imports"] == []
 
-    def test_leaf_object_model_is_catalog(self, three_level):
+    def test_leaf_object_uuid_resolves_to_catalog(self, three_level):
         leaf = three_level.import_tree["imports"][0]["imports"][0]
-        assert leaf["object"].model == "catalog"
+        # The tree carries only the UUID; get_oscal_object() fetches the live document.
+        obj = three_level.get_oscal_object(leaf["object_uuid"])
+        assert obj is not None
+        assert obj.model == "catalog"
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +274,14 @@ class TestImportTreeFailedImport:
     def test_failed_node_failure_is_populated(self, profile_missing):
         assert profile_missing.import_tree["imports"][0]["failure"] is not None
 
-    def test_failed_node_object_is_none(self, profile_missing):
-        assert profile_missing.import_tree["imports"][0]["object"] is None
+    def test_failed_node_object_uuid_is_none(self, profile_missing):
+        assert profile_missing.import_tree["imports"][0]["object_uuid"] is None
+
+    def test_failed_node_summary_fields_are_empty(self, profile_missing):
+        """Summary keys are always present; empty strings when the object wasn't acquired."""
+        node = profile_missing.import_tree["imports"][0]
+        for key in ("model", "title", "oscal_version", "version", "published", "last_modified"):
+            assert node[key] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -267,3 +302,80 @@ class TestFailedImportsProperty:
     def test_entry_status_is_invalid(self, profile_missing):
         entry = profile_missing.failed_imports[0]
         assert entry["status"] == ImportState.INVALID
+
+
+# ---------------------------------------------------------------------------
+# TestImportGetterOwnership — failed/duplicate/unresolved return safe copies
+# with object_uuid, not the live object
+# ---------------------------------------------------------------------------
+
+class TestImportGetterOwnership:
+    _SUMMARY_KEYS = ("model", "title", "oscal_version", "version", "published", "last_modified")
+
+    def test_failed_entry_has_object_uuid(self, profile_missing):
+        entry = profile_missing.failed_imports[0]
+        assert "object_uuid" in entry
+        assert "object" not in entry            # live object not embedded
+        assert entry["object_uuid"] is None     # a failed import has no loaded object
+
+    def test_entry_shape_matches_tree_node_minus_imports(self, profile_missing):
+        """Getter entries carry the same field schema as a tree node, without 'imports'."""
+        entry = profile_missing.failed_imports[0]
+        node = profile_missing.import_tree["imports"][0]
+        assert set(entry.keys()) == set(node.keys()) - {"imports"}
+
+    def test_summary_fields_always_empty_for_getters(self, profile_missing):
+        """Failed/duplicate entries never carry a loaded object → summary always empty."""
+        for entry in profile_missing.failed_imports + profile_missing.unresolved_imports:
+            assert entry["object_uuid"] is None
+            for key in self._SUMMARY_KEYS:
+                assert entry[key] == ""
+
+    def test_mutating_returned_entry_does_not_affect_state(self, profile_missing):
+        profile_missing.failed_imports[0]["status"] = "MUTATED"
+        assert profile_missing.failed_imports[0]["status"] == ImportState.INVALID
+
+    def test_failure_object_preserved_in_copy(self, profile_missing):
+        entry = profile_missing.failed_imports[0]
+        assert entry.get("failure") is not None
+        assert entry["failure"].code is not None   # ImportFailure survived the deep copy
+
+
+# ---------------------------------------------------------------------------
+# TestImportTreeCopyOwnership — tree is a safe copy; no live objects embedded
+# ---------------------------------------------------------------------------
+
+class TestImportTreeCopyOwnership:
+    def test_mutating_returned_tree_does_not_affect_cache(self, profile_direct):
+        tree = profile_direct.import_tree
+        tree["imports"][0]["status"] = "MUTATED"
+        assert profile_direct.import_tree["imports"][0]["status"] == ImportState.READY
+
+    def test_no_live_object_anywhere_in_tree(self, profile_direct):
+        def walk(node):
+            assert "object" not in node
+            assert "object_uuid" in node
+            for child in node.get("imports", []):
+                walk(child)
+        walk(profile_direct.import_tree)
+
+
+# ---------------------------------------------------------------------------
+# TestGetOscalObject — fetch the live document by UUID (companion to import_tree)
+# ---------------------------------------------------------------------------
+
+class TestGetOscalObject:
+    def test_returns_live_imported_object(self, profile_direct):
+        imported = profile_direct.import_list[0]["object"]
+        found = profile_direct.get_oscal_object(imported.uuid)
+        assert found is imported                       # LIVE object, not a copy
+
+    def test_returns_self_when_own_uuid(self, profile_direct):
+        assert profile_direct.get_oscal_object(profile_direct.uuid) is profile_direct
+
+    def test_object_uuid_from_tree_round_trips(self, profile_direct):
+        uuid = profile_direct.import_tree["imports"][0]["object_uuid"]
+        assert profile_direct.get_oscal_object(uuid) is profile_direct.import_list[0]["object"]
+
+    def test_unknown_uuid_returns_none(self, profile_direct):
+        assert profile_direct.get_oscal_object("00000000-0000-4000-a000-000000000000") is None

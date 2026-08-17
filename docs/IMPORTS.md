@@ -81,6 +81,56 @@ Relative paths are resolved against the directory that contains the importing do
 | `object` | `OSCAL \| None` | The loaded OSCAL document (populated on success) |
 | `failure` | `ImportFailure \| None` | Failure detail (populated on failure; `None` on success) |
 
+`import_list` is the internal source of truth and is the ONLY place the live
+`object` is exposed. The `import_tree` and the `failed_imports` /
+`duplicate_imports` / `unresolved_imports` getters return **safe copies** that
+carry `object_uuid` instead of the live object (see below).
+
+---
+
+## `import_tree` structure
+
+`import_tree` is a recursive, wire-safe view of the import hierarchy. It is a
+**deep copy** of an internally cached structure — mutating the returned tree does
+not affect the document; call `rebuild_import_tree()` to force a fresh traversal.
+
+The tree carries **no live OSCAL objects** (keeping large documents out of the
+payload). Each node — the root and every import — has the `import_list` fields
+above **except** `object`, plus:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `object_uuid` | `str \| None` | The document's root UUID, or `None` when not acquired. Pass to `get_oscal_object()` for the live object. |
+| `model` | `str` | Model type (e.g. `"catalog"`) — `""` when not acquired |
+| `title` | `str` | Metadata title — `""` when not acquired |
+| `oscal_version` | `str` | OSCAL version, no `v` prefix (e.g. `"1.1.3"`) — `""` when not acquired |
+| `version` | `str` | Document metadata version — `""` when not acquired |
+| `published` | `str` | Metadata publication timestamp (RFC-3339) — `""` when not acquired |
+| `last_modified` | `str` | Metadata last-modified timestamp (RFC-3339) — `""` when not acquired |
+| `imports` | `list[dict]` | Child import nodes (empty when none / unacquired) |
+
+The six summary fields populate only when the object was **successfully
+acquired**; otherwise each is an empty string. `import_tree` is the single source
+of truth for this schema.
+
+### `get_oscal_object(uuid)`
+
+Companion to `import_tree`: pass a node's `object_uuid` to obtain the **live**
+imported document (searches this document and its resolved imports depth-first,
+de-duplicating objects shared across import paths). Returns `None` when not found.
+
+```python
+node = profile.import_tree["imports"][0]
+catalog = profile.get_oscal_object(node["object_uuid"])   # live OSCAL object, or None
+```
+
+### Import getters return the same node shape
+
+`failed_imports`, `duplicate_imports`, and `unresolved_imports` return safe-copy
+**flat lists** with the same per-node fields (without the recursive `imports`
+key). Because failed and duplicate entries never carry a loaded object, in these
+results `object_uuid` is always `None` and the six summary fields are always `""`.
+
 ---
 
 ## Failure states
