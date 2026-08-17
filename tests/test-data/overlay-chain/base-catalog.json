@@ -1,0 +1,99 @@
+{
+  "catalog": {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "metadata": {
+      "title": "Base Control Catalog",
+      "last-modified": "2026-01-01T00:00:00Z",
+      "version": "1.0.0",
+      "oscal-version": "1.1.3"
+    },
+    "groups": [
+      {
+        "id": "ac",
+        "class": "family",
+        "title": "Access Control",
+        "controls": [
+          {
+            "id": "ac-1",
+            "title": "Policy and Procedures",
+            "params": [
+              {
+                "id": "ac-1_prm_1",
+                "label": "organization-defined personnel"
+              }
+            ],
+            "parts": [
+              {
+                "id": "ac-1_smt",
+                "name": "statement",
+                "prose": "Develop {{ insert: param, ac-1_prm_1 }}."
+              }
+            ]
+          },
+          {
+            "id": "ac-2",
+            "title": "Account Management",
+            "controls": [
+              {
+                "id": "ac-2.1",
+                "title": "Automated System Account Management"
+              },
+              {
+                "id": "ac-2.2",
+                "title": "Automated Temporary and Emergency Account Management"
+              }
+            ]
+          },
+          {
+            "id": "ac-3",
+            "title": "Access Enforcement"
+          },
+          {
+            "id": "ac-4",
+            "title": "Information Flow Enforcement"
+          }
+        ]
+      },
+      {
+        "id": "au",
+        "class": "family",
+        "title": "Audit and Accountability",
+        "controls": [
+          {
+            "id": "au-1",
+            "title": "Policy and Procedures"
+          },
+          {
+            "id": "au-2",
+            "title": "Event Logging"
+          },
+          {
+            "id": "au-3",
+            "title": "Content of Audit Records"
+          }
+        ]
+      },
+      {
+        "id": "pt",
+        "class": "family",
+        "title": "PII Processing and Transparency",
+        "controls": [
+          {
+            "id": "pt-1",
+            "title": "Policy and Procedures"
+          },
+          {
+            "id": "pt-2",
+            "title": "Authority to Process PII",
+            "controls": [
+              {
+                "id": "pt-2.1",
+                "title": "Data Tagging"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

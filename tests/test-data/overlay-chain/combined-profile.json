@@ -1,0 +1,28 @@
+{
+  "profile": {
+    "uuid": "55555555-5555-4555-8555-555555555555",
+    "metadata": {
+      "title": "Org High Baseline + Privacy Overlay",
+      "last-modified": "2026-01-01T00:00:00Z",
+      "version": "1.0.0",
+      "oscal-version": "1.1.3",
+      "remarks": "Applies the privacy overlay onto the high baseline; use-first keeps baseline controls and adds only overlay controls not already present."
+    },
+    "imports": [
+      {
+        "href": "baseline-profile.json",
+        "include-all": {}
+      },
+      {
+        "href": "overlay-profile.json",
+        "include-all": {}
+      }
+    ],
+    "merge": {
+      "as-is": true,
+      "combine": {
+        "method": "use-first"
+      }
+    }
+  }
+}
