@@ -1,0 +1,63 @@
+{
+  "catalog": {
+    "uuid": "99999999-8888-7777-6666-555555555555",
+    "metadata": {
+      "title": "Nested Depth Test Catalog",
+      "last-modified": "2026-08-11T00:00:00.000000-00:00",
+      "version": "1.0",
+      "oscal-version": "1.1.3"
+    },
+    "groups": [
+      {
+        "id": "g1",
+        "title": "Group One",
+        "props": [ { "name": "label", "value": "G1" } ],
+        "groups": [
+          {
+            "id": "g1a",
+            "title": "Group One-A",
+            "controls": [
+              {
+                "id": "c-deep",
+                "title": "Deep Control",
+                "props": [ { "name": "label", "value": "C-DEEP" } ],
+                "parts": [
+                  { "id": "c-deep_smt", "name": "statement", "prose": "Deep statement." }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "g2",
+        "title": "Group Two",
+        "props": [ { "name": "label", "value": "G2" } ],
+        "controls": [
+          {
+            "id": "c1",
+            "title": "Control One",
+            "props": [ { "name": "label", "value": "C1" } ],
+            "parts": [
+              { "id": "c1_smt", "name": "statement", "prose": "Control one statement." }
+            ],
+            "controls": [
+              {
+                "id": "c1.1",
+                "title": "Enhancement One-One",
+                "props": [ { "name": "label", "value": "C1.1" } ],
+                "controls": [
+                  {
+                    "id": "c1.1.1",
+                    "title": "Enhancement One-One-One",
+                    "props": [ { "name": "label", "value": "C1.1.1" } ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
