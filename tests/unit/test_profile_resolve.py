@@ -105,6 +105,21 @@ class TestLazyModel:
         top_ids = {n["id"] for n in prof.controls_tree}
         assert top_ids == {"ac", "au"}
 
+    def test_controls_tree_built_at_load_without_resolve(self, prof, tmp_path):
+        # Persist then reload so the tree must be built by validate() during load,
+        # not by the earlier add_import()/set_merge() rebuilds or a lazy getter.
+        path = os.path.join(str(tmp_path), "reloaded_profile.json")
+        assert prof.dump(path, format="json")
+
+        reloaded = Profile.load(path)
+
+        # Tree is populated and marked clean immediately after load — no getter
+        # or resolve() call has happened yet, and the catalog stays lazy.
+        assert reloaded._tree_dirty is False
+        assert {n["id"] for n in reloaded.controls_tree} == {"ac", "au"}
+        assert reloaded.catalog is None
+        assert reloaded.resolution_status == ResolutionStatus.UNRESOLVED
+
     def test_tree_nodes_carry_origin(self, prof):
         ac = next(n for n in prof.controls_tree if n["id"] == "ac")
         ac1 = next(c for c in ac["children"] if c["id"] == "ac-1")

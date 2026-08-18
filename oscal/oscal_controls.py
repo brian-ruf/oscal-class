@@ -2010,6 +2010,32 @@ class Profile(OSCAL):
             self.resolution_state = "unresolved"
 
     # -------------------------------------------------------------------------
+    def validate(self, format: str = "") -> bool:
+        """Validate the profile, then (re)build ``controls_tree`` on success.
+
+        Mirrors :meth:`Catalog.validate`: the profile's authoritative scope and
+        organization tree is refreshed the moment the content is converted and
+        found to be valid OSCAL — no call to :meth:`resolve` is required. Building
+        the tree resolves the profile's imports if they are not already resolved.
+        When the content is not valid the tree is emptied and left marked stale so a
+        later access rebuilds it.
+
+        Args:
+            format (str, optional): Accepted for API compatibility with the base
+                method; does not alter the validation path.
+
+        Returns:
+            bool: True when every validation phase passes.
+        """
+        result = super().validate(format=format)
+        if self.is_valid:
+            self._build_controls_tree()
+        else:
+            self.controls_tree = []
+            self._tree_dirty = True
+        return result
+
+    # -------------------------------------------------------------------------
     def _build_controls_tree(self):
         """Build the profile's controls_tree from its imports' controls_trees.
 
@@ -2617,7 +2643,7 @@ class Profile(OSCAL):
     def resolve(self) -> "ResolutionStatus":
         """Materialize the profile's controls_tree into a fresh ``self.catalog``.
 
-        Resolution is the (future-cacheable) heavy step: it walks the profile's
+        Resolution is the cacheable heavy step: it walks the profile's
         controls_tree — the authoritative scope/organization built at load — and for each
         node fetches the real control/group content from its origin source, applies this
         profile's ``modify`` directives (removes → adds → set-parameters), applies full

@@ -192,6 +192,176 @@ def test_list_models_queries_own_version_at_or_after_min_version():
     assert all("v1.2.2" in sql for sql in obj.db.queried_sql)
 
 
+class _EmptyReleasesResponse:
+    """A successful GitHub releases response carrying no releases (so the
+    __get_oscal_versions loop body is skipped, keeping the test focused on the
+    fetch/retry behavior)."""
+    ok = True
+
+    def json(self):
+        return []
+
+
+def _make_fetch_obj():
+    """An OSCALSupport with the destructive ops spied so a full refresh can run
+    without a real database. Returns (obj, destroyed) where *destroyed* records
+    clear/vacuum invocations."""
+    obj = OSCALSupport.__new__(OSCALSupport)
+    obj.versions = {}
+    obj._update_stats = None
+    obj._OSCALSupport__status_messages = lambda *a, **k: None
+
+    destroyed = {"clear_all": 0, "vacuum": 0}
+    obj._OSCALSupport__clear_oscal_versions = lambda: destroyed.__setitem__("clear_all", destroyed["clear_all"] + 1) or True
+    obj._OSCALSupport__vacuum_database = lambda: destroyed.__setitem__("vacuum", destroyed["vacuum"] + 1) or True
+    return obj, destroyed
+
+
+def test_release_fetch_retries_then_succeeds(monkeypatch):
+    obj, _ = _make_fetch_obj()
+
+    calls = {"n": 0}
+
+    def fake_api_get(url, timeout_seconds=10):
+        calls["n"] += 1
+        # Fail (timeout -> None) on all but the final allowed attempt.
+        if calls["n"] < support_mod.RELEASE_FETCH_ATTEMPTS:
+            return None
+        return _EmptyReleasesResponse()
+
+    monkeypatch.setattr(support_mod.network, "api_get", fake_api_get)
+    monkeypatch.setattr(support_mod, "sleep", lambda _s: None)
+
+    status = obj._OSCALSupport__get_oscal_versions("all")
+
+    assert status is True
+    assert calls["n"] == support_mod.RELEASE_FETCH_ATTEMPTS
+
+
+def test_release_fetch_gives_up_after_max_attempts(monkeypatch):
+    obj, destroyed = _make_fetch_obj()
+
+    calls = {"n": 0}
+
+    def fake_api_get(url, timeout_seconds=10):
+        calls["n"] += 1
+        return None  # every attempt times out
+
+    monkeypatch.setattr(support_mod.network, "api_get", fake_api_get)
+    monkeypatch.setattr(support_mod, "sleep", lambda _s: None)
+
+    status = obj._OSCALSupport__get_oscal_versions("all")
+
+    assert status is False
+    assert calls["n"] == support_mod.RELEASE_FETCH_ATTEMPTS
+    # Destructive ops must NOT run when the release list can't be fetched.
+    assert destroyed == {"clear_all": 0, "vacuum": 0}
+
+
+def test_full_refresh_clears_and_vacuums_only_after_successful_fetch(monkeypatch):
+    obj, destroyed = _make_fetch_obj()
+
+    monkeypatch.setattr(support_mod.network, "api_get",
+                        lambda url, timeout_seconds=10: _EmptyReleasesResponse())
+    monkeypatch.setattr(support_mod, "sleep", lambda _s: None)
+
+    status = obj._OSCALSupport__get_oscal_versions("all")
+
+    assert status is True
+    # The full-refresh clear + vacuum ran exactly once, after the fetch succeeded.
+    assert destroyed == {"clear_all": 1, "vacuum": 1}
+
+
+def test_specific_version_fetch_does_not_full_clear(monkeypatch):
+    # A specific-version refresh must never trigger the wholesale clear/vacuum.
+    obj, destroyed = _make_fetch_obj()
+
+    monkeypatch.setattr(support_mod.network, "api_get",
+                        lambda url, timeout_seconds=10: _EmptyReleasesResponse())
+    monkeypatch.setattr(support_mod, "sleep", lambda _s: None)
+
+    status = obj._OSCALSupport__get_oscal_versions("v1.2.2")
+
+    assert status is True
+    assert destroyed == {"clear_all": 0, "vacuum": 0}
+
+
+def test_release_fetch_uses_extended_timeout(monkeypatch):
+    obj, _ = _make_fetch_obj()
+
+    seen = {}
+
+    def fake_api_get(url, timeout_seconds=10):
+        seen["timeout"] = timeout_seconds
+        return _EmptyReleasesResponse()
+
+    monkeypatch.setattr(support_mod.network, "api_get", fake_api_get)
+    monkeypatch.setattr(support_mod, "sleep", lambda _s: None)
+
+    obj._OSCALSupport__get_oscal_versions("all")
+
+    assert seen["timeout"] == support_mod.RELEASE_FETCH_TIMEOUT
+
+
+def _make_remove_obj(clear_result=True):
+    """An OSCALSupport with __clear_oscal_version spied, so remove_version's own
+    logic (validation, delegation, in-memory cleanup) can be tested without a DB.
+    Returns (obj, cleared) where *cleared* records the versions passed to the
+    private clear."""
+    obj = OSCALSupport.__new__(OSCALSupport)
+    obj.versions = {"v1.2.3": {"title": "x"}, "v1.2.2": {"title": "y"}}
+    obj._cache = {"models_per_version": {"v1.2.3": ["catalog"], "all": ["catalog", "profile"]}}
+    obj._OSCALSupport__status_messages = lambda *a, **k: None
+
+    cleared = []
+    obj._OSCALSupport__clear_oscal_version = lambda v: cleared.append(v) or clear_result
+    return obj, cleared
+
+
+def test_remove_version_deletes_and_cleans_memory():
+    obj, cleared = _make_remove_obj(clear_result=True)
+
+    assert obj.remove_version("v1.2.3") is True
+    assert cleared == ["v1.2.3"]
+    assert "v1.2.3" not in obj.versions
+    assert "v1.2.2" in obj.versions                      # unrelated version untouched
+    assert "v1.2.3" not in obj._cache["models_per_version"]
+    assert "all" not in obj._cache["models_per_version"]  # aggregate list invalidated
+
+
+def test_remove_version_case_insensitive():
+    obj, cleared = _make_remove_obj(clear_result=True)
+
+    assert obj.remove_version("V1.2.3") is True
+    assert cleared == ["v1.2.3"]
+    assert "v1.2.3" not in obj.versions
+
+
+def test_remove_version_unknown_returns_false():
+    obj, cleared = _make_remove_obj(clear_result=True)
+
+    assert obj.remove_version("v9.9.9") is False
+    assert cleared == []                                 # deletion never attempted
+    assert obj.versions == {"v1.2.3": {"title": "x"}, "v1.2.2": {"title": "y"}}
+
+
+def test_remove_version_invalid_tag_returns_false():
+    obj, cleared = _make_remove_obj(clear_result=True)
+
+    assert obj.remove_version("1.2.3") is False          # missing leading 'v'
+    assert obj.remove_version("") is False
+    assert cleared == []
+
+
+def test_remove_version_failure_keeps_memory():
+    obj, cleared = _make_remove_obj(clear_result=False)   # DB deletion fails
+
+    assert obj.remove_version("v1.2.3") is False
+    assert cleared == ["v1.2.3"]                          # deletion attempted
+    assert "v1.2.3" in obj.versions                       # but memory left intact
+    assert "v1.2.3" in obj._cache["models_per_version"]
+
+
 def test_load_file_as_bytes_overrides_binary(monkeypatch):
     obj = OSCALSupport.__new__(OSCALSupport)
     obj._cache = {}
