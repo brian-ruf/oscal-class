@@ -3,6 +3,8 @@ name: CI Pipeline
 on:
   push:
     branches: ["develop", "main"]
+  pull_request:
+    branches: ["develop", "main"]
 
 permissions:
   contents: read
@@ -60,11 +62,14 @@ jobs:
 
   # Refreshes the OSCAL support database and API docs on main so that both are
   # current *before* a release is tagged. Runs once, only after every lint and
-  # test matrix leg has passed, only for pushes to main (not develop).
+  # test matrix leg has passed, and only for an actual push landing on main
+  # (never for a pull_request run, even one whose base is main -- a PR's
+  # github.ref is refs/pull/<n>/merge, never refs/heads/main, but the explicit
+  # event_name check makes that intent unambiguous rather than incidental).
   sync-release-assets:
     name: Refresh support data and API docs
     needs: [lint, test]
-    if: success() && github.ref == 'refs/heads/main'
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

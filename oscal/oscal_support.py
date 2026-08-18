@@ -899,8 +899,14 @@ class OSCALSupport:
                 doc_query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'document-model' and model != 'complete'"
                 xml_query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'xml-schema' and model != 'complete'"
             else:
-                doc_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{version}' and type = 'document-model' and model != 'complete'"
-                xml_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{version}' and type = 'xml-schema' and model != 'complete'"
+                # NIST did not publish resolved metaschema files before v1.1.1, so no
+                # model rows exist for earlier versions. The library reuses the v1.1.1
+                # models for all prior versions; query that version instead.
+                query_version = version
+                if helper.compare_semver(version, METASCHEMA_MIN_VERSION) < 0:
+                    query_version = METASCHEMA_MIN_VERSION
+                doc_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{query_version}' and type = 'document-model' and model != 'complete'"
+                xml_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{query_version}' and type = 'xml-schema' and model != 'complete'"
 
             results = self.db.query(doc_query)
             if not results:
