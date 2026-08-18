@@ -1930,10 +1930,15 @@ class Profile(OSCAL):
       references to their source URIs. ``catalog`` is ``None`` until ``resolve`` is called.
 
     * **Read-only Catalog surface.** :meth:`get_control_by_id`, :meth:`get_group_by_id`,
-      and :meth:`get_control_list` return safe copies from :attr:`catalog` when resolved,
-      or materialize them on demand from the source (through the same code path, so the
-      two agree) when unresolved. Content is changed via the profile's own directive
-      methods and re-resolved, not by editing returned copies.
+      :meth:`get_control_list`, and :meth:`get_parameter_by_id` return safe copies from
+      :attr:`catalog` when resolved, or materialize them on demand from the source
+      (through the same code path, so the two agree) when unresolved. Content is changed
+      via the profile's own directive methods and re-resolved, not by editing returned
+      copies.
+
+    * **Serialization.** :meth:`dumps_catalog`/:meth:`dump_catalog` serialize the resolved
+      catalog to a string / file; :meth:`resolve_and_dumps_catalog`/
+      :meth:`resolve_and_dump_catalog` run the full resolve-then-serialize in one call.
 
     Key attributes:
         catalog (Catalog | None): The resolved catalog, or None until :meth:`resolve`.
@@ -1977,6 +1982,32 @@ class Profile(OSCAL):
         """Rebuild :attr:`controls_tree` if it is stale (imports/directives changed)."""
         if self._tree_dirty:
             self._build_controls_tree()
+
+    # -------------------------------------------------------------------------
+    def _on_content_mutated(self) -> None:
+        """React to any edit of the profile's content by dropping a stale resolved catalog.
+
+        Invoked automatically after every successful content mutation (via
+        :func:`if_update_successful` and :meth:`OSCAL.put`). A resolved catalog reflects
+        the profile as it was *before* the edit, so any change resets the profile to
+        ``UNRESOLVED``; re-run :meth:`resolve` to rebuild it. (Manual duplicate resolution
+        edits :attr:`catalog` through Catalog methods, which do not trigger this hook, so
+        those intentionally keep the profile resolved.)
+
+        This does not itself mark the ``controls_tree`` stale: scope/organization mutators
+        (:meth:`add_import`, :meth:`set_merge`) already set ``_tree_dirty`` and rebuild;
+        edits that don't affect scope (e.g. metadata) leave the tree valid. Any future
+        directive editor that changes scope must set ``_tree_dirty`` itself.
+        """
+        self._invalidate_resolution()
+
+    # -------------------------------------------------------------------------
+    def _invalidate_resolution(self) -> None:
+        """Drop the resolved catalog and reset the profile to ``UNRESOLVED``."""
+        if self.resolution_status != ResolutionStatus.UNRESOLVED or self.catalog is not None:
+            self.catalog = None
+            self.resolution_status = ResolutionStatus.UNRESOLVED
+            self.resolution_state = "unresolved"
 
     # -------------------------------------------------------------------------
     def _build_controls_tree(self):
@@ -3244,6 +3275,92 @@ class Profile(OSCAL):
             if materialized is not None:
                 out.append(materialized)
         return out
+
+    # -------------------------------------------------------------------------
+    def dumps_catalog(self, format: str = "", pretty_print: bool = False) -> str:
+        """Serialize the resolved catalog to a string — wrapper over ``self.catalog.dumps``.
+
+        Requires the profile to be resolved (``self.catalog`` is None until
+        :meth:`resolve`); returns ``""`` with a warning otherwise.
+
+        Args:
+            format (str, optional): Target format ("xml", "json", "yaml"); defaults to the
+                catalog's original format.
+            pretty_print (bool, optional): Whether to pretty-print. Defaults to False.
+
+        Returns:
+            str: The serialized resolved catalog, or ``""`` when unresolved.
+        """
+        if not self._resolved("the resolved catalog"):
+            return ""
+        return self.catalog.dumps(format=format, pretty_print=pretty_print)
+
+    # -------------------------------------------------------------------------
+    def dump_catalog(self, filename: str = "", format: str = "",
+                     pretty_print: bool = False) -> bool:
+        """Write the resolved catalog to a file — wrapper over ``self.catalog.dump``.
+
+        Requires the profile to be resolved (``self.catalog`` is None until
+        :meth:`resolve`); returns False with a warning otherwise.
+
+        Args:
+            filename (str, optional): Path to write to; defaults to the catalog's original
+                location when empty.
+            format (str, optional): Output format ("xml", "json", "yaml"); defaults to the
+                catalog's original format when empty.
+            pretty_print (bool, optional): Whether to pretty-print. Defaults to False.
+
+        Returns:
+            bool: True on success, False when unresolved or the write fails.
+        """
+        if not self._resolved("the resolved catalog"):
+            return False
+        return self.catalog.dump(filename=filename, format=format, pretty_print=pretty_print)
+
+    # -------------------------------------------------------------------------
+    def resolve_and_dumps_catalog(self, format: str = "", pretty_print: bool = False) -> str:
+        """Resolve the profile, then serialize the resolved catalog to a string.
+
+        Convenience for the common one-shot case: it runs the (potentially expensive)
+        :meth:`resolve` and then :meth:`dumps_catalog`. For finer control — e.g. to resolve
+        once and serialize many times, or to manage *when* the heavy resolution runs — call
+        :meth:`resolve` and :meth:`dumps_catalog` separately instead.
+
+        Note: each call performs a full resolution (rebuilds ``self.catalog`` from scratch).
+
+        Args:
+            format (str, optional): Target format ("xml", "json", "yaml").
+            pretty_print (bool, optional): Whether to pretty-print. Defaults to False.
+
+        Returns:
+            str: The serialized resolved catalog, or ``""`` if resolution was blocked.
+        """
+        self.resolve()
+        return self.dumps_catalog(format=format, pretty_print=pretty_print)
+
+    # -------------------------------------------------------------------------
+    def resolve_and_dump_catalog(self, filename: str = "", format: str = "",
+                                 pretty_print: bool = False) -> bool:
+        """Resolve the profile, then write the resolved catalog to a file.
+
+        Convenience for the common one-shot case: it runs the (potentially expensive)
+        :meth:`resolve` and then :meth:`dump_catalog`. For finer control — e.g. to resolve
+        once and write several outputs, or to manage *when* the heavy resolution runs — call
+        :meth:`resolve` and :meth:`dump_catalog` separately instead.
+
+        Note: each call performs a full resolution (rebuilds ``self.catalog`` from scratch).
+
+        Args:
+            filename (str, optional): Path to write to; defaults to the catalog's original
+                location when empty.
+            format (str, optional): Output format ("xml", "json", "yaml").
+            pretty_print (bool, optional): Whether to pretty-print. Defaults to False.
+
+        Returns:
+            bool: True on success, False if resolution was blocked or the write failed.
+        """
+        self.resolve()
+        return self.dump_catalog(filename=filename, format=format, pretty_print=pretty_print)
 
     # -------------------------------------------------------------------------
     def _resolved(self, what: str) -> bool:

@@ -172,7 +172,7 @@ def test_update_respects_fetch_alias_over_mode():
     obj._OSCALSupport__status_messages = lambda *args, **kwargs: None
     obj._OSCALSupport__clear_oscal_versions = lambda: events.append("clear_all") or True
     obj._OSCALSupport__clear_oscal_version = lambda version: events.append(("clear_one", version)) or True
-    obj._OSCALSupport__get_oscal_versions = lambda fetch: events.append(("get", fetch)) or True
+    obj._OSCALSupport__get_oscal_versions = lambda fetch, save_to_fs=False: events.append(("get", fetch)) or True
     obj._OSCALSupport__load_versions = lambda: events.append("load") or True
 
     result = obj.update(mode="all", fetch="new")
