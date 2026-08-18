@@ -26,6 +26,12 @@ models.
 - **Path-based querying**: XPath-inspired syntax for navigating OSCAL content using either XML element names or JSON key names
 - **Air-gapped operation**: the bundled support database enables full offline use; update from an internet-connected machine and transfer the database file
 
+
+### API Reference
+
+- Human Oriented: [https://brian-ruf.github.io/oscal-class/api.html](https://brian-ruf.github.io/oscal-class/api.html) 
+- LLM Oriented: [https://brian-ruf.github.io/oscal-class/api-llm.html](https://brian-ruf.github.io/oscal-class/api-llm.html)
+
 ---
 
 ## Installation

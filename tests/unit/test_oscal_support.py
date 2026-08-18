@@ -150,6 +150,48 @@ def test_list_models_uses_cache_per_version():
     assert obj.db.query_calls == 1
 
 
+class _VersionCapturingDB:
+    """Returns model rows only when the SQL targets the metaschema-min version,
+    mirroring a DB that has no model rows for versions before v1.1.1."""
+
+    def __init__(self):
+        self.queried_sql = []
+
+    def query(self, sql):
+        self.queried_sql.append(sql)
+        if support_mod.METASCHEMA_MIN_VERSION in sql:
+            return [{"model": "catalog"}, {"model": "profile"}]
+        return []
+
+
+def test_list_models_falls_back_to_min_version_for_older_versions():
+    # A version prior to v1.1.1 has no model rows of its own; the v1.1.1 model
+    # list should be returned instead.
+    obj = OSCALSupport.__new__(OSCALSupport)
+    obj.versions = {"v1.0.0": {}}
+    obj._cache = {}
+    obj.db = _VersionCapturingDB()
+
+    models = obj.list_models("v1.0.0")
+
+    assert models == ["catalog", "profile"]
+    assert all(support_mod.METASCHEMA_MIN_VERSION in sql for sql in obj.db.queried_sql)
+    assert all("v1.0.0" not in sql for sql in obj.db.queried_sql)
+
+
+def test_list_models_queries_own_version_at_or_after_min_version():
+    # v1.1.1 and later query their own version rows (no substitution).
+    obj = OSCALSupport.__new__(OSCALSupport)
+    obj.versions = {"v1.2.2": {}}
+    obj._cache = {}
+    obj.db = _VersionCapturingDB()
+
+    models = obj.list_models("v1.2.2")
+
+    assert models == []  # fake only yields rows for the min version tag
+    assert all("v1.2.2" in sql for sql in obj.db.queried_sql)
+
+
 def test_load_file_as_bytes_overrides_binary(monkeypatch):
     obj = OSCALSupport.__new__(OSCALSupport)
     obj._cache = {}
