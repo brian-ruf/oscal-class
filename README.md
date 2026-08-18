@@ -1,16 +1,13 @@
-![GitHub last commit](https://img.shields.io/github/last-commit/brian-ruf/oscal-class) 
-![OSCAL](https://img.shields.io/badge/OSCAL-Enabled-blue?style=flat)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white) 
 ![Open Source](https://img.shields.io/badge/Open%20Source-Yes-brightgreen?logo=github)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) 
+![OSCAL](https://img.shields.io/badge/OSCAL-Enabled-blue?style=flat)
 ![PyPI](https://img.shields.io/pypi/v/oscal)
+![GitHub last commit](https://img.shields.io/github/last-commit/brian-ruf/oscal-class) 
 
 # OSCAL Python Library
 
-A Python library for working with [OSCAL](https://pages.nist.gov/OSCAL) (Open Security
-Controls Assessment Language) content. Provides classes to load, validate, convert, and
-manipulate OSCAL XML, JSON, and YAML documents for all published OSCAL versions and
-models.
+A Python library for working with [Open Security Controls Assessment Language (OSCAL)](https://pages.nist.gov/OSCAL) content. The library provides classes to load, validate, convert, and manipulate OSCAL XML, JSON, and YAML documents for all published OSCAL versions and models.
 
 ---
 
@@ -27,10 +24,33 @@ models.
 - **Air-gapped operation**: the bundled support database enables full offline use; update from an internet-connected machine and transfer the database file
 
 
-### API Reference
+# Contents
+- [Documentation](#documentation)
+- [Installation](#installation)
+- [Model Classes](#model-classes)
+- [Quick Start](#quick-start)
+- [Air Gapped Environments](#air-gapped-environments)
+- [Feedback and Contributions](#feedback-and-contributions)
+- [Use of AI](#use-of-ai-in-this-library)
 
-- Human Oriented: [https://brian-ruf.github.io/oscal-class/api.html](https://brian-ruf.github.io/oscal-class/api.html) 
-- LLM Oriented: [https://brian-ruf.github.io/oscal-class/api-llm.html](https://brian-ruf.github.io/oscal-class/api-llm.html)
+---
+
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [API Reference (Human Oriented)](https://brian-ruf.github.io/oscal-class/api.html) | Reference: Functions, Classes, Methods, Attributes |
+| [API Reference (LLM Oriented)](https://brian-ruf.github.io/oscal-class/api-llm.html) | Reference: Functions, Classes, Methods, Attributes |
+| [Getting Started](docs/GETTING_STARTED.md) | Installation, loading patterns, saving, and a walkthrough example |
+| [OSCAL Class API](docs/CONTENT.md) | Complete class reference: factory methods, states, querying, mutation, import handling |
+| [Querying Content](docs/QUERY_CONTENT.md) | Full path syntax for `query()` and `json_query()` |
+| [Import Resolution](docs/IMPORTS.md) | How imports are resolved, failure codes, and retry API |
+| [Profile Processing](docs/PROFILE_PROCESSING.md) | How imports are resolved, failure codes, and retry API |
+| [Format Converters](docs/CONVERTERS.md) | `OSCALConverter` and markup conversion internals |
+| [Support Module](docs/SUPPORT_MODULE.md) | Support database configuration, updates, and API |
+| [Logging](docs/LOGGING.md) | Standard Logging and Other Logging Libraries |
+
 
 ---
 
@@ -48,7 +68,75 @@ pip install git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal
 
 ---
 
+## Model Classes
+
+| Python Class | OSCAL model |
+|---|---|
+| `Catalog` | `catalog` |
+| `Profile` | `profile` |
+| `Mapping` | `mapping-collection` |
+| `ComponentDefinition` | `component-definition` |
+| `SSP` | `system-security-plan` |
+| `AssessmentPlan` | `assessment-plan` |
+| `AssessmentResults` | `assessment-results` |
+| `POAM` | `plan-of-action-and-milestones` |
+
+Use the base `OSCAL` class when the model is not known in advance. It will return the appropriate model-specific class.
+
+
+---
+
 ## Quick Start
+
+### Load and convert existing content
+
+```python
+from oscal import OSCAL
+
+# Load any OSCAL version for any model and any supported format
+content = OSCAL.load("./catalog.yaml")
+
+if content:
+    print(f"{content.title} ({content.oscal_version})")
+    # Save to JSON, XML, or YAML
+    content.dump("catalog.json", format="json", pretty_print=True)
+    content.dump("catalog.xml",  format="xml",  pretty_print=True)
+    content.dump("catalog.yaml", format="yaml")
+else:
+    print(f"Load failed: {content.content_state.name}")
+
+```
+
+### Profile Processing
+
+
+```python
+
+from oscal import OSCAL
+from oscal.oscal_controls import ResolutionStatus
+
+# Load any OSCAL version for any model and any supported format
+profile = OSCAL.load("path/to/profile.json")
+
+# Groups/Controls Tree is available immediately after load:
+def print_tree(nodes, indent=0):
+    for node in nodes:
+        kind = "GROUP  " if node["group"] else "control"
+        print("  " * indent + f"{kind} {node['id']}  {node['title']}")
+        print_tree(node["children"], indent + 1)
+
+print_tree(profile.controls_tree)
+
+# get_control_by_id also works pre-resolve (materializes just-in-time):
+print(profile.get_control_by_id("ac-2"))
+
+# resolve() is only needed when you want the full merged catalog:
+if profile.resolve() == ResolutionStatus.RESOLVED:
+    print(profile.dumps_catalog(format="json", pretty_print=True))
+    print(profile.dumps_catalog(format="xml", pretty_print=True))
+    print(profile.dumps_catalog(format="yaml"))
+
+```
 
 ### Create a new catalog
 
@@ -80,20 +168,7 @@ catalog.dump("catalog.xml",  format="xml",  pretty_print=True)
 catalog.dump("catalog.yaml", format="yaml")
 ```
 
-### Load and convert existing content
 
-```python
-from oscal import Catalog
-
-# Load from any supported format
-catalog = Catalog.load("./catalog.xml")
-
-if catalog:
-    print(f"{catalog.title} ({catalog.oscal_version})")
-    catalog.dump("catalog.json", format="json", pretty_print=True)
-else:
-    print(f"Load failed: {catalog.content_state.name}")
-```
 
 ### Load in-memory content
 
@@ -109,8 +184,8 @@ xml_str = """<?xml version="1.0" encoding="UTF-8"?>
   </metadata>
 </catalog>"""
 
-doc = OSCAL.loads(xml_str)
-print(doc.model, doc.title)   # catalog   My Catalog
+content = OSCAL.loads(xml_str)
+print(content.model, content.title)   # catalog   My Catalog
 ```
 
 ### Acquire from a URI
@@ -118,61 +193,48 @@ print(doc.model, doc.title)   # catalog   My Catalog
 ```python
 from oscal import OSCAL
 
-doc = OSCAL.acquire("https://raw.githubusercontent.com/.../catalog.json")
+content = OSCAL.acquire("https://raw.githubusercontent.com/.../catalog.json")
 
 # Fallback list — first successful source wins
-doc = OSCAL.acquire([
+content = OSCAL.acquire([
     "https://primary.example.com/catalog.json",
     "./local-fallback/catalog.json",
 ])
 ```
 
-### Query content
+### Generic Content Queries
+
+Load the content once and query using either the XML syntax names or JSON/YAML syntax names.
+Note XML `group` vs. JSON `groups` and XML `control` vs. JSON `controls`
 
 ```python
 # XML element name syntax
-ctrl  = catalog.query_one('//control[@id="ac-2"]')
-title = catalog.query_one('/*/metadata/title')
+groups  = content.query('//group')    # Returns all groups as a Python list of dict objects
+control = content.query_one('//control[@id="ac-2"]') # Returns a single control as a Python dict
 
 # JSON key name syntax
-ctrl  = catalog.json_query_one('//controls[id="ac-2"]')
-stmts = catalog.json_query('//parts[name="statement"]')
+groups  = content.query('//groups')    # Returns all groups as a Python list of dict objects
+control = content.json_query_one('//controls[id="ac-2"]') # Returns a single control as a Python dict
 ```
 
----
+### Model-Specific Content Queries
 
-## Model Classes
+Some model-specific classes have specific query methods. More will be added over time. 
+For example, Catalog and Profile classes offer `get_group_by_id` and `get_control_by_id`. 
+The optional `depth` parameter determines if child groups or controls are also returned. The default is `0` - no children returned.
 
-| Class | OSCAL model |
-|---|---|
-| `Catalog` | `catalog` |
-| `Profile` | `profile` |
-| `Mapping` | `mapping-collection` |
-| `ComponentDefinition` | `component-definition` |
-| `SSP` | `system-security-plan` |
-| `AssessmentPlan` | `assessment-plan` |
-| `AssessmentResults` | `assessment-results` |
-| `POAM` | `plan-of-action-and-milestones` |
+```python
 
-Use the base `OSCAL` class when the model is not known in advance.
+group  = content.get_group_by_id("ac", depth=0)      # Returns a Python Dict with the group's title, props, parts and links
+control = content.get_control_by_id("ac-2", depth=0)  # Returns a Python Dict with the control's title, props, parts and links
+
+```
+
+
 
 ---
 
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [Getting Started](docs/GETTING_STARTED.md) | Installation, loading patterns, saving, and a walkthrough example |
-| [OSCAL Class API](docs/CONTENT.md) | Complete class reference: factory methods, states, querying, mutation, import handling |
-| [Querying Content](docs/QUERY_CONTENT.md) | Full path syntax for `query()` and `json_query()` |
-| [Import Resolution](docs/IMPORTS.md) | How imports are resolved, failure codes, and retry API |
-| [Format Converters](docs/CONVERTERS.md) | `OSCALConverter` and markup conversion internals |
-| [Support Module](docs/SUPPORT_MODULE.md) | Support database configuration, updates, and API |
-| [Logging](docs/LOGGING.md) | Enabling Loguru logging |
-
----
-
-## Designed for Air-Gapped Environments
+## Air-Gapped Environments
 
 The `OSCALSupport` class manages a local SQLite database of NIST-published metaschema
 and support files for every OSCAL version. The database ships pre-populated, enabling
@@ -197,7 +259,7 @@ Run `update()` on an internet-connected machine, then copy the updated
 Please submit bug reports and feature requests as
 [GitHub issues](https://github.com/brian-ruf/oscal-class/issues).
 Bug fixes and backward-compatible contributions are welcome.
-Please open an issue before starting work on any breaking changes.
+Please open an issue and consider collaborating before starting work on any breaking changes.
 
 ---
 
