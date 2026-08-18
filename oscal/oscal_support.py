@@ -94,6 +94,12 @@ GitHub_raw_root = "https://raw.githubusercontent.com"
 GitHub_release_root = "https://github.com"
 http_header = {"Content-type": "application/json"}
 
+# Resilience for the release-list fetch, which gates the entire update run and
+# is prone to transient timeouts in CI. Retry with linear backoff before failing.
+RELEASE_FETCH_TIMEOUT  = 30   # seconds per attempt (api_get default is 10)
+RELEASE_FETCH_ATTEMPTS = 3    # total attempts
+RELEASE_FETCH_BACKOFF  = 5    # seconds; multiplied by the attempt number
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # NIST OSCAL GitHub and Dcoumentation URLs
 OSCAL_repo = "usnistgov/OSCAL" # Official NIST OSCAL GitHub Repository owner and repository name
@@ -579,18 +585,20 @@ class OSCALSupport:
         }
 
         try:
+            # Validate the directive only. Destructive operations (full clear +
+            # vacuum for "all"; per-version clear for a specific tag) are deferred
+            # into __get_oscal_versions and run ONLY after the GitHub release list
+            # is successfully fetched, so an unreachable API never wipes the DB.
             if fetch == "all":
                 self.__status_messages("Starting full refresh of OSCAL support content...")
-                status = self.__clear_oscal_versions()
-                if status:
-                    self.__vacuum_database()
+                status = True
             elif fetch == "latest" or fetch == "new":
                 self.__status_messages("Checking for new OSCAL versions...")
                 status = True
             else:
                 if fetch.startswith("v"):
                     self.__status_messages(f"Updating specific version: {fetch}")
-                    status = self.__clear_oscal_version(fetch)
+                    status = True
                 else:
                     logger.error(f"Invalid update directive: {fetch}")
                     status = False
@@ -606,6 +614,50 @@ class OSCALSupport:
             logger.error(f"Error during update: {e}")
             self.__status_messages(f"Error during update: {str(e)}", "error")
             status = False
+
+        return status
+
+    # -------------------------------------------------------------------------
+    def remove_version(self, version: str) -> bool:
+        """Delete all support content for a single OSCAL version from the database.
+
+        This is a standalone deletion for withdrawing a version that no longer
+        belongs in the local support set (e.g. one removed upstream). Unlike
+        :meth:`update`, it performs no GitHub fetch — it only deletes local
+        content and keeps in-memory state consistent with the database.
+
+        Args:
+            version (str): The OSCAL version tag to remove (e.g. "v1.2.3"). The
+                leading "v" is required and the tag is matched case-insensitively.
+
+        Returns:
+            bool: True if the version was found and deleted, False if the tag was
+                invalid, not present, or the deletion failed.
+        """
+        if not isinstance(version, str) or not version.strip():
+            logger.error(f"Invalid version tag '{version}'. Expected a tag like 'v1.2.3'.")
+            return False
+
+        version = version.strip().lower()
+
+        if not version.startswith("v"):
+            logger.error(f"Invalid version tag '{version}'. Expected a tag like 'v1.2.3'.")
+            return False
+
+        if version not in self.versions:
+            logger.error(f"Cannot remove version '{version}': not present in the support database.")
+            return False
+
+        status = self.__clear_oscal_version(version)
+
+        if status:
+            # Keep in-memory state in sync with the database.
+            self.versions.pop(version, None)
+            models_cache = self._cache.get("models_per_version")
+            if isinstance(models_cache, dict):
+                models_cache.pop(version, None)
+                models_cache.pop("all", None)  # the aggregate list is now stale
+            self.__status_messages(f"Removed OSCAL version {version} from the support database.")
 
         return status
 
@@ -1086,10 +1138,30 @@ class OSCALSupport:
 
         self.__status_messages("Fetching OSCAL release informaiton from GitHub...")
 
-        response = network.api_get(GitHub_API_root + "/repos/" + OSCAL_repo + "/releases")
+        releases_url = GitHub_API_root + "/repos/" + OSCAL_repo + "/releases"
+        response = None
+        for attempt in range(1, RELEASE_FETCH_ATTEMPTS + 1):
+            response = network.api_get(releases_url, timeout_seconds=RELEASE_FETCH_TIMEOUT)
+            if response is not None and response.ok:
+                break
+            if attempt < RELEASE_FETCH_ATTEMPTS:
+                backoff = RELEASE_FETCH_BACKOFF * attempt
+                logger.warning(
+                    f"Release fetch attempt {attempt} of {RELEASE_FETCH_ATTEMPTS} failed; "
+                    f"retrying in {backoff}s..."
+                )
+                sleep(backoff)
         self.__status_messages("Fetching OSCAL release information from GitHub...done.")
 
         if response is not None and response.ok:
+            # Reachability confirmed. Only now perform the destructive full
+            # refresh: clear all existing support content and reclaim space.
+            # (A specific version is cleared per-version inside the loop below.)
+            if fetch_all:
+                self.__status_messages("Starting full refresh; clearing existing support content...")
+                if self.__clear_oscal_versions():
+                    self.__vacuum_database()
+
             repo_releases: list[dict] = response.json()
             total_releases = len(repo_releases)
 
