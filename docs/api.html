@@ -135,7 +135,7 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 <main>
 <div class="page-header">
 <h1>oscal — API reference</h1>
-<div class="muted">Version 3.1.1 · Generated 2026-08-18T20:39:13Z · 10 modules · 26 classes · 551 methods · 34 functions</div>
+<div class="muted">Version 3.1.1 · Generated 2026-08-18T23:02:13Z · 10 modules · 26 classes · 553 methods · 34 functions</div>
 </div>
 <section class="module" id="oscal.oscal_support">
 <h2 class="module-title">oscal.oscal_support<a class="anchor" href="#oscal.oscal_support" title="Link to this item">#</a></h2>
@@ -368,6 +368,23 @@ Module constants:
 
         Returns:
             str | bytes | None: The file contents (text or bytes), or None on failure.</pre>
+</div>
+<div class="member" id="oscal.oscal_support.OSCALSupport.remove_version">
+<span class="badge method">method</span><code class="sig">def remove_version(self, version: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_support.OSCALSupport.remove_version" title="Link to this item">#</a>
+<pre class="doc">Delete all support content for a single OSCAL version from the database.
+
+        This is a standalone deletion for withdrawing a version that no longer
+        belongs in the local support set (e.g. one removed upstream). Unlike
+        :meth:`update`, it performs no GitHub fetch — it only deletes local
+        content and keeps in-memory state consistent with the database.
+
+        Args:
+            version (str): The OSCAL version tag to remove (e.g. &quot;v1.2.3&quot;). The
+                leading &quot;v&quot; is required and the tag is matched case-insensitively.
+
+        Returns:
+            bool: True if the version was found and deleted, False if the tag was
+                invalid, not present, or the deletion failed.</pre>
 </div>
 <div class="member" id="oscal.oscal_support.OSCALSupport.startup">
 <span class="badge method">method</span><code class="sig">def startup(self, check_for_updates=False, refresh_all=False)</code><a class="anchor" href="#oscal.oscal_support.OSCALSupport.startup" title="Link to this item">#</a>
@@ -662,6 +679,23 @@ Module constants:
 
         Returns:
             str | bytes | None: The file contents (text or bytes), or None on failure.</pre>
+</div>
+<div class="member" id="oscal.oscal_support.OSCAL_support.remove_version">
+<span class="badge method">method</span><code class="sig">def remove_version(self, version: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_support.OSCAL_support.remove_version" title="Link to this item">#</a>
+<pre class="doc">Delete all support content for a single OSCAL version from the database.
+
+        This is a standalone deletion for withdrawing a version that no longer
+        belongs in the local support set (e.g. one removed upstream). Unlike
+        :meth:`update`, it performs no GitHub fetch — it only deletes local
+        content and keeps in-memory state consistent with the database.
+
+        Args:
+            version (str): The OSCAL version tag to remove (e.g. &quot;v1.2.3&quot;). The
+                leading &quot;v&quot; is required and the tag is matched case-insensitively.
+
+        Returns:
+            bool: True if the version was found and deleted, False if the tag was
+                invalid, not present, or the deletion failed.</pre>
 </div>
 <div class="member" id="oscal.oscal_support.OSCAL_support.startup">
 <span class="badge method">method</span><code class="sig">def startup(self, check_for_updates=False, refresh_all=False)</code><a class="anchor" href="#oscal.oscal_support.OSCAL_support.startup" title="Link to this item">#</a>
@@ -4407,7 +4441,7 @@ Module constants:
 <span class="badge method">method</span><code class="sig">def resolve(self) -&gt; &#x27;ResolutionStatus&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.resolve" title="Link to this item">#</a>
 <pre class="doc">Materialize the profile&#x27;s controls_tree into a fresh ``self.catalog``.
 
-        Resolution is the (future-cacheable) heavy step: it walks the profile&#x27;s
+        Resolution is the cacheable heavy step: it walks the profile&#x27;s
         controls_tree — the authoritative scope/organization built at load — and for each
         node fetches the real control/group content from its origin source, applies this
         profile&#x27;s ``modify`` directives (removes → adds → set-parameters), applies full
@@ -4636,23 +4670,22 @@ Module constants:
         ``last_modified``) are always ``&quot;&quot;``.</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.validate">
-<span class="badge method">method</span><code class="sig">def validate(self, format: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.validate" title="Link to this item">#</a>
-<pre class="doc">Validate OSCAL content against the metaschema index in sequenced phases.
+<span class="badge method">method</span><code class="sig">def validate(self, format: str = &#x27;&#x27;) -&gt; bool</code><a class="anchor" href="#oscal.oscal_controls.Profile.validate" title="Link to this item">#</a>
+<pre class="doc">Validate the profile, then (re)build ``controls_tree`` on success.
 
-        Phases (each recorded in ``validation_status``):
-          structure      – all required fields and hierarchy are present
-          data-types     – every leaf value matches its declared OSCAL datatype
-          allowed-values – every constrained value is within its enumerated set
-          cardinality    – every array satisfies its min-occurs/max-occurs bounds
-          choice         – every choice is mutually exclusive (at most one member present) and has a member when one is required
+        Mirrors :meth:`Catalog.validate`: the profile&#x27;s authoritative scope and
+        organization tree is refreshed the moment the content is converted and
+        found to be valid OSCAL — no call to :meth:`resolve` is required. Building
+        the tree resolves the profile&#x27;s imports if they are not already resolved.
+        When the content is not valid the tree is emptied and left marked stale so a
+        later access rebuilds it.
 
-        ``validation_status[&quot;well-formed&quot;]`` is set by ``initial_validation()``, not here.
-        All phases always run regardless of earlier failures, giving a complete picture
-        of issues in a single call.  The format argument is accepted for API
-        compatibility but does not alter the validation path — ``_dict`` is always the
-        authoritative representation.
+        Args:
+            format (str, optional): Accepted for API compatibility with the base
+                method; does not alter the validation path.
 
-        Returns True only when every phase passes (content_state reaches VALID).</pre>
+        Returns:
+            bool: True when every validation phase passes.</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.walk_imports">
 <span class="badge method">method</span><code class="sig">def walk_imports(self, visitor_fn, depth=0, _seen=None, *, scope=&#x27;successful&#x27;)</code><a class="anchor" href="#oscal.oscal_controls.Profile.walk_imports" title="Link to this item">#</a>
