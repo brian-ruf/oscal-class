@@ -308,6 +308,7 @@ def if_update_successful(fn):
         if result is not None:
             self.is_unsaved = True
             self.last_modified = oscal_date_time_with_timezone()
+            self._on_content_mutated()
         return result
     return wrapper
 
@@ -2580,6 +2581,16 @@ class OSCAL:
         return target
 
     # -------------------------------------------------------------------------
+    def _on_content_mutated(self) -> None:
+        """Hook invoked after a successful content mutation.
+
+        A no-op on the base class; subclasses override it to react to edits — e.g.
+        :class:`~oscal.oscal_controls.Profile` uses it to invalidate a stale resolved
+        catalog. Called by :func:`if_update_successful`-decorated mutators and by
+        :meth:`put` on success.
+        """
+
+    # -------------------------------------------------------------------------
     def put(
         self,
         path: str,
@@ -2691,6 +2702,7 @@ class OSCAL:
         # Dirty-state bookkeeping (done inline so a False return never marks unsaved).
         self.is_unsaved = True
         self.last_modified = oscal_date_time_with_timezone()
+        self._on_content_mutated()
         logger.debug(f"put[{mode}]: '{path}' = {value!r}")
         return True
 
