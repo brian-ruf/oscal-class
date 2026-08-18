@@ -584,3 +584,122 @@ class TestUuidCollision:
         p.set_merge(as_is=True)
         # same identity + signature -> reused, both imports resolve to one instance
         assert p.import_list[0].get("object") is p.import_list[1].get("object")
+
+
+# ===========================================================================
+# dump_catalog / dumps_catalog — pass-throughs to the resolved catalog
+# ===========================================================================
+class TestDumpCatalog:
+
+    def test_dumps_catalog_json_roundtrips(self, resolved):
+        s = resolved.dumps_catalog(format="json")
+        assert s and isinstance(s, str)
+        reloaded = Catalog.loads(s)
+        assert {c["id"] for c in reloaded.get_control_list()} == \
+            {c["id"] for c in resolved.get_control_list()}
+
+    def test_dumps_catalog_matches_catalog_dumps(self, resolved):
+        assert resolved.dumps_catalog(format="json") == \
+            resolved.catalog.dumps(format="json")
+
+    def test_dump_catalog_writes_file(self, resolved, tmp_path):
+        out = os.path.join(str(tmp_path), "resolved.json")
+        assert resolved.dump_catalog(filename=out, format="json") is True
+        assert os.path.exists(out)
+        reloaded = Catalog.load(out)
+        assert len(reloaded.get_control_list()) == len(resolved.get_control_list())
+
+    def test_dumps_catalog_unresolved_returns_empty(self, prof):
+        assert prof.catalog is None
+        assert prof.dumps_catalog(format="json") == ""
+
+    def test_dump_catalog_unresolved_returns_false(self, prof, tmp_path):
+        out = os.path.join(str(tmp_path), "nope.json")
+        assert prof.dump_catalog(filename=out, format="json") is False
+        assert not os.path.exists(out)
+
+
+# ===========================================================================
+# resolve_and_dump_catalog / resolve_and_dumps_catalog — one-shot convenience
+# ===========================================================================
+class TestResolveAndDump:
+
+    def test_resolve_and_dumps_from_unresolved(self, prof):
+        assert prof.catalog is None
+        s = prof.resolve_and_dumps_catalog(format="json")
+        assert s and Catalog.loads(s).get_control_by_id("ac-1") is not None
+        assert prof.resolution_status == ResolutionStatus.RESOLVED   # it resolved
+
+    def test_resolve_and_dumps_equals_dump_of_resolved(self, prof):
+        # resolve_and_dumps == serializing the catalog it just produced (each resolve
+        # assigns a fresh catalog uuid, so this compares the same resolved instance).
+        one_shot = prof.resolve_and_dumps_catalog(format="json")
+        assert one_shot == prof.dumps_catalog(format="json")
+
+    def test_resolve_and_dump_writes_file(self, prof, tmp_path):
+        out = os.path.join(str(tmp_path), "resolved.json")
+        assert prof.resolve_and_dump_catalog(filename=out, format="json") is True
+        assert os.path.exists(out)
+        assert len(Catalog.load(out).get_control_list()) == len(prof.get_control_list())
+
+    def test_blocked_profile_returns_falsy(self, tmp_path):
+        p = Profile.new("Bad")
+        p.add_import(os.path.join(str(tmp_path), "does-not-exist.json"), include_all=True)
+        assert p.resolve_and_dumps_catalog(format="json") == ""
+        assert p.resolve_and_dump_catalog(
+            filename=os.path.join(str(tmp_path), "x.json"), format="json") is False
+        assert p.resolution_status == ResolutionStatus.BLOCKED
+
+
+# ===========================================================================
+# Content mutation invalidates a resolved catalog (resets to UNRESOLVED)
+# ===========================================================================
+class TestResolutionInvalidation:
+
+    def test_set_merge_invalidates(self, resolved):
+        assert resolved.resolution_status == ResolutionStatus.RESOLVED
+        resolved.set_merge(as_is=True, combine="use-first")
+        assert resolved.resolution_status == ResolutionStatus.UNRESOLVED
+        assert resolved.catalog is None
+
+    def test_set_metadata_invalidates(self, resolved):
+        resolved.set_metadata({"title": "Edited Title"})
+        assert resolved.resolution_status == ResolutionStatus.UNRESOLVED
+        assert resolved.catalog is None
+
+    def test_add_import_invalidates(self, resolved, tmp_path):
+        extra = _write(tmp_path, "extra.json",
+                       _source_catalog(uuid="99999999-9999-4999-8999-999999999999"))
+        resolved.add_import(extra, include_all=True)
+        assert resolved.resolution_status == ResolutionStatus.UNRESOLVED
+        assert resolved.catalog is None
+
+    def test_put_invalidates(self, resolved):
+        resolved.put("metadata/version", "9.9.9")
+        assert resolved.resolution_status == ResolutionStatus.UNRESOLVED
+        assert resolved.catalog is None
+
+    def test_reresolve_after_edit_reflects_change(self, resolved):
+        resolved.set_metadata({"title": "New Title"})
+        resolved.resolve()
+        assert resolved.catalog._dict["catalog"]["metadata"]["title"] == "New Title"
+
+    def test_editing_catalog_directly_keeps_profile_resolved(self, resolved):
+        # A Catalog-level edit (as manual duplicate resolution does) must NOT flip the
+        # profile back to unresolved — that hook is Catalog's no-op, not the Profile's.
+        resolved.catalog.set_metadata({"version": "2"})
+        assert resolved.resolution_status == ResolutionStatus.RESOLVED
+        assert resolved.catalog is not None
+
+    def test_resolve_duplicate_keeps_resolved(self, tmp_path):
+        a = _write(tmp_path, "a.json", _source_catalog())
+        b = _write(tmp_path, "b.json", _source_catalog())
+        p = Profile.new("Dup")
+        p.add_import(a, include_all=True)
+        p.add_import(b, include_all=True)
+        p.set_merge(as_is=True, combine="keep")
+        p.resolve()
+        assert p.resolution_status == ResolutionStatus.RESOLVED
+        p.resolve_duplicate("ac-1")                       # edits .catalog in place
+        assert p.resolution_status == ResolutionStatus.RESOLVED
+        assert p.catalog is not None

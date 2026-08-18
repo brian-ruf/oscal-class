@@ -541,7 +541,7 @@ class OSCALSupport:
         return status
 
     # -------------------------------------------------------------------------
-    def update(self, mode="new", fetch=None): # , backend=None):
+    def update(self, mode="new", fetch=None, save_to_fs=False): # , backend=None):
         """
         Update OSCAL support content based on a fetch directive.
 
@@ -552,6 +552,10 @@ class OSCALSupport:
                 - "vX.Y.Z": Clear and re-fetch a specific OSCAL version.
             fetch (str, optional): Legacy alias for ``mode``; when provided it
                 overrides ``mode``. Defaults to None.
+            save_to_fs (bool, optional): When True, also emit the parsed
+                metaschema index files to the local file system in addition to
+                updating the database. When False (default), only the database
+                is updated. Defaults to False.
 
         Returns:
             bool: True if the update was successful, False otherwise.
@@ -592,7 +596,7 @@ class OSCALSupport:
                     status = False
 
             if status:
-                status = self.__get_oscal_versions(fetch)
+                status = self.__get_oscal_versions(fetch, save_to_fs=save_to_fs)
 
             self.__load_versions()
             self.__status_messages("Update process completed.")
@@ -1066,7 +1070,7 @@ class OSCALSupport:
         """
         return self.latest_version()
     # -------------------------------------------------------------------------
-    def __get_oscal_versions(self, fetch="latest"):
+    def __get_oscal_versions(self, fetch="latest", save_to_fs=False):
         """Pulls OSCAL version information and support files from GitHub and loads it into the database."""
         status = True
         OSCAL_versions: list[str] = []
@@ -1134,7 +1138,7 @@ class OSCALSupport:
                                 if "assets" in entry:
                                     self.__fetch_support_files(oscal_version, entry["assets"])
                                     if helper.compare_semver(oscal_version, METASCHEMA_MIN_VERSION) >= 0:
-                                        self.__build_metaschema_index(oscal_version)
+                                        self.__build_metaschema_index(oscal_version, save_to_fs=save_to_fs)
                                     else:
                                         if self._update_stats is not None:
                                             self._update_stats["metaschema_skipped"].append(oscal_version)
@@ -1256,16 +1260,19 @@ class OSCALSupport:
             self.__status_messages(f"Failed to download {asset_name}", "error")
 
     # -------------------------------------------------------------------------
-    def __build_metaschema_index(self, version):
+    def __build_metaschema_index(self, version, save_to_fs=False):
         """Parse the metaschema for *version* and store the processed index.
 
         Uses a lazy import to avoid the circular dependency between
         oscal_support and metaschema_parser.
+
+        When *save_to_fs* is True, the parsed metaschema index files are also
+        emitted to the local file system; otherwise only the database is updated.
         """
         self.__status_messages(f"Building metaschema index for {version}...")
         try:
             from .metaschema_parser import parse_metaschema_specific  # lazy import
-            ok = parse_metaschema_specific(self, version)
+            ok = parse_metaschema_specific(self, version, save_to_fs=save_to_fs)
             if ok:
                 if self._update_stats is not None:
                     self._update_stats["metaschema_built"].append(version)

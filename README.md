@@ -1,3 +1,10 @@
+![GitHub last commit](https://img.shields.io/github/last-commit/brian-ruf/oscal-class) 
+![OSCAL](https://img.shields.io/badge/OSCAL-Enabled-blue?style=flat)
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white) 
+![Open Source](https://img.shields.io/badge/Open%20Source-Yes-brightgreen?logo=github)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) 
+![PyPI](https://img.shields.io/pypi/v/oscal)
+
 # OSCAL Python Library
 
 A Python library for working with [OSCAL](https://pages.nist.gov/OSCAL) (Open Security
@@ -9,6 +16,7 @@ models.
 
 ## Features
 
+- **Profile Processing**: Handles any combination and depth of profiles and catalogs. (See [Profile Processing](./docs/PROFILE_PROCESSING.md) for details.) 
 - **All OSCAL models**: Catalog, Profile, Mapping, Component Definition, SSP, Assessment Plan, Assessment Results, POA&M
 - **All OSCAL formats**: XML, JSON, and YAML — load any, save to any
 - **All published OSCAL versions**: pre-populated support database covers every NIST release; update to learn new versions as they are published

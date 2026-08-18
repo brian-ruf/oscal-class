@@ -103,7 +103,7 @@ BOLD    = "\033[1m"
 RESET   = "\033[0m"
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def parse_metaschema(support=None, oscal_version=None) -> int:
+def parse_metaschema(support=None, oscal_version=None, save_to_fs=False) -> int:
     """
     Parse and store the OSCAL metaschema index for one or all supported versions.
 
@@ -113,6 +113,8 @@ def parse_metaschema(support=None, oscal_version=None) -> int:
             of this argument. Defaults to None.
         oscal_version (str, optional): The OSCAL version to parse. When None, all
             supported versions are processed. Defaults to None.
+        save_to_fs (bool, optional): When True, also write each model index (and the
+            parse report) to the local file system. Defaults to False (database only).
 
     Returns:
         int: 0 on success, 1 on error (process-style exit code).
@@ -137,14 +139,14 @@ def parse_metaschema(support=None, oscal_version=None) -> int:
             logger.info("Processing all supported OSCAL versions.")
             for version in support.versions.keys():
                 logger.info(f"Version: {version}")
-                status = parse_metaschema_specific(support, version)
+                status = parse_metaschema_specific(support, version, save_to_fs=save_to_fs)
                 if not status:
                     logger.error(f"Failed to parse metaschema for version {version}.")
                     break
 
         elif oscal_version in support.versions: # If a valid version is specified, process only that version.
             logger.info(f"Processing OSCAL version: {oscal_version}")
-            status = parse_metaschema_specific(support, oscal_version)
+            status = parse_metaschema_specific(support, oscal_version, save_to_fs=save_to_fs)
 
         else: # If an invalid version is specified, log an error and exit.
             logger.error(f"Specified version {oscal_version} is not supported. Available versions: {', '.join(support.versions.keys())}")
@@ -158,18 +160,20 @@ def parse_metaschema(support=None, oscal_version=None) -> int:
     return ret_value
 
 # --------------------------------------------------------------------------
-def parse_metaschema_specific(support, oscal_version):
+def parse_metaschema_specific(support, oscal_version, save_to_fs=False):
     """
     Parse and store every model index for a specific OSCAL version.
 
-    Each model index is stored separately in the support database as
-    ``(version, model, "processed")`` and written to
-    ``support/<version>/<model>.json`` alongside the support database.
+    Each model index is stored in the support database as
+    ``(version, model, "processed")``. When ``save_to_fs`` is True it is also written
+    to ``support/<version>/<model>.json`` alongside the support database.
 
     Args:
         support (OSCALSupport, required): The OSCAL support object providing
             metaschema assets and asset storage.
         oscal_version (str, required): The OSCAL version to parse.
+        save_to_fs (bool, optional): When True, also write each model index (and the
+            parse report) to the local file system. Defaults to False (database only).
 
     Returns:
         bool: True if all models parsed and stored successfully, False otherwise.
@@ -179,19 +183,24 @@ def parse_metaschema_specific(support, oscal_version):
     logger.info(f"{CYAN}Parsing OSCAL {oscal_version} metaschema.{RESET}")
     all_ok = True
 
-    # Determine the output directory: same folder as the support database,
-    # under a sub-folder named after the OSCAL version.
+    # Output directory (only created/used when writing to the file system): same
+    # folder as the support database, under a sub-folder named after the version.
     db_conn = getattr(support, "db_conn", None)
     if db_conn:
         support_dir = os.path.join(os.path.dirname(os.path.abspath(db_conn)), oscal_version)
     else:
         support_dir = os.path.join("support", oscal_version)
-    os.makedirs(support_dir, exist_ok=True)
+    if save_to_fs:
+        os.makedirs(support_dir, exist_ok=True)
 
     models = support.enumerate_models(oscal_version)
 
     models_processed: list = []
     unresolved_by_model: dict = {}
+
+    # Registry of parsed imports, shared across every model of this version so a
+    # metaschema imported by more than one model is parsed once. Cleared at the end.
+    import_registry: dict = {}
 
     for model in models:
         if model == "complete":
@@ -205,7 +214,8 @@ def parse_metaschema_specific(support, oscal_version):
             all_ok = False
             continue
 
-        parser = MetaschemaParser.create(model_metaschema, support, oscal_version=oscal_version)
+        parser = MetaschemaParser.create(model_metaschema, support, oscal_version=oscal_version,
+                                         import_registry=import_registry)
         if not parser.top_pass():
             logger.error(f"Failed to set up {model} metaschema XML.")
             all_ok = False
@@ -241,12 +251,17 @@ def parse_metaschema_specific(support, oscal_version):
             logger.error(f"Failed to store {oscal_version}/{model} processed index in support database.")
             all_ok = False
 
-        output_file = os.path.join(support_dir, f"{model}.json")
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(model_index, f, indent=2)
-        logger.debug(f"Wrote {output_file}")
+        if save_to_fs:
+            output_file = os.path.join(support_dir, f"{model}.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(model_index, f, indent=2)
+            logger.debug(f"Wrote {output_file}")
 
-    _write_metaschema_report(models_processed, unresolved_by_model, oscal_version, support_dir)
+    # Version complete — release the shared import registry.
+    import_registry.clear()
+
+    if save_to_fs:
+        _write_metaschema_report(models_processed, unresolved_by_model, oscal_version, support_dir)
 
     if all_ok:
         logger.info(f"{GREEN}Successfully parsed and stored all {oscal_version} metaschema models.{RESET}")
@@ -347,17 +362,20 @@ class MetaschemaParser:
     (nodes, attributes, allowed-value constraints) consumed by the converter and
     validator. Prefer the :meth:`create` classmethod to construct instances.
     """
-    def __init__(self, metaschema, support, import_inventory=[], oscal_version=""):
+    def __init__(self, metaschema, support, oscal_version="", import_registry=None):
         """Initialize a parser for one metaschema document.
 
         Args:
             metaschema (str, required): The resolved-metaschema XML content to parse.
             support (OSCALSupport, required): The OSCAL support object used to fetch
                 imported metaschemas and store results.
-            import_inventory (list, optional): Names of metaschemas already being
-                processed, used to prevent circular imports. Defaults to [].
             oscal_version (str, optional): The OSCAL version this metaschema belongs
                 to. Defaults to "".
+            import_registry (dict, optional): Shared registry of already-parsed imports
+                (``href -> MetaschemaParser``), so a metaschema imported by more than one
+                model is parsed once and reused. Endures across all models of one OSCAL
+                version and is cleared when that version finishes. Defaults to ``None``
+                (a fresh, isolated registry) — never a mutable default.
         """
         logger.debug("Initializing MetaschemaParser")
         self.content = metaschema
@@ -373,27 +391,30 @@ class MetaschemaParser:
         self.nsmap = {"": METASCHEMA_DEFAULT_NAMESPACE}
         self.support = support
         self.imports = {} # list of imports {"metaschema_file_name.xml": MetaschemaParser_Object, ...}
-        self.import_inventory = import_inventory
+        # This parser's node in the import-relationship tree: {"name", "children"}.
+        # The name is filled in when known (the import href, or the model name for a root).
+        self.import_inventory = {"name": "", "children": []}
+        # Shared per-version registry so duplicate imports reuse one parsed object.
+        self.import_registry = import_registry if import_registry is not None else {}
 
     # -------------------------------------------------------------------------
     @classmethod
-    def create(cls, metaschema, support, import_inventory=[], oscal_version=""):
+    def create(cls, metaschema, support, oscal_version="", import_registry=None):
         """Construct a ``MetaschemaParser`` (preferred factory over direct instantiation).
 
         Args:
             metaschema (str, required): The resolved-metaschema XML content to parse.
             support (OSCALSupport, required): The OSCAL support object.
-            import_inventory (list, optional): Names of metaschemas already being
-                processed, to prevent circular imports. Defaults to [].
             oscal_version (str, optional): The OSCAL version. Defaults to "".
+            import_registry (dict, optional): Shared per-version import registry (see
+                :meth:`__init__`). Defaults to ``None`` — a fresh registry per top-level
+                parse. Recursive import parsing threads the parent's registry down.
 
         Returns:
             MetaschemaParser: A new parser instance.
         """
         logger.debug("Creating MetaschemaParser")
-        ret_value = None
-        ret_value = cls(metaschema, support, import_inventory, oscal_version)
-        return ret_value
+        return cls(metaschema, support, oscal_version, import_registry)
 
     # -------------------------------------------------------------------------
     def __str__(self):
@@ -543,50 +564,62 @@ class MetaschemaParser:
         """Identify ``import`` elements and load each as a nested ``MetaschemaParser``.
 
         Imported metaschemas are fetched from the support database and stored in
-        ``self.imports`` keyed by model name for later cross-metaschema lookups.
+        ``self.imports`` keyed by model name for later cross-metaschema lookups. Each
+        import is also recorded as a child of this parser's ``import_inventory`` tree
+        node, so the full import-relationship graph is captured.
+
+        Duplicate imports (the same metaschema reached from more than one model, or via
+        more than one path) are parsed only once: an :attr:`import_registry`, shared for
+        the whole OSCAL version, is consulted first and its parsed object reused.
 
         Returns:
             None
         """
         logger.debug(f"Setting up imports for {self.oscal_model}")
         import_directives = xpath(self.tree, self.nsmap, '/./METASCHEMA/import/@href')
-        logger.debug(f"Imports: {self.imports}")
 
-        if import_directives is not None:
-            if not isinstance(import_directives, list):
-                logger.debug(f"Import directives is not None and not a list: {import_directives}")
-                import_directives = [import_directives]
+        if import_directives is None:
+            return
+        if not isinstance(import_directives, list):
+            import_directives = [import_directives]
 
-            for imp_file in import_directives:
-                logger.debug(f"Import file: {imp_file}")
-                if imp_file:
-                    # logger.info(f"Processing import: {imp_file}")
-                    if False: # imp_file in self.import_inventory:
-                        logger.info(f"Import {imp_file} already processed.")
-                    else:
-                        logger.debug(f"Processing {imp_file}  ...")
-                        self.import_inventory.append(imp_file)
-                        model_name = str(imp_file)
-                        if model_name.startswith("oscal_"):
-                            model_name = model_name[len("oscal_"):]
-                        if model_name.endswith("_metaschema_RESOLVED.xml"):
-                            model_name = model_name[:-len("_metaschema_RESOLVED.xml")]
+        for imp_file in import_directives:
+            if not imp_file:
+                continue
+            key = str(imp_file)
 
-                        logger.debug(f"Model name: {model_name}")
-                        import_content = self.support.asset(self.oscal_version, model_name, "metaschema")
-                        if import_content:
-                            logger.debug(f"Version: {self.oscal_version} Model: {model_name} Content length: {len(import_content)}")
-                            import_obj = MetaschemaParser.create(import_content, self.support, self.import_inventory, self.oscal_version)
-                            status = import_obj.top_pass()
-                            logger.debug(f"Import status: {status}")
-                            if status:
-                                self.imports[model_name] = import_obj
-                                # self.imports.append({imp_file: import_obj})
-                                logger.debug(f"Imports[0] for {imp_file}: {iif(import_obj.top_level, 'TOP', 'NOT TOP')}")
-                            else:
-                                logger.error(f"Invalid Import file: {imp_file}")
-        # logger.info(f"IMPORTS FOR {self.oscal_model}: {self.imports}")
-        # logger.info(f"IMPORTS FOR {self.oscal_model}: {self.import_inventory}")
+            # Reuse an already-parsed import (this version) instead of re-parsing it.
+            import_obj = self.import_registry.get(key)
+            if import_obj is not None:
+                logger.debug(f"Reusing already-parsed import '{key}'.")
+            else:
+                model_name = key
+                if model_name.startswith("oscal_"):
+                    model_name = model_name[len("oscal_"):]
+                if model_name.endswith("_metaschema_RESOLVED.xml"):
+                    model_name = model_name[:-len("_metaschema_RESOLVED.xml")]
+
+                import_content = self.support.asset(self.oscal_version, model_name, "metaschema")
+                if not import_content:
+                    logger.error(f"Could not fetch import content for '{key}' (model '{model_name}').")
+                    continue
+
+                import_obj = MetaschemaParser.create(
+                    import_content, self.support, self.oscal_version,
+                    import_registry=self.import_registry)
+                import_obj.import_inventory["name"] = key
+                # Register before recursing so cyclic/diamond imports reuse this object.
+                self.import_registry[key] = import_obj
+                if not import_obj.top_pass():
+                    logger.error(f"Invalid import file: {key}")
+                    self.import_registry.pop(key, None)
+                    continue
+
+            # Model name → parser, for cross-metaschema definition lookups.
+            model_name = import_obj.oscal_model or key
+            self.imports[model_name] = import_obj
+            # Record the relationship in this parser's import-inventory tree.
+            self.import_inventory["children"].append(import_obj.import_inventory)
 
     # -------------------------------------------------------------------------
     def xpath_atomic(self, xExpr, context=None):
@@ -666,6 +699,10 @@ class MetaschemaParser:
             metaschema_tree["schema_name"] = self.schema_name
             metaschema_tree["oscal_namespace"] = self.oscal_namespace
             metaschema_tree["json_base_uri"] = self.json_base_uri
+            # Name the root of the import-relationship tree after the model itself
+            # (imports are named by their href in setup_imports).
+            if not self.import_inventory.get("name"):
+                self.import_inventory["name"] = self.oscal_model
             metaschema_tree["import_inventory"] = self.import_inventory
 
             metaschema_tree["nodes"] = self.recurse_metaschema(self.oscal_model, "define-assembly", context=context)

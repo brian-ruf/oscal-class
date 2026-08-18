@@ -26,22 +26,23 @@ The sequencing of releases may change in response to client needs and other exte
 - Efficiency and maintainability improvements
 - Robust Loading from local file system and remote URLs
 
-## Current:
-
 ### Version 3.0.x: Import Dependency Chain
 
-- [ ] Top level imports 
+- Top level imports 
     - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
     - POAM -> SSP -> Profile -> [ Profile | Catalog ]
     - cDef -> cDef
-- [ ] Failed import handling
-- [ ] Basic addressibility across imported files
+- Failed import handling
+- Basic addressibility across imported files
 
 ### Version 3.1.x Profile Resolution
 
-- [ ] Control Tree Generation/Caching
-- [ ] By-Control Tailoring
-- [ ] Saving Resolved Profile Catalogs
+- Control Tree Generation/Caching
+- By-Control Tailoring
+- Saving Resolved Profile Catalogs
+
+## Up Next:
+
 
 ### Local Caching
 
@@ -49,6 +50,8 @@ The sequencing of releases may change in response to client needs and other exte
 - [ ] Automatic cache refresh based on TTL
 - [ ] Manually triggered refresh
 - [ ] Fallback to cache after expiration when remote content is not available.
+
+## Future:
 
 ### Project Approach
 
