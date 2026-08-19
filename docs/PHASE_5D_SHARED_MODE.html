@@ -1,0 +1,201 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Phase 5d — Shared Mode (multi-process / multi-user workspaces)</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/PHASE_5D_SHARED_MODE.md">PHASE_5D_SHARED_MODE.md</a> on GitHub</p><h1 id="phase-5d-shared-mode-multi-process-multi-user-workspaces">Phase 5d — Shared Mode (multi-process / multi-user workspaces)</h1>
+<p>Status: <strong>not started.</strong> This document captures the intention for 5d and the
+groundwork already in place, so it can be picked up in a later session.</p>
+<hr />
+<h2 id="1-intention">1. Intention</h2>
+<p>The <code>Workspace</code> (phases 5a–5c) is a set of related OSCAL documents with an
+isolated in-memory object graph, a persistent SQLite <strong>project file</strong>, and
+<strong>in-memory write locks</strong> for multiple views inside a <em>single</em> application
+instance.</p>
+<p><strong>Shared mode (5d)</strong> extends this to <strong>multiple processes / users</strong> collaborating
+on the <em>same workspace</em>, coordinated through the workspace file:</p>
+<ul>
+<li>Locks and content changes are <strong>durable and cross-process</strong>, mediated by the
+  workspace SQLite file (later an ANSI SQL server — Postgres, etc. — for scale;
+  same schema, different backend).</li>
+<li>Each process keeps its <strong>own</strong> in-memory object graph; the file is the shared
+  source of truth for <strong>who holds which write lock</strong> and <strong>what the current
+  content/state is</strong>.</li>
+<li><strong>No shared authoring of raw XML/JSON/YAML OSCAL files.</strong> Collaboration happens
+  on the <em>workspace/project</em>, never on the underlying files directly.</li>
+<li>Trajectory: single-user desktop → small teams (2–10) now; enterprise scale is
+  years away but should not be designed out.</li>
+</ul>
+<p>The guiding principle established in 5c: mutation permission is enforced uniformly
+through <code>OSCAL.is_read_only</code>, and "locked by another actor" is one of its inputs.
+Shared mode only needs to make that lock check consult <strong>durable, cross-process</strong>
+lock state instead of the current in-process dict.</p>
+<hr />
+<h2 id="2-groundwork-already-in-place-what-5d-can-build-on">2. Groundwork already in place (what 5d can build on)</h2>
+<h3 id="workspace-core-isolation-oscaloscal_workspacepy">Workspace core + isolation (<code>oscal/oscal_workspace.py</code>)</h3>
+<ul>
+<li><code>Workspace</code> owns an isolated <code>ObjectRegistry</code> and injects it into every loaded
+  document (root + transitive imports) via a <strong>contextvar</strong> activation
+  (<code>oscal_registry.use_registry</code>; <code>get_registry()</code> is context-aware).</li>
+<li>Root documents are <strong>shared within a workspace, keyed by canonical source
+  path/href</strong> (<code>_source_key</code> → <code>_canonicalize_ref</code>). This is the deliberate,
+  edit-stable handle (content UUID churns on every edit, so it is <em>not</em> used to
+  key open documents). <strong>5d durable locks should key on this same source/doc
+  handle</strong>, not <code>id(doc)</code>.</li>
+</ul>
+<h3 id="persistent-project-file-saveload">Persistent project file (save/load)</h3>
+<p><code>Workspace.save(path)</code> / <code>Workspace.load(path)</code> persist to one SQLite file,
+reusing the shared <code>filecache</code> schema (no support-DB schema change). Tables today:
+- <code>filecache</code> — content blobs (each document serialized as JSON).
+- <code>workspace_meta</code> — key/value: <code>title</code>, <code>path</code>, <code>last_modified</code>, <code>remarks</code>,
+  <code>attributes</code> (extensible project-specific attributes, JSON).
+- <code>workspace_documents</code> — per document: <code>doc_id</code>, <code>source</code>, <code>is_root</code>, <code>model</code>,
+  <code>oscal_version</code>, <code>uuid</code>, <code>original_format</code>, <code>content_state</code>, <code>is_canonical</code>,
+  <code>is_read_only</code>, <code>filecache_uuid</code> (content), <code>imports</code> (edge JSON), <code>state</code>
+  (derived state JSON).</p>
+<p>Reload is <strong>self-contained</strong> (no refetch): documents are rehydrated from stored
+content + state and the import tree is rewired.</p>
+<blockquote>
+<p>There is <strong>no <code>workspace_locks</code> table yet</strong> — creating it is the first concrete
+5d task (see §3).</p>
+</blockquote>
+<h3 id="derived-state-persistence-hook-for-indexes">Derived-state persistence hook (for indexes)</h3>
+<p><code>OSCAL._export_state()</code> / <code>_import_state()</code> (subclasses override, calling <code>super</code>)
+serialize derived state into the <code>workspace_documents.state</code> column so it need not
+be recomputed on reload. Base captures validation results + dirty-state; <code>Profile</code>
+adds resolution state. <strong>Future indexes plug in here</strong> and will need to sync in
+shared mode.</p>
+<h3 id="in-memory-write-locks-5c-the-api-shared-mode-must-make-durable">In-memory write locks (5c) — the API shared mode must make durable</h3>
+<ul>
+<li><strong>Current actor</strong> (who is editing) is a contextvar in <code>oscal_content</code>:
+  <code>current_actor()</code>, <code>use_actor(actor)</code>. <code>Workspace.as_actor(actor)</code> is the
+  convenience wrapper.</li>
+<li><strong>Lock manager on <code>Workspace</code>:</strong> <code>self._locks: dict[id(doc) -&gt; actor]</code>, with
+  <code>lock(doc, actor=None)</code>, <code>unlock(doc, actor=None)</code>, <code>lock_holder(doc)</code>,
+  <code>is_locked(doc)</code>. Re-locking by the holder is idempotent; only the holder may
+  release; <code>close()</code> releases a document's lock.</li>
+<li><strong>Enforcement is uniform:</strong> <code>OSCAL.is_read_only</code> returns
+  <code>self._is_read_only or self.is_canonical or self._locked_by_other()</code>, and
+  <code>_locked_by_other()</code> consults <code>self._workspace.lock_holder(self)</code> vs
+  <code>current_actor()</code>. Because <em>both</em> mutation gates (<code>_can_mutate</code> and
+  <code>@requires(is_read_only=False)</code>) check <code>is_read_only</code>, locks are honored by every
+  mutation path with no per-method wiring.</li>
+<li><strong>Back-reference:</strong> every workspace document has <code>doc._workspace</code> set (by
+  <code>_bind</code> and <code>_rehydrate</code>), which is how <code>_locked_by_other()</code> finds the lock
+  manager.</li>
+</ul>
+<p><strong>Key insight for 5d:</strong> the lock manager is accessed only via
+<code>ws.lock_holder(self)</code> (duck-typed on <code>self._workspace</code>). Shared mode can swap in a
+lock manager that reads/writes the file <strong>without touching <code>oscal_content</code></strong> —
+<code>_locked_by_other()</code> already delegates to the workspace.</p>
+<hr />
+<h2 id="3-what-remains-for-5d">3. What remains for 5d</h2>
+<ol>
+<li>
+<p><strong>Durable lock table.</strong> Add a <code>workspace_locks</code> table to the project file:
+   <code>target</code> (stable document key — source href / <code>doc_id</code>), <code>holder</code> (actor/session),
+   <code>acquired</code> (timestamp), <code>heartbeat</code> (for stale-lock reclamation), optional
+   <code>granularity</code>/<code>path</code> for future sub-document locks. Do <strong>not</strong> modify the shared
+   <code>filecache</code> schema; this is a new table in the workspace DB only.</p>
+</li>
+<li>
+<p><strong>Cross-process lock acquisition.</strong> <code>lock()/unlock()</code> must read/write the lock
+   table in an <strong>atomic transaction</strong> so two processes can't both acquire. Re-key
+   locks from <code>id(doc)</code> to the <strong>stable document key</strong> (source/<code>doc_id</code>) so a lock
+   set by process A is recognizable by process B.</p>
+</li>
+<li>
+<p><strong>Honor foreign locks.</strong> <code>_locked_by_other()</code> (via the workspace lock manager)
+   must consult the durable table, not just the in-memory dict, when the workspace
+   is in shared mode.</p>
+</li>
+<li>
+<p><strong>Content sync.</strong> When one process edits and persists a document, others must
+   detect the change (e.g. a <code>revision</code>/<code>last_modified</code> column per document, or a
+   change log) and <strong>reload the affected documents</strong> into their own in-memory
+   graph. Decide the notification mechanism (poll the DB on an interval vs. an
+   external signal). Optimistic-concurrency check on save (compare stored
+   <code>last_modified</code>/version before overwrite) to catch conflicts.</p>
+</li>
+<li>
+<p><strong>Presence &amp; stale locks.</strong> Heartbeat/expiry so a crashed process's locks can
+   be reclaimed; optional "who is here / who holds what" for a UI.</p>
+</li>
+<li>
+<p><strong>Actor/session identity across processes.</strong> Define how actors are assigned and
+   authenticated in a multi-user setting (currently an opaque string via
+   <code>use_actor</code>).</p>
+</li>
+<li>
+<p><strong>ANSI SQL backend.</strong> The <code>ruf_common.database</code> layer already abstracts the
+   backend (<code>Database(type, target)</code>), mirroring the support DB's "local SQLite now,
+   scale later" path. 5d should keep the schema backend-neutral.</p>
+</li>
+</ol>
+<hr />
+<h2 id="4-design-notes-decisions-carried-forward">4. Design notes / decisions carried forward</h2>
+<ul>
+<li><strong>Cache stays global.</strong> The remote-content disk cache (<code>oscal_cache</code>,
+  <code>local_cache.db</code>) is a machine-level resource shared across workspaces and
+  processes — not per-workspace. Unaffected by 5d.</li>
+<li><strong>Registry stays per-process / per-workspace.</strong> Each process has its own live
+  objects; the file is the coordination point, not a shared object store.</li>
+<li><strong>Lock granularity</strong> is whole-document for now. Element-level locking is a
+  possible later refinement (the <code>workspace_locks</code> table can carry a <code>path</code>).</li>
+<li><strong>Keying:</strong> in-memory locks use <code>id(doc)</code> (safe because roots are shared objects
+  within one process). Durable/cross-process locks <strong>must</strong> use the stable source /
+  <code>doc_id</code> key.</li>
+</ul>
+<hr />
+<h2 id="5-where-things-live-code-pointers">5. Where things live (code pointers)</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Location</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workspace, save/load, lock manager</td>
+<td><code>oscal/oscal_workspace.py</code></td>
+</tr>
+<tr>
+<td>Registry + contextvar injection</td>
+<td><code>oscal/oscal_registry.py</code> (<code>get_registry</code>, <code>use_registry</code>)</td>
+</tr>
+<tr>
+<td>Current actor + <code>is_read_only</code> enforcement</td>
+<td><code>oscal/oscal_content.py</code> (<code>current_actor</code>, <code>use_actor</code>, <code>is_read_only</code>, <code>_locked_by_other</code>, <code>_can_mutate</code>)</td>
+</tr>
+<tr>
+<td>Derived-state hooks</td>
+<td><code>oscal/oscal_content.py</code> (<code>_export_state</code>/<code>_import_state</code>); <code>Profile</code> override in <code>oscal/oscal_controls.py</code></td>
+</tr>
+<tr>
+<td>Disk cache (global)</td>
+<td><code>oscal/oscal_cache.py</code></td>
+</tr>
+<tr>
+<td>Tests</td>
+<td><code>tests/unit/test_workspace.py</code> (core, save/load, typed instances, state, <strong>locks</strong>)</td>
+</tr>
+</tbody>
+</table>
+<p>A future session can start at §3 item 1 (durable lock table) and item 2
+(cross-process acquisition), since <code>_locked_by_other()</code> already routes lock checks
+through the workspace — only the lock manager's storage needs to change.</p></main></body></html>

@@ -1,0 +1,88 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Importing Controls</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/IMPORTING_CONTROLS.md">IMPORTING_CONTROLS.md</a> on GitHub</p><h1 id="importing-controls">Importing Controls</h1>
+<p>When importing a profile or catalog for use in a Component Definition, SSP or other models as use cases arise.</p>
+<p>Although implementation is incremental, all implementation must satisfy the NIST <a href="https://pages.nist.gov/OSCAL/learn/concepts/processing/profile-resolution/">OSCAL Profile Resolution</a> specification.  </p>
+<ol>
+<li>
+<p>Build import tree</p>
+<ul>
+<li>identify imports</li>
+<li>ensure each import is reachable</li>
+<li>cite blocked processing when an import is not found<ul>
+<li>receive alternative links to blocked imports</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p>Enumerate control scope</p>
+<ul>
+<li>import and organize group/control hierarchy:<ul>
+<li>ID: group or control ID {key}<ul>
+<li>label: group or control label</li>
+<li>title: group or control title</li>
+<li>status: if a status prop is present, include it here</li>
+<li>source: the catalog that originally contained the control</li>
+<li>included-by: array of profiles that imported the control</li>
+<li>parameter-set-via: profiles that set the parameter constraint or value (via <code>set-parameters</code>)</li>
+<li>modified-via: profiles that have alter the control (via <code>modify</code>)</li>
+<li>cached_content: empty initially. populated when referenced.</li>
+<li>children: a nested array of any child control or group<ul>
+<li>Groups can have child groups or child controls, but not both.</li>
+<li>Controls can only have child controls.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>for scope use <code>include</code>/<code>exclude</code> with<ul>
+<li><code>all</code>/<code>by-id</code>/<code>matching</code>; adjusted by
+    <code>with-child-controls</code></li>
+<li>scope-index: just IDs</li>
+</ul>
+</li>
+<li>for organization use <ul>
+<li><code>merge/flat</code>, <code>merge/as-is</code> or <code>merge/custom</code><ul>
+<li>if a control is in scope it must be addressible and visible. <ul>
+<li>With merge custom, any control not explicity addressed in organized into an "[Ungrouped]" group at the top.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p>Individual controls are loaded and processed only when the <code>get_control</code> method is used.</p>
+<ul>
+<li>Lookup the control in the scope array</li>
+<li>use the source to obtain the original content</li>
+<li>use the parameter-set-via map to acquire parameter settings</li>
+<li>use the modified-via map to acquire tailoring</li>
+</ul>
+</li>
+</ol>
+<p><code>get_control(id: str, raw: boolean = False)</code>
+- <code>id</code> is the control ID itself
+- <code>raw</code>: If <code>True</code>, return the original source content and all tailoring as separate constructs
+        If <code>False</code> (default) return only the final control after tailoring. </p></main></body></html>

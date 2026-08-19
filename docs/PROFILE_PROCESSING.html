@@ -1,0 +1,303 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Profile Processing</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/PROFILE_PROCESSING.md">PROFILE_PROCESSING.md</a> on GitHub</p><h1 id="profile-processing">Profile Processing</h1>
+<p>An OSCAL <strong>profile</strong> selects and tailors controls from one or more imported catalogs
+and/or profiles into a new baseline or overlay. Resolving a profile applies its
+processing directives — which controls are in scope, how they are organized, and how
+their parameters and content are modified — to produce a single <strong>resolved catalog</strong>.</p>
+<p>This library processes profiles in two phases so you only expend processing for what you use:</p>
+<ol>
+<li><strong><code>controls_tree</code> (built at load, cheap).</strong> A lightweight tree of the in-scope
+   groups and controls — ids, hierarchy, and each node's origin — with the profile's
+   <code>import</code> / <code>include</code> / <code>exclude</code> / <code>merge</code> / <code>combine</code> directives already applied.
+   This is the source of truth for <em>scope and organization</em>. <ul>
+<li>No control content is copied.</li>
+<li>Profile alterations are applied to individual controls as they are feteched. </li>
+</ul>
+</li>
+<li><strong><code>resolve()</code> (on demand, heavy).</strong> Walks the <code>controls_tree</code>, fetches the real
+   content for each node, applies <code>modify</code> (removes → adds → set-parameters), and
+   materializes a brand-new <code>Catalog</code> in <code>profile.catalog</code>.</li>
+</ol>
+<p>Because the <code>controls_tree</code> is always available, you can read individual controls and
+groups <strong>without resolving the whole profile</strong> (just-in-time), or resolve once and work
+with the full <code>Catalog</code>.</p>
+<p>Each imported profile is represented by its own Profile object. Each Profile object handles its own control import and alterations processing, and makes the result available to downstream imports, ensuring complex import trees are handled cleanly. </p>
+<p>All processing follows the NIST
+<a href="https://pages.nist.gov/OSCAL/learn/concepts/processing/profile-resolution/">OSCAL Profile Resolution</a>
+specification.</p>
+<hr />
+<h2 id="at-a-glance">At a glance</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Returns</th>
+<th>Needs <code>resolve()</code> first?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_control_by_id(id, depth=None)</code></td>
+<td>control <code>dict</code> | <code>None</code></td>
+<td>No — materialized just-in-time</td>
+</tr>
+<tr>
+<td><code>get_group_by_id(id, depth=None)</code></td>
+<td>group <code>dict</code> | <code>None</code></td>
+<td>No — materialized just-in-time</td>
+</tr>
+<tr>
+<td><code>get_control_list()</code></td>
+<td><code>list[dict]</code></td>
+<td>No — materialized just-in-time</td>
+</tr>
+<tr>
+<td><code>get_parameter_by_id(id)</code></td>
+<td>param <code>dict</code> | <code>None</code></td>
+<td>No — materialized just-in-time</td>
+</tr>
+<tr>
+<td><code>resolve()</code></td>
+<td><code>ResolutionStatus</code></td>
+<td>— builds <code>profile.catalog</code></td>
+</tr>
+<tr>
+<td><code>catalog</code> (attribute)</td>
+<td><code>Catalog</code> | <code>None</code></td>
+<td><code>None</code> until <code>resolve()</code></td>
+</tr>
+<tr>
+<td><code>dumps_catalog(format, pretty_print)</code></td>
+<td><code>str</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>dump_catalog(filename, format, pretty_print)</code></td>
+<td><code>bool</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>resolve_and_dumps_catalog(format, pretty_print)</code></td>
+<td><code>str</code></td>
+<td>resolves for you</td>
+</tr>
+<tr>
+<td><code>resolve_and_dump_catalog(filename, format, pretty_print)</code></td>
+<td><code>bool</code></td>
+<td>resolves for you</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="loading-a-profile">Loading a profile</h2>
+<pre><code class="language-python">from oscal import OSCAL, Profile
+
+# OSCAL.load() returns a typed instance (a Profile for a profile document)
+profile = OSCAL.load(&quot;high-baseline-privacy-profile.json&quot;)
+
+# ...or load as the specific model
+profile = Profile.load(&quot;high-baseline-privacy-profile.json&quot;)
+
+profile.resolution_status     # ResolutionStatus.UNRESOLVED
+profile.catalog               # None — not resolved yet
+len(profile.controls_tree)    # the in-scope top-level groups/controls
+</code></pre>
+<p>Loading builds the <code>controls_tree</code> (applying the profile's scope and merge directives)
+but does <strong>not</strong> resolve to a catalog.</p>
+<hr />
+<h2 id="any-number-or-depth-of-imports-profiles-and-catalogs">Any number or depth of imports (profiles and catalogs)</h2>
+<p>A profile may import catalogs, other profiles, or a mix — to any depth. The library
+resolves the whole import graph automatically; you do <strong>not</strong> need to pre-resolve
+imported profiles. Each imported profile contributes its own load-time <code>controls_tree</code>,
+and content is fetched through each source's own accessors, recursing to the underlying
+catalogs.</p>
+<pre><code>combined-profile.json           (imports two profiles)
+├── baseline-profile.json       (imports a catalog + an overlay catalog)
+│   ├── base-catalog.json
+│   └── overlay-catalog.json
+└── overlay-profile.json        (imports the same catalog + overlay catalog)
+    ├── base-catalog.json
+    └── overlay-catalog.json
+</code></pre>
+<pre><code class="language-python">top = OSCAL.load(&quot;combined-profile.json&quot;)
+
+# The full chain is already reflected in the scope — no manual pre-resolution needed.
+ids = {c[&quot;id&quot;] for c in top.get_control_list()}
+</code></pre>
+<p>Duplicate control references across imports are handled by the profile's <code>combine</code>
+directive:</p>
+<ul>
+<li><strong><code>use-first</code></strong> — the first occurrence is kept; later identical duplicates are dropped.
+  A <em>new</em> enhancement of a duplicated parent control is still kept (merged under the kept
+  parent), and same-id groups are merged into a single group.</li>
+<li><strong><code>keep</code></strong> — later duplicates are retained with a <code>__&lt;uuid&gt;</code>-suffixed id.</li>
+</ul>
+<p>Import-related notes:</p>
+<ul>
+<li>If two different documents share a root <strong>UUID</strong> (a common hand-authoring mistake),
+  the library detects it — comparing <code>title</code> / <code>oscal-version</code> / <code>last-modified</code> /
+  <code>version</code> — and reassigns the later one a fresh UUID to continue, with a warning. Fix
+  the source content to use unique UUIDs.</li>
+<li>An unreachable import blocks resolution; <code>resolve()</code> returns
+  <code>ResolutionStatus.BLOCKED</code>.</li>
+</ul>
+<hr />
+<h2 id="just-in-time-jit-access">Just-in-time (JIT) access</h2>
+<p>You can read individual controls and groups straight from an <strong>unresolved</strong> profile.
+The library materializes just the requested content on demand from the source (applying
+this profile's <code>modify</code> directives), without building the whole catalog.</p>
+<pre><code class="language-python">profile = OSCAL.load(&quot;high-baseline-privacy-profile.json&quot;)
+assert profile.catalog is None            # still unresolved
+
+ac_1 = profile.get_control_by_id(&quot;ac-1&quot;)  # materialized on demand, fully tailored
+ac_1[&quot;id&quot;]                                # &quot;ac-1&quot;
+
+assert profile.catalog is None            # a JIT read did NOT trigger a full resolve
+</code></pre>
+<p>JIT is ideal for browsing, previewing, or pulling a handful of controls (e.g. building a
+navigation UI, or importing a few controls into an SSP) without the cost of a full
+resolution. The returned dict is a <strong>detached safe copy</strong> — mutating it does not change
+the profile.</p>
+<hr />
+<h2 id="full-resolution-to-a-catalog">Full resolution to a catalog</h2>
+<p>When you need the complete tailored catalog, call <code>resolve()</code>. It builds a fresh
+<code>Catalog</code> in <code>profile.catalog</code> and returns a status.</p>
+<pre><code class="language-python">from oscal.oscal_controls import ResolutionStatus
+
+status = profile.resolve()
+if status == ResolutionStatus.RESOLVED:
+    catalog = profile.catalog                 # a fully-resolved Catalog instance
+    print(len(catalog), &quot;controls&quot;)
+    print(catalog.is_valid)
+elif status == ResolutionStatus.BLOCKED:
+    print(&quot;An import could not be resolved.&quot;)
+</code></pre>
+<p><code>resolve()</code> always rebuilds <code>profile.catalog</code> from scratch. Resolve once and reuse
+<code>profile.catalog</code> (or the profile's getters) for many reads.</p>
+<h3 id="serializing-the-resolved-catalog">Serializing the resolved catalog</h3>
+<pre><code class="language-python"># Serialize to a string / file (require the profile to be resolved first)
+profile.resolve()
+json_text = profile.dumps_catalog(format=&quot;json&quot;, pretty_print=True)
+profile.dump_catalog(filename=&quot;resolved-catalog.json&quot;, format=&quot;json&quot;)
+
+# One-shot: resolve then serialize in a single call
+json_text = profile.resolve_and_dumps_catalog(format=&quot;json&quot;, pretty_print=True)
+profile.resolve_and_dump_catalog(filename=&quot;resolved-catalog.xml&quot;, format=&quot;xml&quot;)
+</code></pre>
+<p>Use <code>resolve_and_dump*</code> for the common one-shot case. Use <code>resolve()</code> +
+<code>dump_catalog</code> / <code>dumps_catalog</code> when you want finer control — for example to resolve
+once and write several formats, or to control <em>when</em> the heavy resolution runs. The
+pure <code>dump*</code> methods never resolve on their own; if the profile is unresolved they warn
+and return an empty string / <code>False</code>.</p>
+<hr />
+<h2 id="acquire-groups-and-controls-just-like-a-catalog">Acquire groups and controls just like a Catalog</h2>
+<p>A resolved-or-not profile exposes the same read accessors as a <code>Catalog</code>, with identical
+signatures and return shapes — so code that navigates a catalog works unchanged against
+a profile.</p>
+<pre><code class="language-python">def summarize(source):
+    &quot;&quot;&quot;Works for both a Catalog and a Profile.&quot;&quot;&quot;
+    ac = source.get_group_by_id(&quot;ac&quot;)             # the Access Control family
+    ac_1 = source.get_control_by_id(&quot;ac-1&quot;)       # a single control (safe copy)
+    ac_1_shallow = source.get_control_by_id(&quot;ac-1&quot;, depth=0)   # without enhancements
+    every = source.get_control_list()             # flat list of all controls
+    return ac, ac_1, ac_1_shallow, every
+
+summarize(Catalog.load(&quot;nist-800-53.json&quot;))
+summarize(Profile.load(&quot;high-baseline-privacy-profile.json&quot;))   # same calls, same shapes
+</code></pre>
+<ul>
+<li><code>get_control_by_id(id, depth=None)</code> — a control as a detached copy. <code>depth</code> prunes only
+  nested enhancements (<code>None</code> = full subtree, <code>0</code> = none, <code>N</code> = N levels).</li>
+<li><code>get_group_by_id(id, depth=None)</code> — a group as a detached copy. <code>depth</code> prunes only
+  nested groups/controls.</li>
+<li><code>get_control_list()</code> — a flat list of every control (enhancements included).</li>
+<li><code>get_parameter_by_id(id)</code> — a parameter, wherever it is defined in scope.</li>
+</ul>
+<p>When the profile is <strong>resolved</strong>, these read from <code>profile.catalog</code>. When it is
+<strong>unresolved</strong>, they materialize the same result on demand from the source — so the two
+paths agree. Because they return safe copies, edits are made through the profile's
+directive methods (below) and re-resolved, not by mutating a returned dict.</p>
+<hr />
+<h2 id="changing-scope-and-directives">Changing scope and directives</h2>
+<p>Scope and organization come from the profile's own directives. After changing them, the
+<code>controls_tree</code> rebuilds automatically; call <code>resolve()</code> again for a fresh catalog.</p>
+<pre><code class="language-python">profile = Profile.new(&quot;My Baseline&quot;)
+profile.set_metadata({&quot;title&quot;: &quot;My Baseline&quot;})
+
+# Add imports (each backed by a back-matter resource)
+profile.add_import(&quot;nist-800-53.json&quot;, include_all=True)
+
+# Choose how imported controls are organized:
+profile.set_merge(as_is=True, combine=&quot;use-first&quot;)   # preserve source grouping
+# profile.set_merge(flat=True)                        # flatten (no groups)
+
+controls = profile.get_control_list()   # reflects the new scope immediately (JIT)
+profile.resolve()                       # (re)build profile.catalog
+</code></pre>
+<p>Directive summary:</p>
+<ul>
+<li><strong><code>import</code> / <code>include-controls</code> / <code>exclude-controls</code></strong> — which controls are in scope
+  (<code>with-ids</code>, <code>matching</code> glob patterns, <code>with-child-controls</code>).</li>
+<li><strong><code>merge</code></strong> — organization: <code>as-is</code> (preserve grouping) or <code>flat</code> (no groups).
+  <code>custom</code> grouping is not yet implemented and falls back to <code>as-is</code>.</li>
+<li><strong><code>combine</code></strong> — duplicate handling: <code>use-first</code> or <code>keep</code> (default).</li>
+<li><strong><code>modify</code></strong> — per-control tailoring: <code>alters</code> (removes → adds) and <code>set-parameters</code>,
+  applied during resolution and JIT reads alike.</li>
+</ul>
+<hr />
+<h2 id="resolution-status">Resolution status</h2>
+<p><code>profile.resolution_status</code> is a <code>ResolutionStatus</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UNRESOLVED</code></td>
+<td>Loaded; <code>controls_tree</code> built, <code>catalog</code> is <code>None</code>.</td>
+</tr>
+<tr>
+<td><code>RESOLVING</code></td>
+<td>Resolution in progress.</td>
+</tr>
+<tr>
+<td><code>RESOLVED</code></td>
+<td><code>profile.catalog</code> is populated.</td>
+</tr>
+<tr>
+<td><code>BLOCKED</code></td>
+<td>Resolution could not complete (e.g. an import is unreachable).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="notes-and-current-limitations">Notes and current limitations</h2>
+<ul>
+<li><strong><code>resolve()</code> fully rebuilds</strong> the resolved catalog each call. Content-based
+  change-detection (skip re-resolution when nothing changed) is planned alongside the
+  library-wide caching/TTL work; see <code>docs/ROADMAP.md</code>.</li>
+<li><strong><code>custom</code> merge</strong> is deferred (falls back to <code>as-is</code>).</li>
+<li><strong>Out-of-scope cross-references</strong> (a control referencing another control not in the
+  baseline) are rewritten to absolute source URIs, matching the reference resolver.</li>
+</ul></main></body></html>

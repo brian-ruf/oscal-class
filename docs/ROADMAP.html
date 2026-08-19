@@ -1,0 +1,153 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ROADMAP (Updated Aug 12, 2026)</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/ROADMAP.md">ROADMAP.md</a> on GitHub</p><h1 id="roadmap-updated-aug-12-2026">ROADMAP (<em>Updated Aug 12, 2026</em>)</h1>
+<p>The sequencing of releases may change in response to client needs and other external factors.</p>
+<h2 id="past">Past:</h2>
+<h3 id="version-1x">Version 1.x</h3>
+<ul>
+<li>Support Module: Acquire and manage NIST-pubished support files<ul>
+<li>Support files in local SQLite database</li>
+<li>Support files in local Folder</li>
+<li>Deploy, update, and repopulate</li>
+</ul>
+</li>
+<li>OSCAL Content Class: <ul>
+<li>Simple local loading and saving</li>
+<li>Auto-detect OSCAL format, version and model</li>
+<li>Validation using NIST schema files</li>
+<li>Load any OSCAL format (XML, JSON, YAML)</li>
+<li>Convert and save in any OSCAL format (XML, JSON, YAML)<ul>
+<li>Currently relies on SaxonC-HE and NIST XSLT 3.x Convertion files</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h3 id="version-20x-refactoring-xmljson-parity">Version 2.0.x: Refactoring, XML/JSON Parity</h3>
+<ul>
+<li>Separate class for each model</li>
+<li>Refactor class attributes, methods (names, organization)</li>
+<li>Efficiency and maintainability improvements</li>
+<li>Robust Loading from local file system and remote URLs</li>
+</ul>
+<h3 id="version-30x-import-dependency-chain">Version 3.0.x: Import Dependency Chain</h3>
+<ul>
+<li>Top level imports <ul>
+<li>AR -&gt; AP -&gt; SSP -&gt; Profile -&gt; [ Profile | Catalog ]</li>
+<li>POAM -&gt; SSP -&gt; Profile -&gt; [ Profile | Catalog ]</li>
+<li>cDef -&gt; cDef</li>
+</ul>
+</li>
+<li>Failed import handling</li>
+<li>Basic addressibility across imported files</li>
+</ul>
+<h3 id="version-31x-profile-resolution">Version 3.1.x Profile Resolution</h3>
+<ul>
+<li>Control Tree Generation/Caching</li>
+<li>By-Control Tailoring</li>
+<li>Saving Resolved Profile Catalogs</li>
+</ul>
+<h2 id="up-next">Up Next:</h2>
+<h3 id="local-caching">Local Caching</h3>
+<ul>
+<li>[ ] Cache remotely acquired files locally</li>
+<li>[ ] Automatic cache refresh based on TTL</li>
+<li>[ ] Manually triggered refresh</li>
+<li>[ ] Fallback to cache after expiration when remote content is not available.</li>
+</ul>
+<h2 id="future">Future:</h2>
+<h3 id="project-approach">Project Approach</h3>
+<ul>
+<li>
+<p>[ ] Project-based Storage</p>
+<ul>
+<li>Save cluster of related files together<ul>
+<li>AR -&gt; AP -&gt; SSP -&gt; Profile -&gt; [ Profile | Catalog ]</li>
+<li>POAM -&gt; SSP -&gt; Profile -&gt; [ Profile | Catalog ]</li>
+</ul>
+</li>
+<li>SQLite-based</li>
+<li>Load cluster of related files</li>
+<li>External attachment packing with project</li>
+</ul>
+</li>
+<li>
+<p>[ ] External attachment handling    </p>
+<ul>
+<li>In SQLite project file</li>
+<li>As external files relative to SQLite project file</li>
+</ul>
+</li>
+</ul>
+<h3 id="indexes-and-robust-addressibility">Indexes and Robust Addressibility</h3>
+<ul>
+<li>[ ] Generate and maintain metaschema-defined indexes</li>
+<li>[ ] Generate and maintain extra-metaschema indexes </li>
+<li>[ ] Handle metaschema-defined uniqueness constraints</li>
+<li>[ ] Enable robust addressibility across project files</li>
+<li>Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements</li>
+</ul>
+<hr />
+<h3 id="farther-out">Farther Out</h3>
+<ul>
+<li>
+<p>[ ] Robust URI and APIs Handling for Content Acquisition/Storage</p>
+<ul>
+<li>Additional API Specifications</li>
+<li>Credentialed/Access-token Handling</li>
+<li>S3 and similar cloud-native storage capabiities </li>
+</ul>
+</li>
+<li>
+<p>[ ] Content Library</p>
+<ul>
+<li>Cached local copy of commonly used OSCAL content, such as the NIST SP 800-53 catalog and FedRAMP profiles.</li>
+<li>Ability to add/refresh/remove content</li>
+</ul>
+</li>
+<li>
+<p>[ ] Preferred Conversion</p>
+<ul>
+<li>Enable conversion of OSCAL content using pure python and direct interpretation of metaschema<ul>
+<li>Eliminates dependency on XSLT 3.x processing for format converstion</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p>[ ] Preferred Validation</p>
+<ul>
+<li>Enable validation of OSCAL content using pure Python and direct interpretation of NIST metaschema <ul>
+<li>Eliminate dependency on XML/JSON schema files</li>
+<li>Enables more complex metaschema checks </li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p>[ ] Project Storage and Sharing Enhancements</p>
+<ul>
+<li>Enable multi-user interaction of shared project files</li>
+<li>Enable storage on shared network drives</li>
+<li>Enable storage on shared cloud drives (OneDrive, Google Drive)</li>
+<li>Enablue use of enterprise databases</li>
+</ul>
+</li>
+</ul></main></body></html>

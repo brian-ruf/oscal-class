@@ -1,0 +1,517 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>OSCAL Class</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/CONTENT.md">CONTENT.md</a> on GitHub</p><h1 id="oscal-class">OSCAL Class</h1>
+<p>A class for creation, management, validation, and format conversion of OSCAL content.
+All published OSCAL versions, formats, and models can be validated and converted.
+Creation and management targets OSCAL 1.2.1 and later.</p>
+<p>OSCAL XML, JSON, and YAML formats are fully supported. XML is immediately converted
+to the internal JSON-native representation on load; XML output is produced on demand.</p>
+<hr />
+<h2 id="model-classes">Model Classes</h2>
+<p>Eight model classes inherit from the base <code>OSCAL</code> class:</p>
+<pre><code class="language-python">from oscal import (
+    OSCAL,               # base class — use when model is unknown
+    Catalog,
+    Profile,
+    Mapping,             # mapping-collection model
+    ComponentDefinition,
+    SSP,
+    AssessmentPlan,
+    AssessmentResults,
+    POAM,
+)
+</code></pre>
+<p>All factory methods (<code>load</code>, <code>loads</code>, <code>acquire</code>, <code>new</code>) are available on every class.
+Use a model-specific class when you know the model in advance; use <code>OSCAL</code> when you
+don't. The <code>model</code> attribute identifies the detected model after loading.</p>
+<hr />
+<h2 id="factory-methods">Factory Methods</h2>
+<p>Never instantiate model classes directly — always use one of these class methods.</p>
+<h3 id="loads-in-memory-content"><code>loads</code> — in-memory content</h3>
+<p>Use when you already have OSCAL content in memory (string or dict).</p>
+<pre><code class="language-python">from oscal import Catalog
+
+catalog_dict = {
+    &quot;catalog&quot;: {
+        &quot;uuid&quot;: &quot;11111111-1111-1111-1111-111111111111&quot;,
+        &quot;metadata&quot;: {
+            &quot;title&quot;: &quot;In-Memory Catalog&quot;,
+            &quot;version&quot;: &quot;0.1.0&quot;,
+            &quot;oscal-version&quot;: &quot;1.1.3&quot;,
+        },
+        &quot;groups&quot;: [],
+    }
+}
+
+catalog = Catalog.loads(catalog_dict, href=&quot;memory://catalog&quot;)
+</code></pre>
+<p><code>href</code> is optional and serves as a label identifying the content's origin.
+<code>content</code> may be a JSON/YAML <code>str</code> or a <code>dict</code>.</p>
+<h3 id="load-local-file-or-file-like-object"><code>load</code> — local file or file-like object</h3>
+<p>Use to read from a path on the local filesystem, or any file-like object with <code>.read()</code>.</p>
+<pre><code class="language-python">from oscal import Catalog
+
+catalog = Catalog.load(&quot;./catalog.xml&quot;)         # path string
+catalog = Catalog.load(Path(&quot;./catalog.xml&quot;))   # pathlib.Path
+catalog = Catalog.load(open(&quot;catalog.json&quot;))    # file-like object
+</code></pre>
+<p>The loaded content is read-only by default for file objects; it is set to read-write
+for plain path strings (local paths you own).</p>
+<h3 id="acquire-uri-reference-resolution"><code>acquire</code> — URI / reference resolution</h3>
+<p>Use for content that must be fetched by URI, or when you want to supply a fallback
+source list. Accepts a URI string, a reference dict, an <code>OscalRef</code>, or a list of any
+of these.</p>
+<pre><code class="language-python">from oscal import OSCAL
+
+# Remote URL
+doc = OSCAL.acquire(&quot;https://raw.githubusercontent.com/.../catalog.json&quot;)
+
+# Local file as a URI
+doc = OSCAL.acquire(&quot;file:///data/oscal/catalog.xml&quot;)
+
+# Reference dict (same shape as back-matter rlinks)
+doc = OSCAL.acquire({&quot;href&quot;: &quot;https://example.com/catalog.xml&quot;})
+
+# Fallback list — first successful source wins
+doc = OSCAL.acquire([
+    &quot;https://example.com/catalog.xml&quot;,
+    {&quot;href&quot;: &quot;./local-fallback/catalog.xml&quot;},
+])
+</code></pre>
+<h3 id="new-create-from-template"><code>new</code> — create from template</h3>
+<p>Use to create a fresh OSCAL document from the built-in template for a specific model.
+Must be called on a model subclass, not on <code>OSCAL</code> directly.</p>
+<pre><code class="language-python">from oscal import Catalog, Profile
+
+catalog = Catalog.new(
+    title=&quot;My New Catalog&quot;,
+    version=&quot;DRAFT-1.0&quot;,
+    published=&quot;2026-04-26T00:00:00Z&quot;,
+)
+
+profile = Profile.new(title=&quot;My New Profile&quot;)
+</code></pre>
+<hr />
+<h2 id="model-aware-loading">Model-Aware Loading</h2>
+<p>When the model is not known in advance, load with <code>OSCAL</code> first, then dispatch:</p>
+<pre><code class="language-python">from oscal import OSCAL, Catalog, Profile, Mapping, ComponentDefinition, SSP
+from oscal import AssessmentPlan, AssessmentResults, POAM
+
+MODEL_CLASS_MAP = {
+    &quot;catalog&quot;:                    Catalog,
+    &quot;profile&quot;:                    Profile,
+    &quot;mapping-collection&quot;:         Mapping,
+    &quot;component-definition&quot;:       ComponentDefinition,
+    &quot;system-security-plan&quot;:       SSP,
+    &quot;assessment-plan&quot;:            AssessmentPlan,
+    &quot;assessment-results&quot;:         AssessmentResults,
+    &quot;plan-of-action-and-milestones&quot;: POAM,
+}
+
+
+def load_typed(path: str):
+    &quot;&quot;&quot;Return the most specific model class for the content at path.&quot;&quot;&quot;
+    generic = OSCAL.load(path)
+    cls = MODEL_CLASS_MAP.get(generic.model)
+    return cls.load(path) if cls else generic
+
+
+obj = load_typed(&quot;./example/catalog.xml&quot;)
+print(type(obj).__name__)  # Catalog
+print(obj.model)           # catalog
+</code></pre>
+<hr />
+<h2 id="content-states">Content States</h2>
+<h3 id="content_state-contentstate"><code>content_state</code> / <code>ContentState</code></h3>
+<p>A progressive enum that tracks how far through the validation pipeline the content has
+progressed. Each level implies all prior levels passed.</p>
+<pre><code class="language-python">class ContentState(IntEnum):
+    NONE             = -1  # No content / uninitialized
+    NOT_AVAILABLE    = 0   # Unable to acquire content
+    ACQUIRED         = 1   # Content was acquired (non-empty string)
+    WELL_FORMED      = 2   # Content is well-formed XML, JSON, or YAML
+    VALID            = 3   # Content passes OSCAL schema validation
+    IMPORTS_RESOLVED = 4   # All imported OSCAL documents resolved successfully
+</code></pre>
+<p>Boolean properties are provided for the most common checks:</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>True when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.is_acquired</code></td>
+<td><code>content_state &gt;= ACQUIRED</code></td>
+</tr>
+<tr>
+<td><code>.is_well_formed</code></td>
+<td><code>content_state &gt;= WELL_FORMED</code></td>
+</tr>
+<tr>
+<td><code>.is_valid</code></td>
+<td><code>content_state &gt;= VALID</code></td>
+</tr>
+<tr>
+<td><code>.imports_resolved</code></td>
+<td><code>content_state &gt;= IMPORTS_RESOLVED</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>__bool__</code> returns <code>True</code> when <code>is_valid</code> is <code>True</code>, so objects can be used directly
+in conditionals:</p>
+<pre><code class="language-python">catalog = Catalog.load(&quot;catalog.xml&quot;)
+if catalog:
+    print(catalog.title)      # safe to access
+else:
+    print(&quot;Load failed&quot;)
+</code></pre>
+<h3 id="validation_status-and-validation_errors"><code>validation_status</code> and <code>validation_errors</code></h3>
+<p>After loading, <code>validation_status</code> records per-phase results and <code>validation_errors</code>
+holds structured error dicts from the most recent <code>validate()</code> call:</p>
+<pre><code class="language-python">print(catalog.validation_status)
+# {
+#   &quot;well-formed&quot;:    True,
+#   &quot;structure&quot;:      True,
+#   &quot;data-types&quot;:     True,
+#   &quot;allowed-values&quot;: False,
+#   &quot;cardinality&quot;:    True,
+# }
+
+for err in catalog.validation_errors:
+    print(err[&quot;error-type&quot;], err[&quot;location&quot;], err[&quot;field&quot;], err[&quot;value&quot;])
+</code></pre>
+<h3 id="validate-re-run-validation"><code>validate()</code> — re-run validation</h3>
+<p>Call to re-validate after mutating content:</p>
+<pre><code class="language-python">catalog.set_metadata({&quot;title&quot;: &quot;Updated Title&quot;})
+catalog.validate()
+</code></pre>
+<hr />
+<h2 id="origin-and-mutability-states">Origin and Mutability States</h2>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.is_local</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> for local file source, <code>False</code> for remote</td>
+</tr>
+<tr>
+<td><code>.is_remote</code></td>
+<td><code>bool</code></td>
+<td>Inverse of <code>is_local</code></td>
+</tr>
+<tr>
+<td><code>.is_cached</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when remote content has a local cache copy</td>
+</tr>
+<tr>
+<td><code>.is_read_only</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when the content must not be mutated</td>
+</tr>
+<tr>
+<td><code>.is_unsaved</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when mutations have not been written to disk</td>
+</tr>
+<tr>
+<td><code>.is_editable</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when <code>is_valid</code>, <code>is_local</code>, and not <code>is_read_only</code></td>
+</tr>
+<tr>
+<td><code>.is_fresh</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when content is local or cached within its TTL</td>
+</tr>
+<tr>
+<td><code>.is_stale</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when remote cached content has exceeded its TTL</td>
+</tr>
+<tr>
+<td><code>.origin_state</code></td>
+<td><code>OriginState</code></td>
+<td><code>LOCAL</code>, <code>REMOTE_UNCACHED</code>, <code>REMOTE_FRESH</code>, or <code>REMOTE_STALE</code></td>
+</tr>
+<tr>
+<td><code>.loaded</code></td>
+<td><code>datetime</code></td>
+<td>Timestamp of when content was acquired</td>
+</tr>
+<tr>
+<td><code>.ttl</code></td>
+<td><code>int</code></td>
+<td>Cache time-to-live in seconds (0 = never expire)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="content-summary-attributes">Content Summary Attributes</h2>
+<p>These are populated after a successful load:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.model</code></td>
+<td>OSCAL model name (e.g. <code>"catalog"</code>, <code>"system-security-plan"</code>)</td>
+</tr>
+<tr>
+<td><code>.oscal_version</code></td>
+<td>OSCAL version from the content metadata (e.g. <code>"v1.1.3"</code>)</td>
+</tr>
+<tr>
+<td><code>.title</code></td>
+<td>Document title from metadata</td>
+</tr>
+<tr>
+<td><code>.version</code></td>
+<td>Document version from metadata</td>
+</tr>
+<tr>
+<td><code>.published</code></td>
+<td>Publication date from metadata</td>
+</tr>
+<tr>
+<td><code>.last_modified</code></td>
+<td>Last-modified date from metadata</td>
+</tr>
+<tr>
+<td><code>.remarks</code></td>
+<td>Remarks from metadata</td>
+</tr>
+<tr>
+<td><code>.original_format</code></td>
+<td>Format the content was loaded from (<code>"xml"</code>, <code>"json"</code>, <code>"yaml"</code>)</td>
+</tr>
+<tr>
+<td><code>.href</code></td>
+<td>Working href (may differ from <code>href_original</code> after redirect/retry)</td>
+</tr>
+<tr>
+<td><code>.href_original</code></td>
+<td>Original href as provided at load time</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="serialization">Serialization</h2>
+<h3 id="dump-write-to-file"><code>dump</code> — write to file</h3>
+<pre><code class="language-python"># Save to a specific path and format
+catalog.dump(&quot;catalog.json&quot;, format=&quot;json&quot;, pretty_print=True)
+catalog.dump(&quot;catalog.xml&quot;,  format=&quot;xml&quot;,  pretty_print=True)
+catalog.dump(&quot;catalog.yaml&quot;, format=&quot;yaml&quot;, pretty_print=True)
+
+# Save to the original location in the original format
+catalog.dump()
+</code></pre>
+<p>Returns <code>True</code> on success. If <code>filename</code> or <code>format</code> are omitted, <code>dump()</code> falls back
+to the original source location and format.</p>
+<h3 id="dumps-serialize-to-string"><code>dumps</code> — serialize to string</h3>
+<pre><code class="language-python">json_str  = catalog.dumps(format=&quot;json&quot;, pretty_print=True)
+xml_str   = catalog.dumps(format=&quot;xml&quot;,  pretty_print=True)
+yaml_str  = catalog.dumps(format=&quot;yaml&quot;)
+</code></pre>
+<h3 id="convenience-properties">Convenience properties</h3>
+<pre><code class="language-python">catalog.json   # → JSON string (always pretty-printed)
+catalog.xml    # → XML string  (builds XML from dict on demand)
+catalog.yaml   # → YAML string (always pretty-printed)
+</code></pre>
+<hr />
+<h2 id="querying-content">Querying Content</h2>
+<p>Two complementary path-based query methods work on the internal JSON representation.
+Both return Python lists. See <a href="QUERY_CONTENT.md">QUERY_CONTENT.md</a> for the full path
+syntax reference.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Step names</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>query(path)</code> / <code>query_one(path)</code></td>
+<td>OSCAL <strong>XML element names</strong> (<code>control</code>, <code>prop</code>, <code>part</code>)</td>
+<td>Requires metaschema index</td>
+</tr>
+<tr>
+<td><code>json_query(path)</code> / <code>json_query_one(path)</code></td>
+<td><strong>JSON key names</strong> (<code>controls</code>, <code>props</code>, <code>parts</code>)</td>
+<td>No index required</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-python"># query() — XML element name syntax
+ctrl  = catalog.query_one('//control[@id=&quot;ac-2&quot;]')
+title = catalog.query_one('/*/metadata/title')
+
+# json_query() — JSON key name syntax
+ctrl  = catalog.json_query_one('//controls[id=&quot;ac-2&quot;]')
+title = catalog.json_query_one('/*/metadata/title')
+
+# Both accept an optional context dict to scope the search
+parts = catalog.query('part[@name=&quot;statement&quot;]', context=ctrl)
+</code></pre>
+<p><code>query_one</code> and <code>json_query_one</code> return the first match or <code>None</code> (accepts an optional
+<code>default</code> argument).</p>
+<blockquote>
+<p><strong>Safe-copy ownership.</strong> Public getters and query methods return <strong>detached copies</strong>,
+never live references into the internal <code>_dict</code> — this includes query results and the
+node getters (<code>get_control_by_id</code>, <code>get_group_by_id</code>, <code>get_control_list</code>, and
+<code>Profile.control</code>). Mutating a returned value does not change the document; all
+mutation must go through the mutation methods below (which enforce the OSCAL standard).
+The private <code>_dict</code> attribute is the only sanctioned live-access escape hatch. The
+node getters also take an optional <code>depth</code> argument that prunes nested child
+groups/controls (<code>None</code> = full subtree, <code>0</code> = node only, <code>N</code> = N levels).</p>
+</blockquote>
+<hr />
+<h2 id="mutating-content">Mutating Content</h2>
+<p>All mutation methods require <code>is_editable</code> to be <code>True</code> (content is valid, local, and
+not read-only). They return <code>None</code> and log an error when the guard fails. Methods that
+return the created node return a <strong>safe copy</strong> of it — edit further via another method
+call, not by mutating the return value.</p>
+<h3 id="set_metadata"><code>set_metadata</code></h3>
+<p>Set scalar metadata fields:</p>
+<pre><code class="language-python">catalog.set_metadata({
+    &quot;title&quot;:   &quot;Updated Catalog&quot;,
+    &quot;version&quot;: &quot;1.1.0&quot;,
+})
+</code></pre>
+<p>Complex metadata fields (<code>roles</code>, <code>parties</code>, <code>locations</code>, etc.) are not yet supported
+and will log a warning if passed.</p>
+<h3 id="append_child"><code>append_child</code></h3>
+<p>Append a dict to any list within the document:</p>
+<pre><code class="language-python">catalog.append_child(&quot;back-matter/resources&quot;, {
+    &quot;uuid&quot;:  &quot;aaaaaaaa-0000-4000-a000-000000000001&quot;,
+    &quot;title&quot;: &quot;My Reference&quot;,
+    &quot;rlinks&quot;: [{&quot;href&quot;: &quot;https://example.com/ref.html&quot;}],
+})
+</code></pre>
+<p>The path is slash-separated, relative to the model root. The leaf key is created as an
+empty list if it does not yet exist.</p>
+<h3 id="append_resource"><code>append_resource</code></h3>
+<p>Convenience wrapper for adding back-matter resources:</p>
+<pre><code class="language-python">catalog.append_resource(
+    title=&quot;NIST SP 800-53 Rev 5&quot;,
+    rlinks=[{&quot;href&quot;: &quot;catalogs/nist-800-53-rev5.xml&quot;}],
+)
+</code></pre>
+<hr />
+<h2 id="import-handling">Import Handling</h2>
+<p>Imports are resolved automatically when content reaches <code>ContentState.VALID</code>. Results
+are available via <code>import_list</code>. See <a href="IMPORTS.md">IMPORTS.md</a> for full details.</p>
+<h3 id="import_list"><code>import_list</code></h3>
+<p>Flat list of dicts, one per import statement found in the document:</p>
+<pre><code class="language-python">{
+    &quot;href_original&quot;: &quot;&lt;href as written in the document&gt;&quot;,
+    &quot;href_valid&quot;:    &quot;&lt;resolved href that loaded successfully&gt;&quot;,
+    &quot;status&quot;:        ImportState.READY,   # READY | NOT_LOADED | INVALID | EXPIRED
+    &quot;is_valid&quot;:      True,
+    &quot;is_local&quot;:      False,
+    &quot;is_remote&quot;:     True,
+    &quot;is_cached&quot;:     False,
+    &quot;object&quot;:        &lt;OSCAL object or None&gt;,
+    &quot;failure&quot;:       None,  # ImportFailure instance on failure
+}
+</code></pre>
+<h3 id="import_tree"><code>import_tree</code></h3>
+<p>Lazily-built recursive tree of the full import chain. Returns a root node dict with an
+<code>"imports"</code> key holding the same structure recursively. Rebuilt on first access after
+any change; call <code>rebuild_import_tree()</code> to force a fresh traversal.</p>
+<h3 id="failed_imports"><code>failed_imports</code></h3>
+<p>Returns only the entries from <code>import_list</code> that have a non-<code>None</code> <code>failure</code> field:</p>
+<pre><code class="language-python">for entry in doc.failed_imports:
+    f = entry[&quot;failure&quot;]
+    print(f&quot;[{f.code.value}] {entry['href_original']} — {f.message}&quot;)
+</code></pre>
+<h3 id="resolve_importsbase_path"><code>resolve_imports(base_path="")</code></h3>
+<p>Re-runs import discovery and loading. Called automatically on valid content; call
+manually to force a fresh pass or after calling <code>retry_import</code>.</p>
+<h3 id="retry_importfailed_href-replacement_href"><code>retry_import(failed_href, replacement_href)</code></h3>
+<p>Retry a single failed import using an alternate source:</p>
+<pre><code class="language-python">doc.retry_import(
+    failed_href=&quot;https://old-server.example.com/catalog.xml&quot;,
+    replacement_href=&quot;./local-catalog.xml&quot;,
+)
+</code></pre>
+<h3 id="walk_importsvisitor_fn-scopesuccessful"><code>walk_imports(visitor_fn, scope="successful")</code></h3>
+<p>Depth-first walk of the import tree. <code>visitor_fn(entry, depth)</code> is called for each
+entry. <code>scope</code> is <code>"successful"</code> (default), <code>"failed"</code>, or <code>"all"</code>.</p>
+<hr />
+<h2 id="deprecated-legacy-methods">Deprecated / Legacy Methods</h2>
+<p>The following methods exist for backward compatibility but are not the preferred API.
+They may be removed in a future major release.</p>
+<h3 id="opensource-hrefnone"><code>open(source, *, href=None)</code></h3>
+<p>A universal constructor that inspects the source type and delegates to <code>load()</code> or
+<code>acquire()</code>. Prefer using <code>load()</code> or <code>acquire()</code> directly, which are more explicit
+about their behaviour:</p>
+<table>
+<thead>
+<tr>
+<th><code>open()</code> routes to…</th>
+<th>When source is…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load()</code></td>
+<td>A <code>str</code> path (no URI scheme), <code>pathlib.Path</code>, or file-like object</td>
+</tr>
+<tr>
+<td><code>acquire()</code></td>
+<td>A URI string with a scheme (<code>http://</code>, <code>file://</code>, etc.), <code>OscalRef</code>, dict, or list</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-python"># Legacy — avoid in new code
+obj = OSCAL.open(&quot;catalog.xml&quot;)             # delegates to load()
+obj = OSCAL.open(&quot;https://example.com/…&quot;)  # delegates to acquire()
+
+# Preferred equivalents
+obj = OSCAL.load(&quot;catalog.xml&quot;)
+obj = OSCAL.acquire(&quot;https://example.com/…&quot;)
+</code></pre>
+<h3 id="from_stringcontent-hrefnone"><code>from_string(content, *, href=None)</code></h3>
+<p>An explicit alias for <code>loads()</code>. Use <code>loads()</code> directly:</p>
+<pre><code class="language-python"># Legacy
+obj = OSCAL.from_string(json_str)
+
+# Preferred
+obj = OSCAL.loads(json_str)
+</code></pre>
+<h3 id="retry_importsfailed_href-replacement_href"><code>retry_imports(failed_href, replacement_href)</code></h3>
+<p>Plural alias for <code>retry_import()</code>. Use <code>retry_import()</code> directly.</p></main></body></html>

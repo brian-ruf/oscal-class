@@ -1,0 +1,402 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Import Resolution</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/IMPORTS.md">IMPORTS.md</a> on GitHub</p><h1 id="import-resolution">Import Resolution</h1>
+<p>OSCAL documents reference other documents through <em>import statements</em>.  A profile imports one or more catalogs; an SSP imports a profile; an assessment plan imports an SSP; and so on.  The library resolves those references automatically when a document is loaded, and exposes the results through <code>import_list</code> and <code>import_tree</code>.</p>
+<hr />
+<h2 id="how-imports-are-resolved">How imports are resolved</h2>
+<p>Whenever content reaches <code>ContentState.VALID</code>, the library calls <code>resolve_imports()</code> automatically.  You can also call it manually at any time to force a fresh resolution pass.</p>
+<pre><code class="language-python">from oscal import OSCAL
+
+ssp = OSCAL.load(&quot;my-ssp.xml&quot;)
+
+# import_list is already populated after load
+for entry in ssp.import_list:
+    print(entry[&quot;href_original&quot;], entry[&quot;status&quot;])
+</code></pre>
+<hr />
+<h2 id="import-href-forms">Import href forms</h2>
+<p>Every import statement carries an <code>href</code> attribute that is either a <strong>URI fragment</strong> or a <strong>full URI</strong>.</p>
+<h3 id="uri-fragment-uuid">URI fragment  (<code>#uuid</code>)</h3>
+<p>A fragment-only href like <code>#051a77c1-b61d-4995-8275-dacfe688d510</code> refers to a resource in the document's own <code>back-matter</code> section by UUID.  The library looks up the resource, then attempts to load the content from each <code>rlink</code> in sequence.</p>
+<pre><code class="language-xml">&lt;import href=&quot;#051a77c1-b61d-4995-8275-dacfe688d510&quot;/&gt;
+
+&lt;back-matter&gt;
+  &lt;resource uuid=&quot;051a77c1-b61d-4995-8275-dacfe688d510&quot;&gt;
+    &lt;title&gt;NIST SP 800-53 Rev 5&lt;/title&gt;
+    &lt;description&gt;&lt;p&gt;NIST control catalog&lt;/p&gt;&lt;/description&gt;
+    &lt;rlink href=&quot;catalogs/nist-800-53-rev5.xml&quot;/&gt;
+    &lt;rlink href=&quot;catalogs/nist-800-53-rev5.json&quot;/&gt;
+  &lt;/resource&gt;
+&lt;/back-matter&gt;
+</code></pre>
+<p><code>rlinks</code> are tried in document order.  The library also automatically tries alternate OSCAL format extensions (<code>.xml</code>, <code>.json</code>, <code>.yaml</code>, <code>.yml</code>) for each rlink before moving to the next one.</p>
+<h3 id="full-uri">Full URI</h3>
+<p>Any href that is not a bare fragment is treated as a URI pointing directly to the content.</p>
+<pre><code class="language-xml">&lt;!-- Relative local path --&gt;
+&lt;import href=&quot;catalogs/nist-800-53-rev5.xml&quot;/&gt;
+
+&lt;!-- Absolute local path --&gt;
+&lt;import href=&quot;/data/oscal/catalogs/nist-800-53-rev5.xml&quot;/&gt;
+
+&lt;!-- Remote URL --&gt;
+&lt;import href=&quot;https://raw.githubusercontent.com/usnistgov/oscal-content/main/.../catalog.json&quot;/&gt;
+
+&lt;!-- file:// URI --&gt;
+&lt;import href=&quot;file:///data/oscal/catalogs/nist-800-53-rev5.xml&quot;/&gt;
+</code></pre>
+<p>Relative paths are resolved against the directory that contains the importing document (or the current working directory when content was loaded from memory).</p>
+<hr />
+<h2 id="import-entry-structure">Import entry structure</h2>
+<p><code>import_list</code> is a flat list of dicts, one per import statement.  Successful and failed entries share the same keys:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>href_original</code></td>
+<td><code>str</code></td>
+<td>The raw href from the import statement</td>
+</tr>
+<tr>
+<td><code>href_valid</code></td>
+<td><code>str</code></td>
+<td>The resolved href that successfully loaded (empty on failure)</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td><code>ImportState</code></td>
+<td><code>READY</code>, <code>NOT_LOADED</code>, <code>INVALID</code>, or <code>EXPIRED</code></td>
+</tr>
+<tr>
+<td><code>is_valid</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when the loaded content passed OSCAL validation</td>
+</tr>
+<tr>
+<td><code>is_local</code></td>
+<td><code>bool \| None</code></td>
+<td><code>True</code> for local file, <code>False</code> for remote</td>
+</tr>
+<tr>
+<td><code>is_remote</code></td>
+<td><code>bool \| None</code></td>
+<td>Inverse of <code>is_local</code></td>
+</tr>
+<tr>
+<td><code>is_cached</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> when remote content has a local cache copy</td>
+</tr>
+<tr>
+<td><code>object</code></td>
+<td><code>OSCAL \| None</code></td>
+<td>The loaded OSCAL document (populated on success)</td>
+</tr>
+<tr>
+<td><code>failure</code></td>
+<td><code>ImportFailure \| None</code></td>
+<td>Failure detail (populated on failure; <code>None</code> on success)</td>
+</tr>
+</tbody>
+</table>
+<p><code>import_list</code> is the internal source of truth and is the ONLY place the live
+<code>object</code> is exposed. The <code>import_tree</code> and the <code>failed_imports</code> /
+<code>duplicate_imports</code> / <code>unresolved_imports</code> getters return <strong>safe copies</strong> that
+carry <code>object_uuid</code> instead of the live object (see below).</p>
+<hr />
+<h2 id="import_tree-structure"><code>import_tree</code> structure</h2>
+<p><code>import_tree</code> is a recursive, wire-safe view of the import hierarchy. It is a
+<strong>deep copy</strong> of an internally cached structure — mutating the returned tree does
+not affect the document; call <code>rebuild_import_tree()</code> to force a fresh traversal.</p>
+<p>The tree carries <strong>no live OSCAL objects</strong> (keeping large documents out of the
+payload). Each node — the root and every import — has the <code>import_list</code> fields
+above <strong>except</strong> <code>object</code>, plus:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>object_uuid</code></td>
+<td><code>str \| None</code></td>
+<td>The document's root UUID, or <code>None</code> when not acquired. Pass to <code>get_oscal_object()</code> for the live object.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>str</code></td>
+<td>Model type (e.g. <code>"catalog"</code>) — <code>""</code> when not acquired</td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td><code>str</code></td>
+<td>Metadata title — <code>""</code> when not acquired</td>
+</tr>
+<tr>
+<td><code>oscal_version</code></td>
+<td><code>str</code></td>
+<td>OSCAL version, no <code>v</code> prefix (e.g. <code>"1.1.3"</code>) — <code>""</code> when not acquired</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td><code>str</code></td>
+<td>Document metadata version — <code>""</code> when not acquired</td>
+</tr>
+<tr>
+<td><code>published</code></td>
+<td><code>str</code></td>
+<td>Metadata publication timestamp (RFC-3339) — <code>""</code> when not acquired</td>
+</tr>
+<tr>
+<td><code>last_modified</code></td>
+<td><code>str</code></td>
+<td>Metadata last-modified timestamp (RFC-3339) — <code>""</code> when not acquired</td>
+</tr>
+<tr>
+<td><code>imports</code></td>
+<td><code>list[dict]</code></td>
+<td>Child import nodes (empty when none / unacquired)</td>
+</tr>
+</tbody>
+</table>
+<p>The six summary fields populate only when the object was <strong>successfully
+acquired</strong>; otherwise each is an empty string. <code>import_tree</code> is the single source
+of truth for this schema.</p>
+<h3 id="get_oscal_objectuuid"><code>get_oscal_object(uuid)</code></h3>
+<p>Companion to <code>import_tree</code>: pass a node's <code>object_uuid</code> to obtain the <strong>live</strong>
+imported document (searches this document and its resolved imports depth-first,
+de-duplicating objects shared across import paths). Returns <code>None</code> when not found.</p>
+<pre><code class="language-python">node = profile.import_tree[&quot;imports&quot;][0]
+catalog = profile.get_oscal_object(node[&quot;object_uuid&quot;])   # live OSCAL object, or None
+</code></pre>
+<h3 id="import-getters-return-the-same-node-shape">Import getters return the same node shape</h3>
+<p><code>failed_imports</code>, <code>duplicate_imports</code>, and <code>unresolved_imports</code> return safe-copy
+<strong>flat lists</strong> with the same per-node fields (without the recursive <code>imports</code>
+key). Because failed and duplicate entries never carry a loaded object, in these
+results <code>object_uuid</code> is always <code>None</code> and the six summary fields are always <code>""</code>.</p>
+<hr />
+<h2 id="failure-states">Failure states</h2>
+<p>When an import cannot be resolved, <code>entry["status"]</code> is <code>ImportState.INVALID</code> and <code>entry["failure"]</code> is an <code>ImportFailure</code> instance.</p>
+<h3 id="importfailurecode-values"><code>ImportFailureCode</code> values</h3>
+<h4 id="fragment-back-matter-failures">Fragment / back-matter failures</h4>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FRAGMENT_INVALID_UUID</code></td>
+<td>The fragment (<code>#...</code>) is not a well-formed UUID</td>
+</tr>
+<tr>
+<td><code>RESOURCE_NOT_FOUND</code></td>
+<td>No <code>back-matter/resource</code> with that UUID exists in the document</td>
+</tr>
+<tr>
+<td><code>RESOURCE_NO_VIABLE_CONTENT</code></td>
+<td>The resource was found but has neither <code>rlink</code> nor <code>base64</code> elements</td>
+</tr>
+</tbody>
+</table>
+<h4 id="full-uri-failures">Full URI failures</h4>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LOCAL_NOT_FOUND</code></td>
+<td>The URI resolves to a local path that does not exist or is empty</td>
+</tr>
+<tr>
+<td><code>REMOTE_UNREACHABLE</code></td>
+<td>The remote host could not be reached (network error, DNS failure, HTTP 5xx)</td>
+</tr>
+<tr>
+<td><code>REMOTE_AUTH_REQUIRED</code></td>
+<td>The remote host returned HTTP 401 or 403</td>
+</tr>
+<tr>
+<td><code>REMOTE_UNSUPPORTED</code></td>
+<td>The URI scheme is recognised but not yet supported (e.g. <code>s3://</code>, <code>gs://</code>, <code>az://</code>)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="content-failures">Content failures</h4>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CONTENT_EMPTY</code></td>
+<td>The source responded successfully but returned no content</td>
+</tr>
+<tr>
+<td><code>CONTENT_INVALID</code></td>
+<td>Content was retrieved but failed OSCAL validation</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="the-importfailure-dataclass">The <code>ImportFailure</code> dataclass</h2>
+<pre><code class="language-python">@dataclass
+class ImportFailure:
+    code: ImportFailureCode      # Specific failure reason
+    href_original: str           # Raw href from the import statement
+
+    # Fragment / back-matter context (populated when href starts with &quot;#&quot;)
+    resource_uuid: str        # UUID from the fragment
+    resource_title: str       # Title from the back-matter resource (if found)
+    resource_description: str # Description from the back-matter resource (if found)
+    rlinks_tried: list[str]   # All hrefs that were attempted before giving up
+
+    # URI context (populated for full-URI failures)
+    uri: str                  # The specific URI that caused the final failure
+
+    message: str              # Human-readable detail
+</code></pre>
+<p>The <code>is_fragment_ref</code> property returns <code>True</code> when <code>href_original</code> starts with <code>#</code>, making it easy to branch on failure type without inspecting the code:</p>
+<pre><code class="language-python">for entry in doc.failed_imports:
+    f = entry[&quot;failure&quot;]
+    if f.is_fragment_ref:
+        print(f&quot;Back-matter resource {f.resource_uuid} ({f.resource_title}): {f.code.value}&quot;)
+    else:
+        print(f&quot;URI {f.uri}: {f.code.value}&quot;)
+</code></pre>
+<hr />
+<h2 id="inspecting-failures">Inspecting failures</h2>
+<h3 id="failed_imports-property"><code>failed_imports</code> property</h3>
+<p>Returns only the <code>import_list</code> entries that have a non-<code>None</code> <code>failure</code> field:</p>
+<pre><code class="language-python">profile = OSCAL.load(&quot;my-profile.xml&quot;)
+
+if profile.failed_imports:
+    print(f&quot;{len(profile.failed_imports)} import(s) could not be resolved:&quot;)
+    for entry in profile.failed_imports:
+        f = entry[&quot;failure&quot;]
+        print(f&quot;  [{f.code.value}] {entry['href_original']} — {f.message}&quot;)
+</code></pre>
+<h3 id="branching-by-failure-code">Branching by failure code</h3>
+<pre><code class="language-python">from oscal.oscal_content import ImportFailureCode
+
+for entry in profile.failed_imports:
+    f = entry[&quot;failure&quot;]
+
+    match f.code:
+        case ImportFailureCode.FRAGMENT_INVALID_UUID:
+            print(f&quot;Bad UUID in import href: {entry['href_original']}&quot;)
+
+        case ImportFailureCode.RESOURCE_NOT_FOUND:
+            print(f&quot;No back-matter resource with UUID {f.resource_uuid}&quot;)
+
+        case ImportFailureCode.RESOURCE_NO_VIABLE_CONTENT:
+            print(f&quot;Resource '{f.resource_title}' ({f.resource_uuid}) has no rlinks or base64&quot;)
+
+        case ImportFailureCode.LOCAL_NOT_FOUND:
+            print(f&quot;File not found: {f.uri}&quot;)
+
+        case ImportFailureCode.REMOTE_AUTH_REQUIRED:
+            print(f&quot;Authentication required: {f.uri}&quot;)
+
+        case ImportFailureCode.REMOTE_UNREACHABLE:
+            print(f&quot;Remote host unreachable: {f.uri}&quot;)
+
+        case ImportFailureCode.REMOTE_UNSUPPORTED:
+            print(f&quot;Unsupported URI scheme: {f.uri}&quot;)
+</code></pre>
+<hr />
+<h2 id="retry-overview">Retry (overview)</h2>
+<p>When an import fails, the calling module can supply a replacement source and call <code>resolve_imports()</code> again.  The retry source can be any of the following:</p>
+<ul>
+<li><strong>A URI fragment</strong> — <code>#uuid</code> pointing to an alternative back-matter resource you have added to the document</li>
+<li><strong>A full URI</strong> — an alternate local path or remote URL where the content is available</li>
+<li><strong>Inline content</strong> — the raw XML, JSON, or YAML string of the imported document</li>
+</ul>
+<p>Full retry API details are covered in <strong><a href="IMPORTING_CONTROLS.md">IMPORTING_CONTROLS.md</a></strong>.</p>
+<hr />
+<h2 id="example-profile-with-back-matter-imports">Example: profile with back-matter imports</h2>
+<pre><code class="language-python">from oscal import OSCAL
+from oscal.oscal_content import ImportFailureCode
+
+profile = OSCAL.load(&quot;my-profile.xml&quot;)
+
+# All imports already resolved — check for failures
+if not profile.failed_imports:
+    print(&quot;All imports resolved successfully.&quot;)
+else:
+    for entry in profile.failed_imports:
+        f = entry[&quot;failure&quot;]
+
+        if f.code == ImportFailureCode.LOCAL_NOT_FOUND:
+            # The rlink pointed to a file that was moved; provide the new path
+            print(f&quot;Suggest alternate path for: {f.href_original}&quot;)
+
+        elif f.code == ImportFailureCode.RESOURCE_NOT_FOUND:
+            # The document references a resource UUID that is not in back-matter
+            print(f&quot;Missing resource UUID: {f.resource_uuid}&quot;)
+
+        elif f.code == ImportFailureCode.REMOTE_AUTH_REQUIRED:
+            # Need credentials — provide authenticated content directly
+            print(f&quot;Auth needed for: {f.uri}&quot;)
+</code></pre>
+<hr />
+<h2 id="example-building-a-simple-failure-report">Example: building a simple failure report</h2>
+<pre><code class="language-python">from oscal import OSCAL
+
+def import_report(path: str) -&gt; str:
+    doc = OSCAL.load(path)
+    lines = [f&quot;Import report: {doc.title} ({doc.model})&quot;]
+    lines.append(f&quot;  Total imports : {len(doc.import_list)}&quot;)
+    lines.append(f&quot;  Resolved      : {sum(1 for e in doc.import_list if e['failure'] is None)}&quot;)
+    lines.append(f&quot;  Failed        : {len(doc.failed_imports)}&quot;)
+
+    for entry in doc.failed_imports:
+        f = entry[&quot;failure&quot;]
+        lines.append(f&quot;\n  ✗ {entry['href_original']}&quot;)
+        lines.append(f&quot;      code    : {f.code.value}&quot;)
+        lines.append(f&quot;      message : {f.message}&quot;)
+        if f.is_fragment_ref and f.resource_title:
+            lines.append(f&quot;      resource: {f.resource_title} ({f.resource_uuid})&quot;)
+        elif f.uri:
+            lines.append(f&quot;      uri     : {f.uri}&quot;)
+        if f.rlinks_tried:
+            lines.append(f&quot;      tried   : {', '.join(f.rlinks_tried)}&quot;)
+
+    return &quot;\n&quot;.join(lines)
+
+print(import_report(&quot;profiles/fedramp-high.xml&quot;))
+</code></pre></main></body></html>

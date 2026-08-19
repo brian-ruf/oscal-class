@@ -1,0 +1,133 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Logging in oscal</title><style>
+:root{--bg:#fff;--fg:#1a202c;--muted:#5b6675;--line:#e2e8f0;--accent:#2b6cb0;--code:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--fg);background:var(--bg);line-height:1.6}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+nav.top{border-bottom:1px solid var(--line);padding:.8rem 2rem;display:flex;gap:1.2rem;font-size:.9rem;flex-wrap:wrap}
+main{max-width:48rem;margin:0 auto;padding:1.5rem 2rem 4rem}
+main img{max-width:100%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:.7rem 1rem;overflow-x:auto}
+code{background:var(--code);border-radius:4px;padding:.1rem .3rem}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
+th{background:var(--code)}
+blockquote{border-left:3px solid var(--line);margin:1rem 0;padding:.2rem 1rem;color:var(--muted)}
+.source-link{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem}
+.index-list{list-style:none;padding:0}
+.index-list li{margin:.4rem 0;font-size:1.05rem}
+</style></head><body><nav class="top"><a href="index.html">Docs Home</a><a href="api.html">API Reference</a><a href="api-llm.html">API Reference (LLM)</a><a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/../..">Repository</a></nav><main><p class="source-link">Source: <a href="https://github.com/brian-ruf/oscal-class/blob/main/docs/LOGGING.md">LOGGING.md</a> on GitHub</p><h1 id="logging-in-oscal">Logging in <code>oscal</code></h1>
+<p><code>oscal</code> uses the Python standard-library <code>logging</code> module and follows the
+standard "library" contract:</p>
+<ul>
+<li>Every module logs to a named logger obtained with <code>logging.getLogger(__name__)</code>
+  (e.g. <code>oscal.oscal_content</code>, <code>oscal.oscal_support</code>, <code>oscal.oscal_converter</code>, ...).
+  These are all descendants of the top-level <code>oscal</code> logger.</li>
+<li>The package installs a single <code>logging.NullHandler</code> on the <code>oscal</code> logger. The
+  library <strong>never</strong> adds a real handler, never writes to a file, never calls
+  <code>logging.basicConfig()</code>, and never touches the root logger.</li>
+</ul>
+<p>The practical consequences:</p>
+<ul>
+<li>The library is <strong>silent by default</strong>. <code>INFO</code> and <code>DEBUG</code> messages are suppressed
+  unless you opt in.</li>
+<li><code>WARNING</code>/<code>ERROR</code>/<code>CRITICAL</code> will surface if — and only where — <em>your</em>
+  application has configured logging. If your app has configured nothing at all,
+  Python's built-in "last resort" prints <code>WARNING</code> and above to <code>stderr</code>. (This is
+  standard-library behaviour, not something <code>oscal</code> does.)</li>
+<li><strong>You</strong> decide entirely where logs go and how log files are managed. The library
+  contributes log <em>records</em>; your handlers decide the destination, formatting,
+  rotation, retention, etc.</li>
+</ul>
+<blockquote>
+<p>Note: <code>LoggableMixin</code> / <code>setup_logging()</code> (previously provided via <code>ruf_common</code>)
+has been removed. Configuring destinations and files is now entirely the calling
+application's responsibility, as described below.</p>
+</blockquote>
+<h2 id="turning-logging-on">Turning logging on</h2>
+<p>Enabling is a one-liner: point a handler at the <code>oscal</code> logger and set the level
+you want.</p>
+<pre><code class="language-python">import logging
+import oscal
+
+# Send oscal's logs to the console at DEBUG.
+logging.basicConfig(level=logging.WARNING)          # your app's root config
+logging.getLogger(&quot;oscal&quot;).setLevel(logging.DEBUG)  # this library, verbose
+</code></pre>
+<p><code>basicConfig</code> installs a handler on the <strong>root</strong> logger; because <code>oscal</code> loggers
+propagate, their records reach it. The per-library <code>setLevel</code> call is what turns
+<code>INFO</code>/<code>DEBUG</code> on for this library specifically without making the rest of your
+application verbose.</p>
+<h3 id="per-library-and-finer-grained-control">Per-library and finer-grained control</h3>
+<p>The logger name gives you as much granularity as you want:</p>
+<pre><code class="language-python">import logging
+
+logging.getLogger(&quot;oscal&quot;).setLevel(logging.INFO)                # whole library
+logging.getLogger(&quot;oscal.oscal_support&quot;).setLevel(logging.DEBUG)  # just one module
+</code></pre>
+<h3 id="sending-logs-somewhere-other-than-the-console">Sending logs somewhere other than the console</h3>
+<p>Attach whatever handler you like directly to the library logger — a file, a
+rotating file, syslog, etc. The library never does this for you:</p>
+<pre><code class="language-python">import logging
+from logging.handlers import RotatingFileHandler
+
+handler = RotatingFileHandler(&quot;oscal.log&quot;, maxBytes=10_000_000, backupCount=3)
+handler.setFormatter(logging.Formatter(
+    &quot;%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s&quot;
+))
+
+log = logging.getLogger(&quot;oscal&quot;)
+log.setLevel(logging.DEBUG)
+log.addHandler(handler)
+</code></pre>
+<h3 id="turning-it-back-off">Turning it back off</h3>
+<pre><code class="language-python">import logging
+logging.getLogger(&quot;oscal&quot;).setLevel(logging.WARNING)  # silence INFO/DEBUG again
+</code></pre>
+<h2 id="advanced-incorporating-oscal-logs-into-loguru">Advanced: incorporating <code>oscal</code> logs into loguru</h2>
+<p>If your application uses <a href="https://loguru.readthedocs.io/">loguru</a> instead of the
+standard library, <code>oscal</code>'s records won't reach loguru automatically — the two
+systems are separate. <code>oscal</code> emits standard-library records; loguru manages its
+own sinks. You bridge them <strong>once, in your application</strong>, by adding a small stdlib
+handler that forwards records into loguru (loguru's documented <code>InterceptHandler</code>
+pattern). <code>oscal</code> needs no changes — it just keeps emitting records.</p>
+<pre><code class="language-python">import logging
+import sys
+from loguru import logger
+
+# --- your application's own loguru configuration (sinks, files, formats) ---
+logger.remove()                                   # drop loguru's default handler
+logger.add(sys.stderr, level=&quot;INFO&quot;)              # console
+logger.add(&quot;app.log&quot;, level=&quot;DEBUG&quot;,              # rotating file, managed by YOU
+           rotation=&quot;10 MB&quot;, retention=&quot;1 week&quot;, compression=&quot;zip&quot;)
+
+# --- bridge: forward stdlib records (from oscal, ruf_common, etc.) into loguru ---
+class InterceptHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+
+# Route just this library into loguru, and choose how verbose it should be:
+lib = logging.getLogger(&quot;oscal&quot;)
+lib.setLevel(logging.DEBUG)          # let DEBUG/INFO through for oscal
+lib.addHandler(InterceptHandler())   # send its records to your loguru sinks
+lib.propagate = False                # optional: don't also hit the stdlib root logger
+</code></pre>
+<p>From here on, everything <code>oscal</code> logs flows into whatever loguru sinks your
+application configured (console, <code>app.log</code>, etc.), formatted and rotated entirely
+by your application's rules.</p>
+<blockquote>
+<p>Incorporating <code>oscal</code> into <strong>other</strong> logging frameworks is typically the same
+shape: because <code>oscal</code> emits ordinary standard-library log records, any framework
+that can consume them works. For example, <code>structlog</code> reads stdlib records via
+its <code>ProcessorFormatter</code>; you attach that formatter's handler to the <code>oscal</code>
+logger exactly as shown above. Only the "install a handler that adapts stdlib
+records into framework X" step differs.</p>
+<p><code>oscal</code> depends on <code>ruf_common</code>, which follows the same conventions under the
+<code>ruf_common</code> logger name. Enable it the same way if you want its logs too — see
+that library's <code>docs/LOGGING.md</code>.</p>
+</blockquote></main></body></html>
