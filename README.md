@@ -63,7 +63,7 @@ pip install oscal
 Latest pre-released development version:
 
 ```bash
-pip install git+https://github.com/brian-ruf/oscal-class.git@develop#egg=oscal
+pip install git+https://github.com/brian-ruf/oscal-class.git@develop
 ```
 
 ---
