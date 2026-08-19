@@ -1,3 +1,6 @@
+---
+---
+
 # Phase 5d — Shared Mode (multi-process / multi-user workspaces)
 
 Status: **not started.** This document captures the intention for 5d and the

@@ -1,0 +1,9 @@
+title: oscal-class Documentation
+description: Guides and API reference for the OSCAL Python library.
+theme: minima
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

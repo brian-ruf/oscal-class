@@ -96,30 +96,35 @@ jobs:
       - name: Generate human-oriented API docs
         run: python -m oscal.gendocs --mode human --output docs/api.html
 
-      - name: Render markdown guides to HTML
-        run: python oscal/render_markdown_docs.py
-
       - name: Commit refreshed assets if changed
         run: |
-          if git diff --quiet -- oscal/data/oscal_support.zip docs/*.html; then
-            echo "No changes to support data or docs; nothing to commit."
+          if git diff --quiet -- oscal/data/oscal_support.zip docs/api-llm.html docs/api.html; then
+            echo "No changes to support data or API docs; nothing to commit."
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add oscal/data/oscal_support.zip docs/*.html
-            git commit -m "chore: refresh support data and docs [skip ci]"
+            git add oscal/data/oscal_support.zip docs/api-llm.html docs/api.html
+            git commit -m "chore: refresh support data and API docs [skip ci]"
             git push origin HEAD:main
           fi
 
-      # Uploaded from this run's own workspace, not re-checked-out from main, so
-      # deploy-pages always ships the docs/ this job just generated -- no race
-      # with the commit above landing or with GitHub's own branch-watching Pages
-      # build (which this Actions-based deployment replaces; see repo Settings ->
-      # Pages -> Source: GitHub Actions).
+      # Built from this run's own workspace, not re-checked-out from main, so the
+      # site always reflects the api docs this job just generated -- no race with
+      # the commit above landing or with GitHub's own branch-watching Pages build
+      # (which this Actions-based deployment replaces; see repo Settings -> Pages
+      # -> Source: GitHub Actions). The guide .md files under docs/ carry minimal
+      # Jekyll front matter (see docs/_config.yml) so this build renders them to
+      # HTML on the fly -- no generated .html twin is ever committed to the repo.
+      - name: Build Jekyll site
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs
+          destination: ./_site
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/
+          path: ./_site
 
   deploy-pages:
     name: Deploy API docs to GitHub Pages
