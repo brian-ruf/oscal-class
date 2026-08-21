@@ -87,6 +87,34 @@ SCHEMA_FILE_PATTERNS = {
     "_schema.json": "json-schema",              # OSCAL JSON schema validation files
 }
 
+_KNOWN_CATALOGS = {
+    "nist-sp800-53r5": {
+        "canonical": "https://doi.org/10.6028/NIST.SP.800-53r5",
+        "oscal":     "https://raw.githubusercontent.com/usnistgov/OSCAL/main/content/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json",
+        "doted-notation": True,
+        "use-skin": "nist-rmf"
+    },
+}
+
+_KNOWN_EXTENSION_NAMESPACES = {
+    NIST_OSCAL_EXTENSION_NAMESPACE: {
+        "title": "NIST OSCAL Default Namespace",
+        "label": "Core OSCAL",
+        "description": "The NIST OSCAL default namespace.",},
+    NIST_RMF_EXTENSION_NAMESPACE: {
+        "title": "NIST Risk Management Framework (RMF) Extension",
+        "label": "NIST RMF",
+        "description": "The NIST RMF extension namespace.",},
+    "http://fedramp.gov/ns/oscal": {
+        "title": "FedRAMP Extension",
+        "label": "FedRAMP",
+        "description": "The FedRAMP OSCAL extension namespace.",},
+    "http://cybercraft.app/ns/oscal": {
+        "title": "CyberCraft OSCAL Extension",
+        "label": "CyberCraft",
+        "description": "The CyberCraft OSCAL extension namespace.",},
+}
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # GitHub root URLs
 GitHub_API_root = "https://api.github.com"
@@ -298,6 +326,8 @@ class OSCALSupport:
         self.versions   = {}        # Supported OSCAL versions available within the support database, and support references
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
+        self.known_catalogs = _KNOWN_CATALOGS  # Known OSCAL catalogs with canonical and OSCAL locations
+        self.known_extensions = _KNOWN_EXTENSION_NAMESPACES  # Known OSCAL extensions
         self._cache     = {}        # Internal cache for support operations
         self._update_stats = None   # Populated during update(); None when not running an update
 

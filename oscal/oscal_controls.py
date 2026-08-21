@@ -362,6 +362,50 @@ def _all_tree_control_nodes(nodes: list) -> list:
     return out
 
 
+# Sentinel: an id was not found in a given catalog (distinct from "found, no parent").
+_MISSING = object()
+
+
+def _build_catalog_parent_map(tree: list) -> dict:
+    """Map every control id to its enclosing CONTROL id within a source tree.
+
+    Used by REFERENTIAL merge to recover control→control containment from a source
+    catalog. A control sitting directly under a group (or at the root) maps to
+    ``None`` (it has no *control* parent); a nested enhancement maps to the id of
+    the control that contains it.
+
+    Args:
+        tree (list, required): A source object's ``controls_tree`` node list.
+
+    Returns:
+        dict: ``{control_id: parent_control_id | None}`` for every control node.
+    """
+    pmap: dict[str, Optional[str]] = {}
+
+    def walk(nodes: list, parent_ctrl: Optional[str]) -> None:
+        for n in nodes:
+            if n.get("group"):
+                walk(n.get("children", []), None)   # a group resets control ancestry
+            else:
+                pmap[n.get("id", "")] = parent_ctrl
+                walk(n.get("children", []), n.get("id"))
+
+    walk(tree, None)
+    return pmap
+
+
+def _dotted_parent(cid: str) -> Optional[str]:
+    """Return the OSCAL dotted-notation parent id, or None.
+
+    NIST-style enhancement ids nest by a trailing ``.N`` (``ac-3.14`` under
+    ``ac-3``, ``ac-3.14.2`` under ``ac-3.14``). The family dash (``ac-3``) is not a
+    nesting separator, so a base control id yields ``None``.
+    """
+    if cid and "." in cid:
+        return cid.rsplit(".", 1)[0]
+    return None
+
+
 def _node_source_id(node: dict) -> Optional[str]:
     """Return a node's id in its immediate import source (for matching alter control-ids)."""
     return (node.get("origin") or {}).get("source_id")
@@ -599,6 +643,74 @@ def _dedup_exact(items: list) -> list:
             seen.add(key)
             out.append(copy.deepcopy(item))
     return out
+
+
+def _merge_metadata_by_key(metas: list, field: str, key: str) -> list:
+    """Collect ``field`` items across ordered metadata dicts, use-first on ``key``.
+
+    Used to carry ``roles`` (by ``id``), ``parties`` and ``locations`` (by ``uuid``)
+    from the profile and its imports into the resolved catalog. On a key collision the
+    first-seen item wins (earlier sources take precedence); keyless items are skipped.
+
+    Args:
+        metas (list, required): Metadata dicts in precedence order (profile first).
+        field (str, required): The metadata array to merge (e.g. ``"roles"``).
+        key (str, required): The identity key within each item (``"id"``/``"uuid"``).
+
+    Returns:
+        list: Deep copies of the merged items, in first-seen order.
+    """
+    seen: set = set()
+    out: list = []
+    for meta in metas:
+        for item in meta.get(field, []) or []:
+            if not isinstance(item, dict):
+                continue
+            k = item.get(key)
+            if k is None or k in seen:
+                continue
+            seen.add(k)
+            out.append(copy.deepcopy(item))
+    return out
+
+
+def _merge_responsible_parties(metas: list) -> list:
+    """Merge ``responsible-parties`` across ordered metadata dicts, accumulating parties.
+
+    Grouped by ``role-id``: the first occurrence seeds the entry (its non-party fields
+    win), and every later occurrence's ``party-uuids`` are unioned in (order-preserving,
+    de-duplicated). This lets, e.g., a ``creator`` role-id present in two imports end up
+    as a single entry whose ``party-uuids`` gather both sources' parties.
+
+    Args:
+        metas (list, required): Metadata dicts in precedence order (profile first).
+
+    Returns:
+        list: Deep copies of the merged responsible-party entries, in first-seen order.
+    """
+    order: list = []
+    by_role: dict = {}
+    for meta in metas:
+        for rp in meta.get("responsible-parties", []) or []:
+            if not isinstance(rp, dict):
+                continue
+            rid = rp.get("role-id")
+            if rid is None:
+                continue
+            incoming = rp.get("party-uuids") or []
+            if rid not in by_role:
+                entry = copy.deepcopy(rp)
+                entry["party-uuids"] = list(dict.fromkeys(incoming))  # dedup, keep order
+                by_role[rid] = entry
+                order.append(rid)
+            else:
+                existing = by_role[rid].setdefault("party-uuids", [])
+                have = set(existing)
+                for pu in incoming:
+                    if pu not in have:
+                        existing.append(pu)
+                        have.add(pu)
+    return [by_role[rid] for rid in order]
 
 
 def _newest_timestamp(values: list) -> Optional[str]:
@@ -1957,6 +2069,9 @@ class Profile(OSCAL):
         self.resolution_status = ResolutionStatus.UNRESOLVED
         self.resolved_datetime = datetime.now(timezone.utc)
         self.resolution_ttl = 0
+        # Control-tree assembly strategy (library option, not OSCAL content).
+        # REFERENTIAL (primary) reconstructs source hierarchy; POSITIONAL is legacy.
+        self._merge_strategy = MergeStrategy.REFERENTIAL
         # controls_tree is the source of truth for control/group scope & organization.
         # Each node is {id, label, title, group, origin, children}; ``origin`` links the
         # node to its immediate import source: {object_uuid, source_id, import_index}.
@@ -2008,6 +2123,26 @@ class Profile(OSCAL):
             self.catalog = None
             self.resolution_status = ResolutionStatus.UNRESOLVED
             self.resolution_state = "unresolved"
+
+    # -------------------------------------------------------------------------
+    @property
+    def merge_strategy(self) -> "MergeStrategy":
+        """The control-tree assembly strategy (:class:`MergeStrategy`).
+
+        Defaults to ``REFERENTIAL`` (reconstruct source hierarchy). Assigning a new
+        value marks the controls_tree stale, drops any resolved catalog, and rebuilds
+        the tree so subsequent reads reflect the chosen strategy.
+        """
+        return self._merge_strategy
+
+    @merge_strategy.setter
+    def merge_strategy(self, value) -> None:
+        value = MergeStrategy(value)
+        if value != self._merge_strategy:
+            self._merge_strategy = value
+            self._tree_dirty = True
+            self._invalidate_resolution()
+            self._ensure_controls_tree()
 
     # -------------------------------------------------------------------------
     def validate(self, format: str = "") -> bool:
@@ -2097,11 +2232,233 @@ class Profile(OSCAL):
             self._place_tree_import(result, src_tree, selected, source_obj.uuid,
                                     mode, combine, idx, ctrl_nodes, group_nodes)
 
+        # REFERENTIAL (primary): reconstruct control→control containment from source
+        # provenance so an enhancement nests under its parent even when an intermediate
+        # profile dropped the parent. POSITIONAL (legacy) skips this and keeps the
+        # immediate-import structure. Only meaningful for as-is (flat has no nesting).
+        if self._merge_strategy == MergeStrategy.REFERENTIAL and mode == "as-is":
+            result = self._renest_by_hierarchy(result)
+
         result = _prune_empty_group_nodes(result)
         if wrap_root:
             result = self._wrap_root_controls(result)
         self.controls_tree = result
         self._tree_dirty = False
+
+    # -------------------------------------------------------------------------
+    def _canonical_url_of(self, cat) -> Optional[str]:
+        """Return a catalog's canonical URL, or None.
+
+        Reads ``metadata.link`` with ``rel="canonical"``: the href value directly, or,
+        when it is a ``#uuid`` fragment, the first ``rlink.href`` of the referenced
+        back-matter resource. This is the location-independent identity used to match a
+        source against ``OSCALSupport.known_catalogs`` (see [[oscal_support_db_bundling]]).
+        """
+        root = cat._dict.get("catalog", {}) if isinstance(getattr(cat, "_dict", None), dict) else {}
+        md = root.get("metadata", {}) or {}
+        resources = {r.get("uuid"): r
+                     for r in root.get("back-matter", {}).get("resources", [])
+                     if isinstance(r, dict)}
+        for link in md.get("links", []) or []:
+            if link.get("rel") != "canonical":
+                continue
+            href = str(link.get("href", "")).strip()
+            if href.startswith("#"):
+                res = resources.get(href[1:])
+                for rl in (res or {}).get("rlinks", []):
+                    if rl.get("href"):
+                        return rl["href"]
+            elif href:
+                return href
+        return None
+
+    # -------------------------------------------------------------------------
+    def _catalog_uses_dotted(self, cat) -> bool:
+        """Whether dotted-notation may supply hierarchy for this catalog.
+
+        True only when the catalog is a *known* catalog (matched by canonical URL against
+        ``OSCALSupport.known_catalogs``) whose entry sets ``doted-notation: true``. The
+        catalog's own asserted structure is always honored regardless; dotted notation is
+        a fallback for catalogs that are flat but follow the NIST enhancement id convention.
+        """
+        url = self._canonical_url_of(cat)
+        if not url:
+            return False
+        try:
+            from .oscal_support import get_support
+            known = getattr(get_support(), "known_catalogs", {}) or {}
+        except Exception as error:  # pragma: no cover - support DB optional
+            logger.debug(f"_catalog_uses_dotted: support unavailable ({error}).")
+            return False
+        for entry in known.values():
+            if entry.get("canonical") == url:
+                return bool(entry.get("doted-notation"))
+        return False
+
+    # -------------------------------------------------------------------------
+    def _renest_by_hierarchy(self, result: list) -> list:
+        """Reconstruct control→control containment on a placed as-is tree (REFERENTIAL).
+
+        Takes the positionally-placed ``result`` (controls sitting under their group
+        ancestry, duplicates already combined) and re-parents each control under its
+        source-defined control parent when that parent is present in the result. Parent
+        selection is a hybrid, per the ``ed`` overlay-chain case:
+
+          1. **use-ancestor** — trace the control's ``origin`` chain to its terminal
+             source catalog and adopt the parent that catalog asserts (or, for a known
+             ``doted-notation`` catalog, the dotted parent when the catalog is flat).
+          2. **use-first** — if provenance yields nothing, consult the reachable terminal
+             catalogs in import order and take the first that defines the control.
+          3. **climb** — if the chosen parent is not present, walk up the ancestor chain
+             to the nearest present control; failing that, the control stays under its
+             group (or root, later wrapped by :meth:`_wrap_root_controls`).
+
+        A catalog-asserted relationship is always honored; the dotted convention is used
+        only for known catalogs flagged for it. Returns the re-nested node list.
+        """
+        # --- index the placed tree ------------------------------------------------
+        node_by_id: dict[str, dict] = {}
+        group_by_id: dict[str, dict] = {}
+        phase1_group: dict[str, Optional[str]] = {}   # cid -> nearest enclosing group id
+        order: list[str] = []                          # controls in placement order
+
+        def scan(nodes: list, cur_group: Optional[str]) -> None:
+            for n in nodes:
+                if n.get("group"):
+                    group_by_id[n.get("id", "")] = n
+                    scan(n.get("children", []), n.get("id"))
+                else:
+                    cid = n.get("id", "")
+                    node_by_id[cid] = n
+                    phase1_group[cid] = cur_group
+                    order.append(cid)
+                    scan(n.get("children", []), cur_group)
+
+        scan(result, None)
+        if not node_by_id:
+            return result
+
+        # --- collect reachable terminal catalogs in import order ------------------
+        catalogs: list = []
+        seen_uuid: set = set()
+
+        def collect(prof) -> None:
+            try:
+                srcs, _ = prof._resolution_sources()
+            except Exception:
+                return
+            for _imp, obj in srcs:
+                u = getattr(obj, "uuid", None)
+                if u in seen_uuid:
+                    continue
+                seen_uuid.add(u)
+                if getattr(obj, "model", None) == "catalog":
+                    catalogs.append(obj)
+                elif hasattr(obj, "_resolution_sources"):
+                    collect(obj)
+
+        collect(self)
+
+        # --- memoized catalog lookups --------------------------------------------
+        pmap_cache: dict[str, dict] = {}
+        doted_cache: dict[str, bool] = {}
+        idx_cache: dict[str, dict] = {}
+
+        def cat_pmap(cat) -> dict:
+            u = cat.uuid
+            if u not in pmap_cache:
+                pmap_cache[u] = _build_catalog_parent_map(getattr(cat, "controls_tree", []) or [])
+            return pmap_cache[u]
+
+        def cat_doted(cat) -> bool:
+            u = cat.uuid
+            if u not in doted_cache:
+                doted_cache[u] = self._catalog_uses_dotted(cat)
+            return doted_cache[u]
+
+        def obj_ctrl_index(obj) -> dict:
+            u = obj.uuid
+            if u not in idx_cache:
+                idx_cache[u] = _index_tree_controls(getattr(obj, "controls_tree", []) or [])
+            return idx_cache[u]
+
+        def parent_in_catalog(cat, cid: str):
+            pmap = cat_pmap(cat)
+            if cid not in pmap:
+                return _MISSING
+            p = pmap[cid]
+            if p is not None:
+                return p                      # catalog-asserted parent — always honored
+            if cat_doted(cat):
+                return _dotted_parent(cid)    # flat known catalog: fall back to dotted
+            return None
+
+        def provenance_parent(origin):
+            """use-ancestor: follow the origin chain to its terminal catalog."""
+            seen: set = set()
+            uuid = (origin or {}).get("object_uuid")
+            sid = (origin or {}).get("source_id")
+            while uuid and uuid not in seen:
+                seen.add(uuid)
+                obj = self.get_oscal_object(uuid)
+                if obj is None:
+                    return _MISSING
+                if getattr(obj, "model", None) == "catalog":
+                    return parent_in_catalog(obj, sid)
+                nn = obj_ctrl_index(obj).get(sid)
+                if nn is None or not nn.get("origin"):
+                    return _MISSING
+                uuid = nn["origin"].get("object_uuid")
+                sid = nn["origin"].get("source_id")
+            return _MISSING
+
+        def use_first_parent(cid: str):
+            for cat in catalogs:
+                r = parent_in_catalog(cat, cid)
+                if r is not _MISSING:
+                    return r
+            return _MISSING
+
+        def canonical_parent(cid: str, node: dict) -> Optional[str]:
+            r = provenance_parent(node.get("origin"))
+            if r is _MISSING:
+                r = use_first_parent(cid)
+            return None if (r is _MISSING or r is None) else r
+
+        def present_parent(cid: str, node: dict) -> Optional[str]:
+            """The nearest present control ancestor of cid, or None."""
+            target = canonical_parent(cid, node)
+            guard: set = {cid}
+            while target is not None and target not in guard:
+                guard.add(target)
+                if target in node_by_id:
+                    return target
+                nxt = use_first_parent(target)           # climb an absent ancestor
+                target = None if (nxt is _MISSING or nxt is None) else nxt
+            return None
+
+        # --- rebuild: strip controls, re-attach under computed parents ------------
+        for g in group_by_id.values():
+            g["children"] = [c for c in g["children"] if c.get("group")]
+        for n in node_by_id.values():
+            n["children"] = []
+
+        new_root_groups = [n for n in result if n.get("group")]
+        root_controls: list = []
+
+        for cid in order:
+            node = node_by_id[cid]
+            pp = present_parent(cid, node)
+            if pp is not None and pp != cid:
+                node_by_id[pp]["children"].append(node)
+                continue
+            gid = phase1_group.get(cid)
+            if gid is not None and gid in group_by_id:
+                group_by_id[gid]["children"].append(node)
+            else:
+                root_controls.append(node)
+
+        return new_root_groups + root_controls
 
     # -------------------------------------------------------------------------
     def _wrap_root_controls(self, tree: list) -> list:
@@ -3146,6 +3503,24 @@ class Profile(OSCAL):
         if props:
             meta_obj["props"] = props
 
+        # Carry roles/parties/locations/responsible-parties from the profile and its
+        # (transitive) imports. roles/parties/locations use-first on their identity key;
+        # responsible-parties accumulate party-uuids per role-id. Profile metadata takes
+        # precedence (listed first).
+        ordered_metas = [prof_meta, *all_metas]
+        roles = _merge_metadata_by_key(ordered_metas, "roles", "id")
+        locations = _merge_metadata_by_key(ordered_metas, "locations", "uuid")
+        parties = _merge_metadata_by_key(ordered_metas, "parties", "uuid")
+        resp_parties = _merge_responsible_parties(ordered_metas)
+        if roles:
+            meta_obj["roles"] = roles
+        if locations:
+            meta_obj["locations"] = locations
+        if parties:
+            meta_obj["parties"] = parties
+        if resp_parties:
+            meta_obj["responsible-parties"] = resp_parties
+
     # -------------------------------------------------------------------------
     def _carry_backmatter(self, target: "Catalog") -> None:
         """Copy back-matter resources referenced by the resolved catalog, preserving uuids.
@@ -3575,6 +3950,27 @@ class ResolutionStatus(str, Enum):
     RESOLVED     = "resolved"
     BLOCKED      = "blocked"
     EXPIRED      = "expired"
+
+
+class MergeStrategy(str, Enum):
+    """How a Profile assembles its ``controls_tree`` under an ``as-is`` merge.
+
+    This is a library processing option, not OSCAL content — it is not serialized
+    into the profile document.
+
+    Members:
+        REFERENTIAL (str): "referential" — the primary/default logic. Reconstructs
+            control containment from source provenance so a selected enhancement
+            nests under its selected parent (e.g. ``ac-3.14`` under ``ac-3``) even
+            when an intermediate profile selected the child without its parent. The
+            NIST profile-resolution spec is silent on this; REFERENTIAL honors the
+            hierarchy defined at the end of each import branch (the source catalog).
+        POSITIONAL (str): "positional" — the secondary/legacy logic. Preserves each
+            immediate import's presented structure; a child selected without its
+            parent is promoted to its group and remains a peer of its parent.
+    """
+    REFERENTIAL = "referential"
+    POSITIONAL  = "positional"
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Register model classes so OSCAL factory methods return typed instances.
