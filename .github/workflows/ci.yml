@@ -107,3 +107,38 @@ jobs:
             git commit -m "chore: refresh support data and API docs [skip ci]"
             git push origin HEAD:main
           fi
+
+      # Built from this run's own workspace, not re-checked-out from main, so the
+      # site always reflects the api docs this job just generated -- no race with
+      # the commit above landing or with GitHub's own branch-watching Pages build
+      # (which this Actions-based deployment replaces; see repo Settings -> Pages
+      # -> Source: GitHub Actions). The guide .md files under docs/ carry minimal
+      # Jekyll front matter (see docs/_config.yml) so this build renders them to
+      # HTML on the fly -- no generated .html twin is ever committed to the repo.
+      - name: Build Jekyll site
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs
+          destination: ./_site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy-pages:
+    name: Deploy API docs to GitHub Pages
+    needs: sync-release-assets
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

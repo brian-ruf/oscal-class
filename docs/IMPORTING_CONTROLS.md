@@ -1,3 +1,6 @@
+---
+---
+
 # Importing Controls
 
 When importing a profile or catalog for use in a Component Definition, SSP or other models as use cases arise.

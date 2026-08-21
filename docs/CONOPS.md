@@ -1,3 +1,6 @@
+---
+---
+
 # Concept of Operations (ConOps)
 
 The OSCAL Class is designed to support any version of OSCAL and all published models. It is further designed to be used in air gapped environments where Internet connectivity may not be available.
