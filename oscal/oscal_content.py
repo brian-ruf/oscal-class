@@ -2959,15 +2959,17 @@ class OSCAL:
     # -------------------------------------------------------------------------
     # Kinds of element the import-tree resolver can locate, mapped to how they are
     # identified (uuid vs id). Extensible for model-specific needs.
-    _RESOLVE_KINDS = ("resource", "role", "party", "control", "group", "param", "part")
+    _RESOLVE_KINDS = ("resource", "role", "party", "location", "responsible-party",
+                      "control", "group", "param", "part")
 
     def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None) -> Optional[dict]:
         """Resolve an id/uuid by searching this document and its import tree.
 
         OSCAL cross-references (``href="#..."``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id) or ``party`` (by uuid), or a ``control``/``group``/``param``/``part`` (by id).
-        This walks ``self`` first, then each imported document depth-first (de-duplicated,
+        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
+        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
         Args:
@@ -3003,16 +3005,109 @@ class OSCAL:
         return None
 
     # -------------------------------------------------------------------------
-    def get_parameter_by_id(self, param_id: str) -> Optional[dict]:
-        """Return a safe copy of a parameter defined anywhere in scope, or None.
+    def _lookup_in_scope(self, fragment_id: str, kind: str, with_source: bool = False):
+        """Cascade-resolve one element ``kind`` by id/uuid across this doc and its imports.
+
+        Shared implementation for the ``get_*`` cross-reference getters. Looks in THIS
+        document first, then cascades depth-first through the import tree (de-duplicated,
+        cycle-safe) via :meth:`find_in_import_tree`, returning the first match.
+
+        Args:
+            fragment_id (str, required): The bare id/uuid to resolve (no ``#``).
+            kind (str, required): The element kind to search (a member of
+                :attr:`_RESOLVE_KINDS`).
+            with_source (bool, optional): When False (default) return a safe copy of the
+                element only; when True return the full locator
+                ``{"element", "kind", "id", "object_uuid", "href"}`` — the element plus
+                the owning document's root uuid and resolved href (useful for
+                dereferencing an element's own relative references, e.g. rlinks).
+
+        Returns:
+            Optional[dict]: The element (or full locator when ``with_source``), or None.
+        """
+        found = self.find_in_import_tree(fragment_id, kinds=[kind])
+        if found is None:
+            return None
+        return found if with_source else found["element"]
+
+    # -------------------------------------------------------------------------
+    def get_parameter_by_id(self, param_id: str, with_source: bool = False) -> Optional[dict]:
+        """Return a parameter defined anywhere in scope, or None.
 
         Searches this document and its import tree for a ``param`` with the given id —
         covering parameters defined at control, group, or catalog level (and reached
         through imported catalogs/profiles). Subclasses may override to prefer resolved
-        content.
+        content. See :meth:`_lookup_in_scope` for the ``with_source`` locator form.
         """
-        found = self.find_in_import_tree(param_id, kinds=["param"])
-        return found["element"] if found is not None else None
+        return self._lookup_in_scope(param_id, "param", with_source)
+
+    # -------------------------------------------------------------------------
+    def get_resource_by_uuid(self, resource_uuid: str, with_source: bool = False) -> Optional[dict]:
+        """Return a back-matter resource defined anywhere in scope, or None.
+
+        Looks in THIS document's ``back-matter`` first; on a local miss the search
+        cascades out through the immediately imported documents and continues depth-first
+        along every branch (de-duplicated and cycle-safe) until a ``resource`` whose
+        ``uuid`` matches is found or every branch is exhausted. This lets a cross-reference
+        (``href="#uuid"``) resolve even when the resource is defined in an imported
+        document rather than locally. Subclasses may override to prefer resolved content.
+
+        Args:
+            resource_uuid (str, required): The bare resource UUID to resolve (no ``#``).
+            with_source (bool, optional): Return the full locator (element + owning
+                ``object_uuid``/``href``) instead of the bare resource; useful for
+                resolving the resource's relative rlink hrefs. Defaults to False.
+
+        Returns:
+            Optional[dict]: A safe copy of the matching resource (or locator), or None.
+        """
+        return self._lookup_in_scope(resource_uuid, "resource", with_source)
+
+    # -------------------------------------------------------------------------
+    def get_role_by_id(self, role_id: str, with_source: bool = False) -> Optional[dict]:
+        """Return a metadata ``role`` (by id) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.roles`` first, then cascades depth-first
+        through the import tree until a role with the given id is found or every branch
+        is exhausted — so a ``role-id`` reference resolves even when the role is defined
+        in an imported document. See :meth:`_lookup_in_scope` for ``with_source``.
+        """
+        return self._lookup_in_scope(role_id, "role", with_source)
+
+    # -------------------------------------------------------------------------
+    def get_party_by_uuid(self, party_uuid: str, with_source: bool = False) -> Optional[dict]:
+        """Return a metadata ``party`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.parties`` first, then cascades depth-first
+        through the import tree until a party with the given uuid is found or every branch
+        is exhausted. See :meth:`_lookup_in_scope` for ``with_source``.
+        """
+        return self._lookup_in_scope(party_uuid, "party", with_source)
+
+    # -------------------------------------------------------------------------
+    def get_location_by_uuid(self, location_uuid: str, with_source: bool = False) -> Optional[dict]:
+        """Return a metadata ``location`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.locations`` first, then cascades depth-first
+        through the import tree until a location with the given uuid is found or every
+        branch is exhausted. See :meth:`_lookup_in_scope` for ``with_source``.
+        """
+        return self._lookup_in_scope(location_uuid, "location", with_source)
+
+    # -------------------------------------------------------------------------
+    def get_responsible_party_by_id(self, role_id: str, with_source: bool = False) -> Optional[dict]:
+        """Return a metadata ``responsible-party`` (by role-id) in scope, or None.
+
+        A ``responsible-party`` is keyed by the ``role-id`` it fulfills. Looks in THIS
+        document's ``metadata.responsible-parties`` first, then cascades depth-first
+        through the import tree until one with the given role-id is found or every branch
+        is exhausted. See :meth:`_lookup_in_scope` for ``with_source``.
+
+        Note: this targets metadata-level ``responsible-parties`` only. The
+        ``responsible-role`` assemblies embedded throughout implementation/assessment
+        models are model-specific and handled by a separate, later cascade.
+        """
+        return self._lookup_in_scope(role_id, "responsible-party", with_source)
 
     # -------------------------------------------------------------------------
     def reachable_ids(self, _seen=None) -> set:
@@ -3055,6 +3150,15 @@ class OSCAL:
             for party in metadata.get("parties", []):
                 if isinstance(party, dict) and party.get("uuid") == fragment_id:
                     return {"element": copy.deepcopy(party), "kind": "party", "id": fragment_id}
+        if "location" in wanted:
+            for loc in metadata.get("locations", []):
+                if isinstance(loc, dict) and loc.get("uuid") == fragment_id:
+                    return {"element": copy.deepcopy(loc), "kind": "location", "id": fragment_id}
+        if "responsible-party" in wanted:
+            # responsible-party is keyed by the role it fulfills (role-id), not a uuid.
+            for rp in metadata.get("responsible-parties", []):
+                if isinstance(rp, dict) and rp.get("role-id") == fragment_id:
+                    return {"element": copy.deepcopy(rp), "kind": "responsible-party", "id": fragment_id}
         if any(k in wanted for k in ("control", "group", "param", "part")):
             found = _find_model_element(root, fragment_id, wanted)
             if found is not None:
