@@ -3005,12 +3005,14 @@ class OSCAL:
         return None
 
     # -------------------------------------------------------------------------
-    def _lookup_in_scope(self, fragment_id: str, kind: str, with_source: bool = False):
-        """Cascade-resolve one element ``kind`` by id/uuid across this doc and its imports.
+    def _lookup_in_scope(self, fragment_id: str, kind: str, with_source: bool = False,
+                         local_only: bool = False):
+        """Resolve one element ``kind`` by id/uuid in this doc (and, by default, its imports).
 
         Shared implementation for the ``get_*`` cross-reference getters. Looks in THIS
-        document first, then cascades depth-first through the import tree (de-duplicated,
-        cycle-safe) via :meth:`find_in_import_tree`, returning the first match.
+        document first; unless ``local_only`` is set it then cascades depth-first through
+        the import tree (de-duplicated, cycle-safe) via :meth:`find_in_import_tree`,
+        returning the first match.
 
         Args:
             fragment_id (str, required): The bare id/uuid to resolve (no ``#``).
@@ -3021,11 +3023,19 @@ class OSCAL:
                 ``{"element", "kind", "id", "object_uuid", "href"}`` — the element plus
                 the owning document's root uuid and resolved href (useful for
                 dereferencing an element's own relative references, e.g. rlinks).
+            local_only (bool, optional): When True, search only THIS document's own
+                content and do not fall back to imported documents. Defaults to False.
 
         Returns:
             Optional[dict]: The element (or full locator when ``with_source``), or None.
         """
-        found = self.find_in_import_tree(fragment_id, kinds=[kind])
+        if local_only:
+            found = self._find_local_element(fragment_id, kinds=[kind])
+            if found is not None:
+                found["object_uuid"] = self.uuid
+                found["href"] = self.href or self.href_original or ""
+        else:
+            found = self.find_in_import_tree(fragment_id, kinds=[kind])
         if found is None:
             return None
         return found if with_source else found["element"]
@@ -3042,7 +3052,8 @@ class OSCAL:
         return self._lookup_in_scope(param_id, "param", with_source)
 
     # -------------------------------------------------------------------------
-    def get_resource_by_uuid(self, resource_uuid: str, with_source: bool = False) -> Optional[dict]:
+    def get_resource_by_uuid(self, resource_uuid: str, with_source: bool = False,
+                             local_only: bool = False) -> Optional[dict]:
         """Return a back-matter resource defined anywhere in scope, or None.
 
         Looks in THIS document's ``back-matter`` first; on a local miss the search
@@ -3057,57 +3068,67 @@ class OSCAL:
             with_source (bool, optional): Return the full locator (element + owning
                 ``object_uuid``/``href``) instead of the bare resource; useful for
                 resolving the resource's relative rlink hrefs. Defaults to False.
+            local_only (bool, optional): Search only THIS document, never imports.
+                Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the matching resource (or locator), or None.
         """
-        return self._lookup_in_scope(resource_uuid, "resource", with_source)
+        return self._lookup_in_scope(resource_uuid, "resource", with_source, local_only)
 
     # -------------------------------------------------------------------------
-    def get_role_by_id(self, role_id: str, with_source: bool = False) -> Optional[dict]:
+    def get_role_by_id(self, role_id: str, with_source: bool = False,
+                       local_only: bool = False) -> Optional[dict]:
         """Return a metadata ``role`` (by id) defined anywhere in scope, or None.
 
-        Looks in THIS document's ``metadata.roles`` first, then cascades depth-first
-        through the import tree until a role with the given id is found or every branch
-        is exhausted — so a ``role-id`` reference resolves even when the role is defined
-        in an imported document. See :meth:`_lookup_in_scope` for ``with_source``.
+        Looks in THIS document's ``metadata.roles`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until a role with the given id is
+        found or every branch is exhausted — so a ``role-id`` reference resolves even when
+        the role is defined in an imported document. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
         """
-        return self._lookup_in_scope(role_id, "role", with_source)
+        return self._lookup_in_scope(role_id, "role", with_source, local_only)
 
     # -------------------------------------------------------------------------
-    def get_party_by_uuid(self, party_uuid: str, with_source: bool = False) -> Optional[dict]:
+    def get_party_by_uuid(self, party_uuid: str, with_source: bool = False,
+                          local_only: bool = False) -> Optional[dict]:
         """Return a metadata ``party`` (by uuid) defined anywhere in scope, or None.
 
-        Looks in THIS document's ``metadata.parties`` first, then cascades depth-first
-        through the import tree until a party with the given uuid is found or every branch
-        is exhausted. See :meth:`_lookup_in_scope` for ``with_source``.
+        Looks in THIS document's ``metadata.parties`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until a party with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
         """
-        return self._lookup_in_scope(party_uuid, "party", with_source)
+        return self._lookup_in_scope(party_uuid, "party", with_source, local_only)
 
     # -------------------------------------------------------------------------
-    def get_location_by_uuid(self, location_uuid: str, with_source: bool = False) -> Optional[dict]:
+    def get_location_by_uuid(self, location_uuid: str, with_source: bool = False,
+                             local_only: bool = False) -> Optional[dict]:
         """Return a metadata ``location`` (by uuid) defined anywhere in scope, or None.
 
-        Looks in THIS document's ``metadata.locations`` first, then cascades depth-first
-        through the import tree until a location with the given uuid is found or every
-        branch is exhausted. See :meth:`_lookup_in_scope` for ``with_source``.
+        Looks in THIS document's ``metadata.locations`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until a location with the given uuid
+        is found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
         """
-        return self._lookup_in_scope(location_uuid, "location", with_source)
+        return self._lookup_in_scope(location_uuid, "location", with_source, local_only)
 
     # -------------------------------------------------------------------------
-    def get_responsible_party_by_id(self, role_id: str, with_source: bool = False) -> Optional[dict]:
+    def get_responsible_party_by_id(self, role_id: str, with_source: bool = False,
+                                    local_only: bool = False) -> Optional[dict]:
         """Return a metadata ``responsible-party`` (by role-id) in scope, or None.
 
         A ``responsible-party`` is keyed by the ``role-id`` it fulfills. Looks in THIS
-        document's ``metadata.responsible-parties`` first, then cascades depth-first
-        through the import tree until one with the given role-id is found or every branch
-        is exhausted. See :meth:`_lookup_in_scope` for ``with_source``.
+        document's ``metadata.responsible-parties`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until one with the given role-id is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
 
         Note: this targets metadata-level ``responsible-parties`` only. The
         ``responsible-role`` assemblies embedded throughout implementation/assessment
         models are model-specific and handled by a separate, later cascade.
         """
-        return self._lookup_in_scope(role_id, "responsible-party", with_source)
+        return self._lookup_in_scope(role_id, "responsible-party", with_source, local_only)
 
     # -------------------------------------------------------------------------
     def reachable_ids(self, _seen=None) -> set:

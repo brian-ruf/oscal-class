@@ -124,6 +124,13 @@ class TestGetResourceByUuid:
         assert loc["object_uuid"] == "11111111-1111-4111-8111-111111111111"
         assert loc["href"].endswith("cat.json")
 
+    def test_local_only_does_not_cascade(self, tmp_path, profile_over_catalog):
+        # The resource lives in the imported catalog, not the profile itself.
+        assert profile_over_catalog.get_resource_by_uuid(self._RES, local_only=True) is None
+        # But the catalog itself finds its own resource under local_only.
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_resource_by_uuid(self._RES, local_only=True)["title"] == "Cited"
+
 
 # ===========================================================================
 # Metadata cross-reference getters (role / party / location / responsible-party)
@@ -178,6 +185,24 @@ class TestMetadataScopedGetters:
         cat = Catalog.load(_catalog_file(tmp_path))
         cat.get_role_by_id(_ROLE)["title"] = "MUTATED"
         assert cat.get_role_by_id(_ROLE)["title"] == "System Owner"
+
+    def test_local_only_does_not_cascade(self, tmp_path, profile_over_catalog):
+        # These metadata items live in the imported catalog, not the profile.
+        assert profile_over_catalog.get_role_by_id(_ROLE, local_only=True) is None
+        assert profile_over_catalog.get_party_by_uuid(_PARTY, local_only=True) is None
+        assert profile_over_catalog.get_location_by_uuid(_LOC, local_only=True) is None
+        assert profile_over_catalog.get_responsible_party_by_id(_ROLE, local_only=True) is None
+        # The catalog itself still resolves its own metadata under local_only.
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_role_by_id(_ROLE, local_only=True)["id"] == _ROLE
+        assert cat.get_party_by_uuid(_PARTY, local_only=True)["uuid"] == _PARTY
+        assert cat.get_location_by_uuid(_LOC, local_only=True)["uuid"] == _LOC
+        assert cat.get_responsible_party_by_id(_ROLE, local_only=True)["role-id"] == _ROLE
+
+    def test_local_only_with_source_points_at_self(self, tmp_path):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        loc = cat.get_role_by_id(_ROLE, with_source=True, local_only=True)
+        assert loc["kind"] == "role" and loc["object_uuid"] == "11111111-1111-4111-8111-111111111111"
 
 
 # ===========================================================================
