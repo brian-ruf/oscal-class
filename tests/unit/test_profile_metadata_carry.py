@@ -111,3 +111,62 @@ class TestMetadataCarry:
         rps = _meta(p).get("responsible-parties", [])
         assert rps[0]["party-uuids"] == [_PA]                   # not [_PA, _PA]
         assert [pp["uuid"] for pp in _meta(p).get("parties", [])] == [_PA]
+
+
+# ===========================================================================
+# Same UUID across sources = same content -> use first (parties/locations/resources)
+# ===========================================================================
+_SHARED_PARTY = "44444444-4444-4444-8444-444444444444"
+_SHARED_LOC = "55555555-5555-4555-8555-555555555555"
+_SHARED_RES = "66666666-6666-4666-8666-666666666666"
+
+
+def _catalog_shared(uuid, tag):
+    """A catalog whose party/location/resource use the SHARED uuids but tag-specific
+    content, plus a control link that references the shared resource so it is carried."""
+    return {"catalog": {
+        "uuid": uuid,
+        "metadata": {
+            "title": f"Cat {tag}", "last-modified": "2026-01-01T00:00:00Z",
+            "version": "1", "oscal-version": "1.1.3",
+            "parties": [{"uuid": _SHARED_PARTY, "type": "organization", "name": f"Org-{tag}"}],
+            "locations": [{"uuid": _SHARED_LOC, "title": f"Loc-{tag}"}],
+        },
+        "groups": [{"id": "ac", "title": "AC", "controls": [
+            {"id": f"ac-{tag}", "title": f"Ctrl {tag}",
+             "links": [{"href": f"#{_SHARED_RES}", "rel": "reference"}]}]}],
+        "back-matter": {"resources": [{"uuid": _SHARED_RES, "title": f"Res-{tag}"}]},
+    }}
+
+
+class TestSameUuidUseFirst:
+    """When two like items (party/location/resource) share a UUID, the first wins."""
+
+    @pytest.fixture
+    def resolved(self, tmp_path):
+        a = _write(tmp_path, "sa.json", _catalog_shared("77777777-7777-4777-8777-777777777777", "A"))
+        b = _write(tmp_path, "sb.json", _catalog_shared("88888888-8888-4888-8888-888888888888", "B"))
+        p = Profile.new("Shared")
+        p.add_import(a, include_all=True)
+        p.add_import(b, include_all=True)
+        p.set_merge(as_is=True, combine="use-first")
+        p.resolve()
+        return p
+
+    def test_valid(self, resolved):
+        assert resolved.catalog.is_valid
+
+    def test_party_use_first(self, resolved):
+        parties = _meta(resolved).get("parties", [])
+        assert [p["uuid"] for p in parties] == [_SHARED_PARTY]   # single, deduped
+        assert parties[0]["name"] == "Org-A"                     # first source wins
+
+    def test_location_use_first(self, resolved):
+        locs = _meta(resolved).get("locations", [])
+        assert [loc["uuid"] for loc in locs] == [_SHARED_LOC]
+        assert locs[0]["title"] == "Loc-A"
+
+    def test_resource_use_first(self, resolved):
+        res = resolved.catalog._dict["catalog"].get("back-matter", {}).get("resources", [])
+        assert [r["uuid"] for r in res] == [_SHARED_RES]         # single, deduped
+        assert res[0]["title"] == "Res-A"

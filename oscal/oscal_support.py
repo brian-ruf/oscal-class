@@ -36,11 +36,10 @@ Module constants:
         schema files.
     OSCAL_SUPPORT_TABLES (dict): Schema definitions for the support database tables
         (``oscal_versions``, ``oscal_support``, ``filecache``).
-    OSCAL_DATA_TYPES (dict): Data-type registry populated at runtime from parsed
-        metaschemas.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import xml.etree.ElementTree as ET
@@ -54,7 +53,7 @@ from ruf_common.lfs import chkdir, putfile, chkfile
 from ruf_common import helper
 from ruf_common import database
 from ruf_common import network
-from .oscal_datatypes import oscal_date_time_with_timezone
+from .oscal_datatypes import oscal_date_time_with_timezone, OSCAL_DATATYPES
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +162,6 @@ OSCAL_SUPPORT_TABLES["oscal_support"] = {
 OSCAL_SUPPORT_TABLES["filecache"] = database.OSCAL_COMMON_TABLES["filecache"]
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-OSCAL_DATA_TYPES = {}
 
 _METASCHEMA_NS = "http://csrc.nist.gov/ns/oscal/metaschema/1.0"
 _METASCHEMA_PFX = f"{{{_METASCHEMA_NS}}}"
@@ -293,6 +290,10 @@ class OSCALSupport:
     querying supported versions/models, retrieving assets, building metaschema
     indexes, and updating content from NIST's GitHub releases.
 
+    The ``datatypes`` attribute holds the OSCAL Metaschema data type definitions
+    and their validation regexes (see also :meth:`get_datatype`), supporting
+    field-level input validation.
+
     Prefer the module-level ``get_support()`` accessor over instantiating this
     class directly, so a single instance is shared across the application.
 
@@ -328,6 +329,7 @@ class OSCALSupport:
         self.backend    = None      # If working within an application, this is the backend object
         self.known_catalogs = _KNOWN_CATALOGS  # Known OSCAL catalogs with canonical and OSCAL locations
         self.known_extensions = _KNOWN_EXTENSION_NAMESPACES  # Known OSCAL extensions
+        self.datatypes  = OSCAL_DATATYPES  # OSCAL Metaschema datatype definitions + validation regexes
         self._cache     = {}        # Internal cache for support operations
         self._update_stats = None   # Populated during update(); None when not running an update
 
@@ -692,6 +694,26 @@ class OSCALSupport:
         return status
 
     # -------------------------------------------------------------------------
+    def get_datatype(self, datatype_name: str) -> dict | None:
+        """Return the OSCAL Metaschema definition for a named data type.
+
+        Provides the datatype's validation patterns (``xml-pattern``,
+        ``json-pattern``, ``recommended-pattern``), ``base-type``, documentation,
+        and reference links — e.g. so a UI can validate a field's input against the
+        regex for that field's declared OSCAL data type. The full table is also
+        available as the ``datatypes`` attribute.
+
+        Args:
+            datatype_name (str, required): OSCAL data type name (e.g. "uuid",
+                "date-time-with-timezone", "token").
+
+        Returns:
+            dict | None: A safe copy of the datatype definition, or None if the
+                name is not a recognized OSCAL data type.
+        """
+        definition = self.datatypes.get(datatype_name)
+        return copy.deepcopy(definition) if definition is not None else None
+
     def get_asset(self, version, model, asset_type):
         """
         Returns the asset for the specified OSCAL version and model name.

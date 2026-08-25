@@ -144,11 +144,6 @@ def _ref_map(index: dict) -> dict:
     return mapping
 
 
-def find_node_by_ref(index: dict, ref: str):
-    """Return the node in ``index`` whose reference id is ``ref``, or None."""
-    return _ref_map(index).get(ref)
-
-
 # ---------------------------------------------------------------------------
 # Labels / representation
 # ---------------------------------------------------------------------------

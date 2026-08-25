@@ -287,12 +287,26 @@ xml_str   = catalog.dumps(format="xml",  pretty_print=True)
 yaml_str  = catalog.dumps(format="yaml")
 ```
 
+### Canonical key/element ordering
+
+All serialization (`dump`, `dumps`, and the `json`/`xml`/`yaml` properties) emits
+keys/elements in the canonical NIST metaschema order (see
+[`oscal_resequence`](./OVERVIEW.md)):
+
+- **XML** — element order is schema-significant, so it is **always** produced in
+  canonical order. XML is (re)built from the current dict via the metaschema
+  converter on each serialization, so the output reflects the latest edits.
+- **JSON/YAML** — keys are ordered canonically on a **best-effort** basis. Key
+  order in JSON/YAML is presentational, so if no metaschema index is available
+  for the model/version the document is still emitted (in its current order)
+  rather than failing.
+
 ### Convenience properties
 
 ```python
-catalog.json   # → JSON string (always pretty-printed)
-catalog.xml    # → XML string  (builds XML from dict on demand)
-catalog.yaml   # → YAML string (always pretty-printed)
+catalog.json   # → JSON string (always pretty-printed, canonical key order)
+catalog.xml    # → XML string  (rebuilt from dict; canonical element order)
+catalog.yaml   # → YAML string (always pretty-printed, canonical key order)
 ```
 
 ---
