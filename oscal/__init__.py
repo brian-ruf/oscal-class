@@ -14,6 +14,8 @@ import logging
 logging.getLogger("oscal").addHandler(logging.NullHandler())
 
 from . import oscal_support  # noqa: E402
+from . import oscal_helpers # noqa: E402
+from . import oscal_source # noqa: E402
 from . import oscal_content # noqa: E402
 from . import oscal_datatypes # noqa: E402
 from . import oscal_controls # noqa: E402
@@ -39,8 +41,13 @@ from .oscal_assessment import AssessmentPlan, AssessmentResults, POAM  # noqa: E
 from .oscal_content import OSCAL  # noqa: E402
 from .oscal_datatypes import oscal_date_time_with_timezone  # noqa: E402
 from .oscal_workspace import Workspace  # noqa: E402
+
+# Library exception hierarchy
+from .oscal_content import OSCALError, UnsupportedModelOperation  # noqa: E402
 __all__ = [
     "oscal_support",
+    "oscal_helpers",
+    "oscal_source",
     "oscal_content",
     "oscal_datatypes",
     "oscal_controls",
@@ -59,6 +66,8 @@ __all__ = [
     "AssessmentResults",
     "POAM",
     "OSCAL",
+    "OSCALError",
+    "UnsupportedModelOperation",
     "Workspace",
     "oscal_date_time_with_timezone",
     "OSCAL_FORMATS",

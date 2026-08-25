@@ -288,7 +288,7 @@ class TestLoadSourceTypedErrors:
         ref = OscalRef(href="https://example.com/catalog.xml")
         classify_source(ref)
         http_err = HTTPError("https://example.com/catalog.xml", 401, "Unauthorized", {}, None)
-        with patch("oscal.oscal_content.download_file", side_effect=http_err):
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
             with pytest.raises(ImportLoadError) as exc_info:
                 load_source(ref)
         assert exc_info.value.code == ImportFailureCode.REMOTE_AUTH_REQUIRED
@@ -297,7 +297,7 @@ class TestLoadSourceTypedErrors:
         ref = OscalRef(href="https://example.com/catalog.xml")
         classify_source(ref)
         http_err = HTTPError("https://example.com/catalog.xml", 403, "Forbidden", {}, None)
-        with patch("oscal.oscal_content.download_file", side_effect=http_err):
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
             with pytest.raises(ImportLoadError) as exc_info:
                 load_source(ref)
         assert exc_info.value.code == ImportFailureCode.REMOTE_AUTH_REQUIRED
@@ -305,7 +305,7 @@ class TestLoadSourceTypedErrors:
     def test_connection_error_raises_unreachable(self):
         ref = OscalRef(href="https://example.com/catalog.xml")
         classify_source(ref)
-        with patch("oscal.oscal_content.download_file", side_effect=ConnectionError("timeout")):
+        with patch("oscal.oscal_source.download_file", side_effect=ConnectionError("timeout")):
             with pytest.raises(ImportLoadError) as exc_info:
                 load_source(ref)
         assert exc_info.value.code == ImportFailureCode.REMOTE_UNREACHABLE
@@ -313,7 +313,7 @@ class TestLoadSourceTypedErrors:
     def test_url_error_raises_unreachable(self):
         ref = OscalRef(href="https://example.com/catalog.xml")
         classify_source(ref)
-        with patch("oscal.oscal_content.download_file", side_effect=URLError("no route")):
+        with patch("oscal.oscal_source.download_file", side_effect=URLError("no route")):
             with pytest.raises(ImportLoadError) as exc_info:
                 load_source(ref)
         assert exc_info.value.code == ImportFailureCode.REMOTE_UNREACHABLE
@@ -322,7 +322,7 @@ class TestLoadSourceTypedErrors:
         ref = OscalRef(href="https://example.com/catalog.xml")
         classify_source(ref)
         http_err = HTTPError("https://example.com/catalog.xml", 500, "Server Error", {}, None)
-        with patch("oscal.oscal_content.download_file", side_effect=http_err):
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
             with pytest.raises(ImportLoadError) as exc_info:
                 load_source(ref)
         assert exc_info.value.code == ImportFailureCode.REMOTE_UNREACHABLE
@@ -346,7 +346,7 @@ class TestLoadContentPropagates:
 
     def test_propagates_auth_error(self):
         http_err = HTTPError("https://example.com/c.xml", 401, "Unauthorized", {}, None)
-        with patch("oscal.oscal_content.download_file", side_effect=http_err):
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
             with pytest.raises(ImportLoadError) as exc_info:
                 load_content("https://example.com/c.xml")
         assert exc_info.value.code == ImportFailureCode.REMOTE_AUTH_REQUIRED
@@ -501,14 +501,14 @@ class TestUriFailures:
 
     def test_remote_auth_required_code(self):
         http_err = HTTPError("https://example.com/c.xml", 401, "Unauthorized", {}, None)
-        with patch("oscal.oscal_content.download_file", side_effect=http_err):
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
             obj = _load_profile("https://example.com/c.xml")
         failure = obj.import_list[0].get("failure")
         assert failure is not None
         assert failure.code == ImportFailureCode.REMOTE_AUTH_REQUIRED
 
     def test_remote_unreachable_code(self):
-        with patch("oscal.oscal_content.download_file", side_effect=ConnectionError("timeout")):
+        with patch("oscal.oscal_source.download_file", side_effect=ConnectionError("timeout")):
             obj = _load_profile("https://example.com/c.xml")
         failure = obj.import_list[0].get("failure")
         assert failure is not None
@@ -516,7 +516,7 @@ class TestUriFailures:
 
     def test_remote_failure_uri_matches_href(self):
         http_err = HTTPError("https://example.com/c.xml", 401, "Unauthorized", {}, None)
-        with patch("oscal.oscal_content.download_file", side_effect=http_err):
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
             obj = _load_profile("https://example.com/c.xml")
         assert "example.com" in obj.import_list[0]["failure"].uri
 
