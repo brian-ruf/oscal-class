@@ -27,7 +27,7 @@ See [Content Management](./CONTENT.md) for more information.
 ### Format Conversion Modules
 
 - `oscal_converters.py`: Primary functions to convert in either direction between XML and  JSON, and between OSCAL HTML and OSCAL markdown (markup-line/markup-multiline). 
-- `oscal_resequence.py`: Resequences keys in OSCAL JSON and YAML files to match the canonical order defined in NIST OSCAL syntax documentation.
+- `oscal_resequence.py`: Resequences keys in OSCAL JSON and YAML files to canonical order derived from the processed metaschema index (the same structural index that drives XML↔JSON conversion). Depends on the OSCAL support database; version is taken from the document's `metadata/oscal-version` (overridable).
 - `xml_formatter.py`: Restructures OSCAL XML for readability
 
 See [Converters](./CONVERTERS.md) for more information.

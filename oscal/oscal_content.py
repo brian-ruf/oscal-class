@@ -74,6 +74,7 @@ from .oscal_source      import (  # noqa: F401  (re-exported for callers)
     _pick_import_target, _remove_import_from_dict, _hrefs_from_dict_spec,
     _backmatter_resource,
 )
+from .oscal_resequence  import resequence_oscal
 
 logger = logging.getLogger(__name__)
 
@@ -283,33 +284,6 @@ def requires(**conditions):
     return decorator
 
 # -----------------------------------------------------------------------------
-def requires_state(min_state: ContentState):
-    """Decorator factory gating a method on a minimum ``ContentState`` level.
-
-    The wrapped method runs only when ``self.content_state >= min_state``;
-    otherwise it logs an error and returns None.
-
-    Args:
-        min_state (ContentState, required): Minimum content state required to run
-            the method.
-
-    Returns:
-        Callable: A decorator that wraps the target method with the guard.
-    """
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(self, *args, **kwargs):
-            if self.content_state < min_state:
-                logger.error(
-                    f"'{fn.__name__}' requires content_state >= {min_state.name} "
-                    f"(current: {self.content_state.name})"
-                )
-                return None
-            return fn(self, *args, **kwargs)
-        return wrapper
-    return decorator
-
-# -----------------------------------------------------------------------------
 def if_update_successful(fn):
     """Decorator marking content dirty after a successful mutation.
 
@@ -473,9 +447,12 @@ class OSCAL:
 
     Provides loading, saving, validation, format conversion (XML/JSON/YAML),
     import resolution, and query support shared by every OSCAL model. Content is
-    held internally as a JSON-primary dict (``self._dict``) with an XML tree
-    (``self._tree``) maintained for conversion. Do not instantiate directly; use
-    the factory classmethods ``load``, ``loads``, or ``new``, or a model subclass.
+    held internally as a JSON-primary dict (``self._dict``); the XML tree
+    (``self._tree``) is a transient, derived view built on demand for XML
+    serialization and released afterward (it persists only in the degraded case
+    where XML was loaded but could not be converted to a dict). Do not instantiate
+    directly; use the factory classmethods ``load``, ``loads``, or ``new``, or a
+    model subclass.
 
         Attributes (Content Location):
             href_original: The original href as provided (e.g., in an import statement)
@@ -950,6 +927,7 @@ class OSCAL:
         Write the current OSCAL content to a file.
         With no parameters, saves to the original location in the original format.
         This will save to any valid filename, even if the file extension does not match the format.
+        Output keys/elements are emitted in canonical metaschema order (see :meth:`dumps`).
 
         Args:
             filename (str, optional): Path to write to. Defaults to the original
@@ -2502,30 +2480,30 @@ class OSCAL:
     # -------------------------------------------------------------------------
     @property
     def xml(self) -> str:
-        """Return the content as an XML string, converting from dict if necessary."""
-        if self._tree is None:
-            if not self._build_tree():
-                logger.error("Failed to build XML tree for serialization.")
-                return ""
-        return self._xml_serializer()
+        """Return the content as an XML string in canonical element order.
+
+        Rebuilds from the current dict via the metaschema converter (reflecting
+        the latest edits, in schema-required element order) and retains no tree.
+        """
+        return self._serialize_xml()
 
     # -------------------------------------------------------------------------
     @property
     def json(self) -> str:
-        """Return the content as a JSON string."""
+        """Return the content as a JSON string in canonical key order."""
         if self._dict is None:
             logger.error("No content available for JSON serialization.")
             return ""
-        return json.dumps(self._dict, indent=INDENT)
+        return json.dumps(self._ordered_dict(), indent=INDENT)
 
     # -------------------------------------------------------------------------
     @property
     def yaml(self) -> str:
-        """Return the content as a YAML string."""
+        """Return the content as a YAML string in canonical key order."""
         if self._dict is None:
             logger.error("No content available for YAML serialization.")
             return ""
-        return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
+        return yaml.dump(self._ordered_dict(), sort_keys=False, indent=INDENT)
 
     # -------------------------------------------------------------------------
     def _can_mutate(self, operation: str = "") -> bool:
@@ -3364,6 +3342,11 @@ class OSCAL:
     def dumps(self, format: str = "", pretty_print: bool = False) -> str:
         """
         Serialize the current content to a string in the specified format.
+
+        Keys/elements are emitted in canonical NIST metaschema order: XML element
+        order is schema-required and always canonical; JSON/YAML key order is
+        canonical on a best-effort basis (see :meth:`_ordered_dict`).
+
         Parameters:
         - format (str): The target format for serialization ("xml", "json", or "yaml")
             Defaults to the original format of the content if not specified.
@@ -3381,10 +3364,11 @@ class OSCAL:
             return ""
 
         if format == "xml":
-            if self._tree is None and not self._build_tree():
-                logger.error("Failed to build XML tree for serialization.")
-                return ""
-            return self._xml_serializer(pretty_print=pretty_print)
+            # XML element order is schema-significant (canonical order is required
+            # for valid OSCAL XML). _serialize_xml rebuilds from the current dict
+            # via the metaschema converter (canonical order + latest edits) and
+            # releases the transient tree afterward.
+            return self._serialize_xml(pretty_print=pretty_print)
         elif format == "json":
             if self._dict is None:
                 logger.error("No content available for JSON serialization.")
@@ -3398,6 +3382,39 @@ class OSCAL:
         else:
             logger.error(f"Unsupported format for serialization: {format}")
             return ""
+
+    # -------------------------------------------------------------------------
+    def _serialize_xml(self, pretty_print: bool = False) -> str:
+        """Serialize to XML in canonical element order, retaining no XML tree.
+
+        The XML tree is a transient, derived view of the JSON-primary ``self._dict``
+        needed only at serialization time. Normal path: (re)build it from the
+        current dict via the metaschema converter (canonical element order, and
+        always reflecting the latest edits), serialize, then release it so it does
+        not inflate the object's footprint (e.g. when persisting save-state).
+
+        Degraded path: when no dict is available (XML was loaded but XML→JSON
+        conversion produced no dict), the retained tree is the *only*
+        representation of the content, so it is serialized in place and kept.
+
+        Args:
+            pretty_print (bool): Whether to pretty-print the output.
+
+        Returns:
+            str: The serialized XML, or "" when there is no content to serialize.
+        """
+        if self._dict is not None:
+            if not self._build_tree():
+                logger.error("Failed to build XML tree for serialization.")
+                return ""
+            out = self._xml_serializer(pretty_print=pretty_print)
+            self._tree = None  # release the transient tree; rebuilt on demand next time
+            return out
+        if self._tree is not None:
+            # Degraded fallback: no dict, tree is the sole representation — keep it.
+            return self._xml_serializer(pretty_print=pretty_print)
+        logger.error("No content available for XML serialization.")
+        return ""
 
     # -------------------------------------------------------------------------
     def _xml_serializer(self, pretty_print: bool = False) -> str:
@@ -3437,16 +3454,36 @@ class OSCAL:
         return out_string
 
     # -------------------------------------------------------------------------
+    def _ordered_dict(self) -> dict | None:
+        """Return a canonically key-ordered copy of ``self._dict`` for output.
+
+        Reorders keys to the NIST metaschema canonical order (via
+        :func:`~oscal.oscal_resequence.resequence_oscal`) so serialized JSON/YAML
+        is emitted in canonical order. Best-effort: if resequencing is
+        unavailable (e.g. no metaschema index for the model/version) or fails,
+        the original ``self._dict`` is returned unchanged — key ordering in
+        JSON/YAML is presentational, not semantic, so output is never blocked.
+        Returns None only when there is no content.
+        """
+        if self._dict is None:
+            return None
+        try:
+            return resequence_oscal(self._dict, version=self.oscal_version)
+        except Exception as exc:  # never let cosmetic ordering break serialization
+            logger.warning(f"Key resequencing skipped for {self.model} output: {exc}")
+            return self._dict
+
+    # -------------------------------------------------------------------------
     def _json_serializer(self, pretty_print: bool = False) -> str:
         """
-        Serializes the current dict to a string.
+        Serializes the current dict to a string, in canonical key order.
         Parameters:
         - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized JSON content as a string.
         """
         logger.debug("Serializing dict for string output as JSON.")
-        out_string = json.dumps(self._dict, indent=INDENT if pretty_print else None, sort_keys=False)
+        out_string = json.dumps(self._ordered_dict(), indent=INDENT if pretty_print else None, sort_keys=False)
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
@@ -3454,14 +3491,14 @@ class OSCAL:
     # -------------------------------------------------------------------------
     def _yaml_serializer(self, pretty_print: bool = False) -> str:
         """
-        Serializes the current dict to a string.
+        Serializes the current dict to a string, in canonical key order.
         Parameters:
         - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized YAML content as a string.
         """
         logger.debug("Serializing dict for string output as YAML.")
-        out_string: str = yaml.dump(self._dict, indent=INDENT if pretty_print else None, sort_keys=False)  # type: ignore[assignment]
+        out_string: str = yaml.dump(self._ordered_dict(), indent=INDENT if pretty_print else None, sort_keys=False)  # type: ignore[assignment]
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string

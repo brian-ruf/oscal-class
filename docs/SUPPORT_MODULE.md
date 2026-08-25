@@ -124,6 +124,20 @@ Common asset types stored in the database:
 | `"document-model"` | Model root-name registration (internal) |
 | `"processed"` | Parsed metaschema index (JSON) used for validation and conversion |
 
+### `get_datatype(datatype_name) → dict | None`
+
+Return the OSCAL Metaschema definition for a named data type (a safe copy), or
+`None` if the name is not a recognized OSCAL data type. The definition includes
+the validation patterns (`xml-pattern`, `json-pattern`, `recommended-pattern`),
+`base-type`, documentation, and reference links — for example, to validate a
+field's input against the regex for its declared data type. The full table is
+also available as the `datatypes` attribute.
+
+```python
+dt = support.get_datatype("date-time-with-timezone")
+regex = dt["json-pattern"]      # hand off to a UI for field-level validation
+```
+
 ### `list_models(version="all") → list[str]`
 
 Return the list of OSCAL model names available for the given version.
