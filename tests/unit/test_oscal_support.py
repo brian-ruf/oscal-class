@@ -473,7 +473,7 @@ class TestGetMetaschemaIndex:
         obj.get_metaschema_index("v1.2.0", "catalog")
         after = time.time()
 
-        entry = support_mod._metaschema_index_cache[("v1.2.0", "catalog")]
+        entry = support_mod._metaschema_index_cache[("v1.2.0", "catalog", obj.active_index_version)]
         assert entry["version"] == "v1.2.0"
         assert entry["model"] == "catalog"
         assert before <= entry["last_retrieved"] <= after
@@ -490,7 +490,7 @@ class TestGetMetaschemaIndex:
 
         # Populate cache with a timestamp old enough to be stale.
         stale_time = time.time() - support_mod.INDEX_REFRESH - 1
-        support_mod._metaschema_index_cache[("v1.2.0", "catalog")] = {
+        support_mod._metaschema_index_cache[("v1.2.0", "catalog", obj.active_index_version)] = {
             "version": "v1.2.0",
             "model": "catalog",
             "last_retrieved": stale_time,
@@ -512,7 +512,7 @@ class TestGetMetaschemaIndex:
         obj = _make_support(fake_get_asset)
 
         # Populate cache with a very recent timestamp.
-        support_mod._metaschema_index_cache[("v1.2.0", "catalog")] = {
+        support_mod._metaschema_index_cache[("v1.2.0", "catalog", obj.active_index_version)] = {
             "version": "v1.2.0",
             "model": "catalog",
             "last_retrieved": time.time(),
@@ -564,7 +564,7 @@ class TestGetMetaschemaIndex:
         obj = _make_support(lambda *_: None)
         result = obj.get_metaschema_index("v1.2.0", "catalog")
         assert result is None
-        assert ("v1.2.0", "catalog") not in support_mod._metaschema_index_cache
+        assert ("v1.2.0", "catalog", obj.active_index_version) not in support_mod._metaschema_index_cache
 
     def test_returns_none_when_asset_is_invalid_json(self):
         obj = _make_support(lambda *_: "not valid json {{{")

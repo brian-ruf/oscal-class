@@ -154,7 +154,7 @@ class TestOptionalFields:
 
 
 # ===========================================================================
-# include_all
+# Import selection body (default include-controls placeholder vs include_all)
 # ===========================================================================
 class TestIncludeAll:
 
@@ -162,9 +162,80 @@ class TestIncludeAll:
         r = prof.add_import("catalog.xml")
         assert "include-all" not in r.entry
 
+    def test_default_has_include_controls_with_ids_placeholder(self, prof):
+        """A new profile import ships include-controls with an empty with-ids array —
+        the minimum valid selection structure, selecting nothing until narrowed."""
+        r = prof.add_import("catalog.xml")
+        assert r.entry["include-controls"] == [{"with-ids": []}]
+
     def test_include_all_true_adds_empty_object(self, prof):
         r = prof.add_import("catalog.xml", include_all=True)
         assert r.entry["include-all"] == {}
+
+    def test_include_all_true_omits_include_controls(self, prof):
+        r = prof.add_import("catalog.xml", include_all=True)
+        assert "include-controls" not in r.entry
+
+
+# ===========================================================================
+# version -> resource prop
+# ===========================================================================
+class TestVersion:
+
+    def test_version_stored_as_prop(self, prof):
+        r = prof.add_import("catalog.xml", version="1.1.0")
+        assert {"name": "version", "value": "1.1.0"} in r.resource["props"]
+
+    def test_version_absent_by_default(self, prof):
+        r = prof.add_import("catalog.xml")
+        assert "props" not in r.resource
+
+    def test_version_round_trips_json(self, prof):
+        prof.add_import("catalog.xml", version="2.0.1")
+        out = prof.dumps(format="json")
+        assert "2.0.1" in out
+
+
+# ===========================================================================
+# Resource parameters aligned with append_resource (uuid / props)
+# ===========================================================================
+class TestResourceParams:
+
+    def test_caller_props_passed_through(self, prof):
+        r = prof.add_import("catalog.xml", props=[{"name": "source", "value": "nist"}])
+        assert {"name": "source", "value": "nist"} in r.resource["props"]
+
+    def test_caller_props_and_version_combined(self, prof):
+        r = prof.add_import("catalog.xml", version="1.1.0",
+                            props=[{"name": "source", "value": "nist"}])
+        names = {p["name"] for p in r.resource["props"]}
+        assert names == {"source", "version"}
+
+    def test_uuid_honored_when_supplied(self, prof):
+        fixed = "aaaaaaaa-0000-4000-a000-000000000042"
+        r = prof.add_import("catalog.xml", uuid=fixed)
+        assert r.resource["uuid"] == fixed
+        assert r.entry["href"] == f"#{fixed}"
+
+
+# ===========================================================================
+# Back-matter resource reuse
+# ===========================================================================
+class TestResourceReuse:
+
+    def test_existing_resource_reused_by_href(self, prof):
+        """If a back-matter resource already targets the href, its UUID is reused
+        rather than creating a second resource."""
+        first = prof.add_import("catalog.xml")
+        existing_uuid = first.resource["uuid"]
+        # A second distinct import so the profile keeps >1 import, then remove the
+        # first's *import* (resource stays) and re-add the same href.
+        prof.add_import("other.xml")
+        prof.remove_import(first.entry["href"])
+        n_resources = len(_resources(prof))
+        re_added = prof.add_import("catalog.xml")
+        assert re_added.resource["uuid"] == existing_uuid
+        assert len(_resources(prof)) == n_resources  # no new resource created
 
 
 # ===========================================================================
