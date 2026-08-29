@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 # from urllib.parse import urljoin
 from typing import cast
 import logging
-from .oscal_support import get_support
+from .oscal_support import get_support, METASCHEMA_INDEX_VERSION
 from xml.etree import ElementTree as ET
 from ruf_common.helper import iif, compare_semver
 from ruf_common.data import deserialize_xml, xpath, xpath_atomic, get_markup_content
@@ -264,6 +264,9 @@ def parse_metaschema_specific(support, oscal_version, save_to_fs=False):
         _write_metaschema_report(models_processed, unresolved_by_model, oscal_version, support_dir)
 
     if all_ok:
+        # Record the index-schema version these processed indexes were built with, so the
+        # database and any consuming library can detect index-schema mismatches.
+        support.set_version_index_version(oscal_version, METASCHEMA_INDEX_VERSION)
         logger.info(f"{GREEN}Successfully parsed and stored all {oscal_version} metaschema models.{RESET}")
     else:
         logger.error(f"{RED}One or more {oscal_version} metaschema models failed to parse or store.{RESET}")
@@ -696,6 +699,7 @@ class MetaschemaParser:
             metaschema_tree = {}
             metaschema_tree["oscal_model"] = self.oscal_model
             metaschema_tree["oscal_version"] = self.oscal_version
+            metaschema_tree["index_version"] = METASCHEMA_INDEX_VERSION
             metaschema_tree["schema_name"] = self.schema_name
             metaschema_tree["oscal_namespace"] = self.oscal_namespace
             metaschema_tree["json_base_uri"] = self.json_base_uri

@@ -120,9 +120,16 @@ Common asset types stored in the database:
 
 | Type | Contents |
 |---|---|
-| `"metaschema"` | NIST resolved-metaschema XML |
-| `"document-model"` | Model root-name registration (internal) |
+| `"metaschema"` | NIST resolved-metaschema XML (build-time input for the parsed index) |
+| `"document-model"` | Build-time tag marking which metaschema files define a document root; shares the `metaschema` row's cache file |
 | `"processed"` | Parsed metaschema index (JSON) used for validation and conversion |
+
+The **packaged** support database is minimized to only `"processed"` indexes — the
+`"metaschema"` inputs and the redundant `"document-model"` tags are pruned after the
+indexes are built (the update tool calls `remove_asset` + `vacuum`), and `list_models`
+derives the document models from the `"processed"` assets. A minimized database supports
+validation and conversion but cannot *rebuild* an index from raw metaschema (needed only
+on an incompatible index-schema major); re-acquire the version from NIST if that arises.
 
 ### `get_datatype(datatype_name) → dict | None`
 
@@ -172,11 +179,17 @@ Return the highest version string in the support database.
 support.latest_version()   # e.g. "v1.2.1"
 ```
 
-### `get_metaschema_index(version, model) → dict | None`
+### `get_metaschema_index(version, model, index_version=None) → dict | None`
 
 Return the parsed metaschema index for a given version and model. Results are cached
-in memory for up to 24 hours. Returns `None` when no index has been built for the
-requested combination.
+in memory for up to 24 hours, keyed by `(version, model, index_version)`. Returns `None`
+when no index has been built for the requested combination.
+
+`index_version` is the **metaschema-index-schema** version to require; it defaults to
+`support.active_index_version` (resolved at startup — see *Metaschema Index Versioning*
+below). A stored index built against a different **major** index version is rebuilt from
+the raw metaschema so it conforms to the current schema; a same-major difference is
+treated as backward-compatible and used as-is.
 
 ```python
 index = support.get_metaschema_index("v1.1.3", "catalog")
@@ -186,6 +199,25 @@ index = support.get_metaschema_index("v1.1.3", "catalog")
 
 Store a new or replacement asset in the support database. `content` may be `str` or
 `bytes`. Returns `True` on success.
+
+### `remove_asset(version=None, model=None, asset_type=None) → int`
+
+Remove support assets matching any combination of `version` / `model` / `asset_type`
+(the criteria are ANDed; **at least one is required**). Matching `oscal_support` rows are
+deleted, and each cached file is removed from `filecache` once it is no longer referenced
+by any surviving asset row (a single file can back several rows — e.g. a document model's
+`metaschema` and `document-model` share one cache entry). Returns the number of rows
+removed.
+
+```python
+support.remove_asset(asset_type="metaschema")            # drop all raw metaschema files
+support.remove_asset(version="v1.2.3", model="catalog")  # drop one model's assets
+```
+
+### `vacuum() → None`
+
+Reclaim free space in the support database (SQLite `VACUUM`); a no-op on other backends.
+Useful after a bulk `remove_asset`.
 
 ### `load_file(name, binary=False, *, as_bytes=None) → str | bytes | None`
 
@@ -214,6 +246,74 @@ validation tools.
 ```python
 support.download_schemas("./schemas")            # all versions
 support.download_schemas("./schemas", fetch="v1.2.1")  # one version
+```
+
+---
+
+## Metaschema Index Versioning
+
+The parsed metaschema index (the `"processed"` asset consumed by validation and
+conversion) has its own **semantic version**, independent of the OSCAL version it
+describes. It is exposed as the module constant `METASCHEMA_INDEX_VERSION` (current:
+`1.0.0`).
+
+- **MAJOR** bumps mean the index *structure* changed incompatibly — a library built for
+  an older major cannot safely consume such an index and will rebuild it.
+- **MINOR/PATCH** bumps are backward-compatible additions.
+
+Every index this library builds is stamped with `METASCHEMA_INDEX_VERSION`, and each
+`oscal_versions` row records the index version its stored indexes were built with in the
+`index_version` column. This lets a library and a shared support database detect and
+reconcile index-schema mismatches — the recurring source of "works from here, fails from
+there" support-database problems.
+
+### Startup resolution — `resolve_index_version()`
+
+On startup the support layer:
+
+1. Runs a lightweight schema migration (adds the `index_version` column to an older
+   database and backfills existing rows to `1.0.0`, since indexes built by this codebase
+   already conform to the current schema).
+2. Reads the distinct `index_version` values recorded in `oscal_versions` and keeps those
+   in the compatible range `[METASCHEMA_INDEX_VERSION, next-major)`.
+3. Assigns the **lowest** in-range value to `support.active_index_version` (the most
+   conservative compatible schema), which is then used for every `get_metaschema_index`
+   lookup.
+4. If **no** compatible index version is present, it merges the library's **bundled**
+   database (which ships indexes built at this library's index version) into the local
+   one and retries — logging a warning.
+
+### Self-healing version acquisition — `ensure_version(version)`
+
+Whenever content declares an OSCAL version that is not present locally, the library
+acquires or substitutes it, and records the outcome on the loaded object
+(`doc.version_support` — see below):
+
+1. Already present → use it (`"exact"`).
+2. Merge that version from the **bundled** database if present (offline; logged INFO).
+3. Otherwise **fetch it from NIST GitHub** (logged INFO on success).
+4. If still unavailable → substitute the **closest available version within the same
+   OSCAL major** (logged WARN; `"closest-match"`).
+5. If nothing usable exists → `"unavailable"` (logged ERROR).
+
+This means users on different library versions can safely share one support database: a
+missing OSCAL version is healed from the bundle rather than corrupting the shared DB.
+
+### Loaded-object status — `VersionSupport`
+
+Every loaded OSCAL object carries a non-progressive version-support qualifier alongside
+its `content_state`:
+
+| `doc.version_support` | Meaning |
+|---|---|
+| `VersionSupport.EXACT` | The declared OSCAL version's support was available (or was acquired); validated/converted against that exact version. |
+| `VersionSupport.CLOSEST_MATCH` | The declared version was unavailable; the closest same-major version was substituted. `doc.requested_oscal_version` and `doc.resolved_oscal_version` differ. |
+| `VersionSupport.UNSUPPORTED` | The declared version/model could not be supported at all; the document cannot advance past `ACQUIRED`. |
+
+```python
+doc = OSCAL.loads(content)
+if doc.version_support is VersionSupport.CLOSEST_MATCH:
+    print(f"Validated {doc.requested_oscal_version} against {doc.resolved_oscal_version}")
 ```
 
 ---

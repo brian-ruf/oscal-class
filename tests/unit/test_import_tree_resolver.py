@@ -237,11 +237,11 @@ class TestFindInImportTreeFedramp:
 # ===========================================================================
 class TestOutOfScopeRewrite:
 
-    def test_out_of_scope_related_link_rewritten(self, resolved_low):
+    def test_out_of_scope_related_link_removed(self, resolved_low):
         ac1 = resolved_low.get_control_by_id("ac-1", depth=0)
-        related = {ln["href"] for ln in ac1.get("links", []) if ln.get("rel") == "related"}
-        # pm-9 is not in LOW -> rewritten to a source URI ending in #pm-9
-        assert any(h.startswith("file:") and h.endswith("#pm-9") for h in related)
+        hrefs = {ln.get("href") for ln in ac1.get("links", [])}
+        # pm-9 is not in LOW -> the dangling related link is removed (not rewritten)
+        assert not any(h and h.endswith("#pm-9") for h in hrefs)
 
     def test_in_scope_related_link_kept(self, resolved_low):
         ac1 = resolved_low.get_control_by_id("ac-1", depth=0)

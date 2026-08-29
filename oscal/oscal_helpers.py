@@ -19,10 +19,12 @@ Contents:
                                     — OSCAL markup → HTML helpers.
 """
 from __future__       import annotations
+import os
 import copy
 import uuid
 import logging
 from typing           import Optional
+from urllib.parse     import urlparse
 from xml.etree        import ElementTree
 
 from .oscal_converter import oscal_markdown_to_html, _html_to_et
@@ -33,6 +35,29 @@ logger = logging.getLogger(__name__)
 # elements. Mirrors ``oscal_content._OSCAL_NS`` (deliberately kept in sync;
 # this module must not import oscal_content).
 _OSCAL_NS = "http://csrc.nist.gov/ns/oscal"
+
+# Best-effort OSCAL media types by file extension. Used to infer an ``rlink``
+# media type from a referenced file's href when creating back-matter resources.
+MEDIA_TYPES = {
+    ".xml":  "application/xml",
+    ".json": "application/json",
+    ".yaml": "application/yaml",
+    ".yml":  "application/yaml",
+}
+
+
+# -------------------------------------------------------------------------
+def _infer_media_type(href: str) -> str:
+    """Best-effort OSCAL media type from an href's file extension.
+
+    Args:
+        href (str, required): The reference href (path or URL).
+
+    Returns:
+        str: The matching OSCAL media type, or "" when the extension is unknown.
+    """
+    ext = os.path.splitext(urlparse(href).path)[1].lower()
+    return MEDIA_TYPES.get(ext, "")
 
 
 # -------------------------------------------------------------------------

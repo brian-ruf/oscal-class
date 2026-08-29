@@ -16,8 +16,39 @@ Module constants:
         and ``markup-multiline``.
 """
 import logging
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+# RFC 3986 characters permitted unescaped across URI-reference components. Alphanumerics
+# and ``-._~`` are always safe in quote(); this adds the reserved gen-/sub-delims plus ``%``
+# so URI structure and any existing ``%XX`` escapes are preserved rather than double-encoded.
+_URI_REFERENCE_SAFE = "-._~:/?#[]@!$&'()*+,;=%"
+
+
+def normalize_uri_reference(value: str) -> str:
+    """Best-effort conversion of a non-conformant value into a valid URI-reference.
+
+    Defensive coding for URI values that arrive with characters RFC 3986 does not permit
+    unescaped — e.g. a Windows path with backslashes (``R:\\a\\b.json``), a raw space, or a
+    non-ASCII (IRI) character. Backslashes are converted to forward slashes (the usual
+    Windows-path intent) and every remaining disallowed character is percent-encoded using
+    UTF-8, while URI-structural characters and existing ``%XX`` escapes are preserved. A
+    value that is already conformant (and any non-string/empty input) is returned unchanged.
+
+    Note this cannot invent a missing scheme, so it does not, on its own, make a bare
+    ``#fragment`` a valid *absolute* ``uri`` — it only repairs the character set.
+
+    Args:
+        value (str): The candidate URI-reference.
+
+    Returns:
+        str: A character-set-conformant URI-reference.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    return quote(value.replace("\\", "/"), safe=_URI_REFERENCE_SAFE)
 
 
 def oscal_date_time_with_timezone(date_time = None, format = "%Y-%m-%dT%H:%M:%SZ")-> str:
@@ -273,9 +304,16 @@ OSCAL_DATATYPES = {
     },
     "uri": {
         "base-type": "string",
-        "xml-pattern": r"[\S]+",
-        "json-pattern": r"^[\S]+$",
-        "recommended-pattern": r"\S+",
+        # The prior pattern accepted any non-whitespace run, so it admitted values that
+        # are not valid URIs (e.g. Windows paths with backslashes). Preserved here as the
+        # baseline the tighter patterns replace.
+        "original": r"^[\S]+$",
+        # An absolute URI: a scheme, then only characters RFC 3986 permits across URI
+        # components — unreserved / reserved (gen-delims + sub-delims) / percent-encoded.
+        # This rejects backslashes, whitespace, and other excluded characters.
+        "xml-pattern": r"[A-Za-z][A-Za-z0-9+.\-]*:(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*",
+        "json-pattern": r"^[A-Za-z][A-Za-z0-9+.\-]*:(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*$",
+        "recommended-pattern": r"[A-Za-z][A-Za-z0-9+.\-]*:\S*",
         "documentation": "A Universal Resource Identifier (URI) formatted according to RFC3986.",
         "remarks": "Requires a scheme with colon per RFC3986.",
         "links": [
@@ -287,9 +325,17 @@ OSCAL_DATATYPES = {
     },
     "uri-reference": {
         "base-type": "string",
-        "xml-pattern": r"[\S]+",
-        "json-pattern": r"^[\S]+$",
-        "recommended-pattern": r"\S+",
+        # The prior pattern accepted any non-whitespace run, so an OSCAL link href like
+        # "R:\\path\\file.json#frag" (a Windows path — invalid URI syntax) passed. Preserved
+        # here as the baseline the tighter pattern replaces.
+        "original": r"^[\S]+$",
+        # A URI or relative-reference: only characters RFC 3986 permits across URI
+        # components — unreserved / reserved (gen-delims + sub-delims) / percent-encoded.
+        # Backslashes, whitespace, quotes, angle brackets, etc. are rejected; relative
+        # paths and bare "#fragment" references are accepted.
+        "xml-pattern": r"(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})+",
+        "json-pattern": r"^(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})+$",
+        "recommended-pattern": r"(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})+",
         "documentation": "A URI Reference, either a URI or a relative-reference, formatted according to section 4.1 of RFC3986.",
         "remarks": "A trimmed URI having at least one character with no leading or trailing whitespace.",
         "links": [

@@ -637,14 +637,17 @@ class TestRemoveImport:
         doc.remove_import("/tmp/_oscal_remove_partial_a.xml")
         assert doc.imports_resolved is False
 
-    def test_remove_both_failures_resolves(self):
+    def test_cannot_remove_last_import(self):
+        """A profile requires at least one import, so the second removal is refused
+        (leaving one import) — its cardinality minimum is enforced."""
         doc = OSCAL.loads(_profile_xml(
             "/tmp/_oscal_remove_both_a.xml",
             "/tmp/_oscal_remove_both_b.xml",
         ))
-        doc.remove_import("/tmp/_oscal_remove_both_a.xml")
-        doc.remove_import("/tmp/_oscal_remove_both_b.xml")
-        assert doc.imports_resolved is True
+        assert doc.remove_import("/tmp/_oscal_remove_both_a.xml") is True
+        # Only one import remains; removing it would drop below the minimum of 1.
+        assert doc.remove_import("/tmp/_oscal_remove_both_b.xml") is False
+        assert len(doc._dict["profile"]["imports"]) == 1
 
     # --- import_tree after removal ---
 
