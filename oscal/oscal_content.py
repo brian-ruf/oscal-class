@@ -860,9 +860,10 @@ class OSCAL:
     def load(cls, source: str | os.PathLike | _ReadableSource, *, href: str | None = None):
         """Initialize an instance from a local file path or file-like object.
 
-        Aligns with Python's conventional ``load(...)`` behavior. Use ``loads(...)``
-        for in-memory strings/dicts, and ``acquire(...)`` for URI/reference
-        resolution and fallback sources.
+        Aligns with Python's conventional ``load(...)`` behavior (cf. ``json.load`` /
+        ``pickle.load``): the source is a **local** path or a file-like object. Use
+        ``loads(...)`` for in-memory strings/dicts, and ``acquire(...)`` for URI/reference
+        sources (``http``/``https``/``file``/``ftp``/…) — ``load`` does not fetch remotely.
 
         Args:
             source (str | os.PathLike | file-like, required): A filesystem path or an
@@ -893,6 +894,15 @@ class OSCAL:
                 resolved_href = str(getattr(source, "name", ""))
         elif isinstance(source, (str, os.PathLike)):
             path = os.fspath(source)
+            # load() reads local sources only. A string carrying a real URI scheme (length
+            # > 1, so a Windows drive letter like "C:" is still a path) is a remote source —
+            # flag the misuse clearly instead of silently reading a nonexistent file and
+            # reporting "format unknown"; the caller should use acquire().
+            if isinstance(source, str):
+                scheme = urlparse(source).scheme
+                if scheme and len(scheme) > 1:
+                    logger.error(f"load() received a URL ('{source}') but reads local files only; "
+                                 "use acquire() for http/https/file/URI sources.")
             content = getfile(path)
             if not resolved_href:
                 resolved_href = path
@@ -2596,6 +2606,18 @@ class OSCAL:
         status = False
         oscal_root = ""
         oscal_version = ""
+
+        # --- Defensive normalization ---
+        # Accept bytes (decode as UTF-8, which also strips a BOM via 'utf-8-sig') and strip
+        # a leading UTF-8 BOM from str input. Content handed in from an external fetch (an API
+        # response with no file extension, a re-encoded file) is detected by its actual data;
+        # a stray BOM otherwise misdetects JSON as YAML, and raw bytes crash format detection.
+        if isinstance(content, (bytes, bytearray)):
+            content = bytes(content).decode("utf-8-sig", errors="replace")
+            logger.debug("Content was bytes; decoded as UTF-8 for detection.")
+        elif isinstance(content, str) and content[:1] == "\ufeff":
+            content = content.lstrip("\ufeff")
+            logger.debug("Stripped a leading UTF-8 BOM from string content.")
 
         # --- Step: acquired ---
         if not content or not content.strip():

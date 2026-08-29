@@ -97,6 +97,32 @@ class TestLoads:
         assert obj is not None
         assert obj.model == ""
 
+
+class TestLoadsRobustness:
+    """loads() detects the format from the content even when an external fetch/API
+    response leaves a leading UTF-8 BOM or hands the content over as bytes — both of
+    which otherwise mis-detect (BOM -> yaml) or crash (bytes) format detection."""
+
+    def test_json_string_with_bom(self):
+        obj = OSCAL.loads("\ufeff" + _read(_JSON_PROFILE))
+        assert obj.original_format == "json"
+        assert obj.model == "profile"
+
+    def test_xml_string_with_bom(self):
+        obj = OSCAL.loads("\ufeff" + _read(_XML_PROFILE))
+        assert obj.original_format == "xml"
+        assert obj.model == "profile"
+
+    def test_json_bytes(self):
+        obj = OSCAL.loads(_read(_JSON_PROFILE).encode("utf-8"))
+        assert obj.original_format == "json"
+        assert obj.model == "profile"
+
+    def test_json_bytes_with_bom(self):
+        obj = OSCAL.loads(b"\xef\xbb\xbf" + _read(_JSON_PROFILE).encode("utf-8"))
+        assert obj.original_format == "json"
+        assert obj.model == "profile"
+
     def test_json_catalog_detected(self):
         """loads() correctly identifies a catalog model."""
         raw = _read(_JSON_CATALOG)
@@ -165,6 +191,21 @@ class TestLoad:
         """_origin is set to 'load' after load()."""
         obj = OSCAL.load(_JSON_PROFILE)
         assert obj._origin == "load"
+
+    def test_load_does_not_fetch_urls(self, monkeypatch):
+        """load() reads local sources only; a URL must NOT be fetched — that is acquire()'s
+        job. (The load/loads/acquire split mirrors Python's json.load/loads conventions.)"""
+        monkeypatch.setattr(OSCAL, "acquire",
+                            lambda *a, **k: pytest.fail("load() must not fetch URLs; use acquire()"))
+        obj = OSCAL.load("https://example.com/catalog.json")
+        assert obj.model == ""          # not loaded — the caller should use acquire()
+
+    def test_load_url_logs_actionable_error(self, caplog):
+        """A URL passed to load() yields a clear 'use acquire()' message, not a silent miss."""
+        import logging
+        with caplog.at_level(logging.ERROR):
+            OSCAL.load("https://example.com/catalog.json")
+        assert any("use acquire()" in r.getMessage() for r in caplog.records)
 
 
 # ===========================================================================
