@@ -28,6 +28,11 @@ Module constants:
         (release candidates and milestones).
     METASCHEMA_MIN_VERSION (str): Earliest version with NIST-published resolved
         metaschema files (``"v1.1.1"``).
+    METASCHEMA_INDEX_VERSION (str): Semantic version of the metaschema index schema
+        (the parsed ``"processed"`` asset structure). Stamped onto every index built by
+        this library and recorded per OSCAL version in ``oscal_versions.index_version``;
+        used to detect/reconcile index-schema mismatches between a library and a shared
+        support database. Current: ``"1.0.0"``.
     INDEX_REFRESH (int): Seconds before a cached metaschema index entry is stale
         (86400 = 24 hours).
     METASCHEMA_FILE_PATTERNS (dict): Filename-suffix → support-type map for
@@ -49,8 +54,10 @@ import uuid
 import time
 from time import sleep
 from typing import Optional
+from functools import cmp_to_key
 from ruf_common.lfs import chkdir, putfile, chkfile
 from ruf_common import helper
+from ruf_common.helper import compare_semver
 from ruf_common import database
 from ruf_common import network
 from .oscal_datatypes import oscal_date_time_with_timezone, OSCAL_DATATYPES
@@ -74,6 +81,15 @@ OSCAL_FORMATS = ["xml", "json", "yaml", "yml"]
 DEFAULT_EXCLUDE_VERSIONS = ["v1.0.0-rc1", "v1.0.0-rc2", "v1.0.0-milestone1", "v1.0.0-milestone2", "v1.0.0-milestone3"]
 METASCHEMA_MIN_VERSION = "v1.1.1"  # NIST did not publish resolved metaschema files before this version
 INDEX_REFRESH = 86400  # Seconds before a cached metaschema index entry is considered stale (24 hours)
+
+# Semantic version of the *metaschema index schema* — the structure the metaschema
+# parser emits and stores as the "processed" support asset (see metaschema_parser).
+# Bump the MAJOR when the index structure changes incompatibly (a library built for an
+# older major must rebuild/replace such indexes); bump MINOR/PATCH for backward-compatible
+# additions. Every index built by this library is stamped with this value, and each
+# oscal_versions row records the index version its stored indexes were built with, so a
+# library and a shared support database can detect and reconcile index-schema mismatches.
+METASCHEMA_INDEX_VERSION = "1.0.0"
 
 # Module-level cache for parsed metaschema index objects.
 # Key: (version, model)  Value: {"version", "model", "last_retrieved", "index"}
@@ -147,7 +163,8 @@ OSCAL_SUPPORT_TABLES["oscal_versions"] = {
         {"name": "github_location"       , "type": "TEXT"   , "label" : "GitHub Location", "description": "The location of the GitHub release for this version of OSCAL."},
         {"name": "documentation_location", "type": "TEXT"   , "label" : "Documentation Location", "description": "The location of documentation for this version."},
         {"name": "acquired"              , "type": "NUMERIC", "label" : "Acquired", "description": "The date and time the support files were loaded into this system."},
-        {"name": "successful"            , "type": "NUMERIC", "label" : "Successful", "description": "Indicates whether all support files were acquired successfully."}
+        {"name": "successful"            , "type": "NUMERIC", "label" : "Successful", "description": "Indicates whether all support files were acquired successfully."},
+        {"name": "index_version"         , "type": "TEXT"   , "label" : "Index Version", "description": "Semantic version of the metaschema index schema used to build this version's processed indexes (see METASCHEMA_INDEX_VERSION)."}
     ]
 }
 OSCAL_SUPPORT_TABLES["oscal_support"] = {
@@ -300,6 +317,11 @@ class OSCALSupport:
     Note:
         ``OSCAL_support`` is a backward-compatible alias for this class.
     """
+    # Class-level default so the attribute exists even on instances built via
+    # ``__new__`` (e.g. in tests); ``__init__`` sets the resolved instance value and
+    # ``resolve_index_version()`` refines it at startup.
+    active_index_version: str = METASCHEMA_INDEX_VERSION
+
     def __init__(self, db_conn=SUPPORT_DATABASE_DEFAULT_FILE, db_type=SUPPORT_DATABASE_DEFAULT_TYPE, db_init_mode="auto", db_compress_files=COMPRESS_SUPPORT_FILES_IN_DATABASE):
         """
         Initialize OSCAL support and run startup (table checks / population).
@@ -325,6 +347,7 @@ class OSCALSupport:
         self.db_compress_files = db_compress_files  # Whether to compress support files in the database
         self.db_state   = "unknown" # The state of the support database (unknown, not-present, empty, populated)
         self.versions   = {}        # Supported OSCAL versions available within the support database, and support references
+        self.active_index_version = METASCHEMA_INDEX_VERSION  # Metaschema-index-schema version this instance uses when fetching indexes (resolved at startup)
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
         self.known_catalogs = _KNOWN_CATALOGS  # Known OSCAL catalogs with canonical and OSCAL locations
@@ -513,6 +536,127 @@ class OSCALSupport:
             return False
 
     # -------------------------------------------------------------------------
+    def _extract_bundled_db_to_temp(self) -> str | None:
+        """Extract the library's bundled support database to a temporary file.
+
+        Unlike :meth:`_extract_database` (which overwrites the live DB), this writes the
+        bundled ``oscal_support.db`` to a fresh temp path and returns it, so callers can
+        open it read-only and selectively merge records. The caller owns the temp file and
+        must delete it. Returns the path, or None on failure.
+        """
+        import zipfile
+        import tempfile
+        try:
+            with resources.files("oscal.data").joinpath("oscal_support.zip").open("rb") as bundled:
+                with zipfile.ZipFile(bundled) as z:
+                    member = "oscal_support.db"
+                    if member not in z.namelist():
+                        logger.error(f"{member} not found inside oscal_support.zip.")
+                        return None
+                    content = z.read(member)
+            if not content:
+                logger.error("Bundled support database is empty.")
+                return None
+            fd, tmp_path = tempfile.mkstemp(suffix=".db", prefix="oscal_support_bundled_")
+            with os.fdopen(fd, "wb") as dst:
+                dst.write(content)
+            logger.debug(f"Extracted bundled support DB to temp path {tmp_path} ({len(content)} bytes).")
+            return tmp_path
+        except FileNotFoundError:
+            logger.warning("No bundled support database found in package resources.")
+            return None
+        except Exception as e:
+            logger.warning(f"Could not extract bundled support DB to a temp file: {e}")
+            return None
+
+    # -------------------------------------------------------------------------
+    def _merge_from_bundled_db(self, versions: Optional[list] = None) -> bool:
+        """Merge records from the bundled support DB into the local database.
+
+        Copies ``oscal_versions``, ``oscal_support`` and the referenced ``filecache`` rows
+        from the library's bundled database into the local one using SQLite ``ATTACH``.
+        Existing rows are preserved (``INSERT OR IGNORE``). Only the columns common to both
+        schemas are copied, so a bundle built against an older/newer table layout still
+        merges cleanly; any merged version row left without an ``index_version`` is
+        backfilled to :data:`METASCHEMA_INDEX_VERSION`.
+
+        Args:
+            versions (list | None, optional): OSCAL version tags to merge; None merges every
+                version present in the bundle.
+
+        Returns:
+            bool: True if the merge statements executed successfully.
+        """
+        if self.db_type != "sqlite3":
+            logger.warning("Support DB merge is only supported for sqlite3 databases.")
+            return False
+        tmp = self._extract_bundled_db_to_temp()
+        if not tmp:
+            return False
+
+        conn = self.db.conn
+        attached = False
+        try:
+            # ATTACH/DETACH must run outside a transaction (db_execute wraps its statements
+            # in one), so issue them directly on the connection.
+            conn.execute(f"ATTACH DATABASE '{tmp.replace(chr(39), chr(39) * 2)}' AS bundled")
+            attached = True
+
+            where = ""
+            if versions:
+                vlist = ", ".join("'" + str(v).replace("'", "''") + "'" for v in versions)
+                where = f" WHERE version IN ({vlist})"
+
+            def _common_columns(table: str) -> list[str]:
+                local_cols = [r.get("name") for r in self.db.query(f"PRAGMA table_info('{table}')") or []]
+                bundled_cols = {r.get("name") for r in self.db.query(f"PRAGMA bundled.table_info('{table}')") or []}
+                return [c for c in local_cols if c in bundled_cols]
+
+            stmts: list[str] = []
+            fc_cols = _common_columns("filecache")
+            if fc_cols:
+                cols = ", ".join(fc_cols)
+                stmts.append(
+                    f"INSERT OR IGNORE INTO filecache ({cols}) SELECT {cols} FROM bundled.filecache "
+                    f"WHERE uuid IN (SELECT filecache_uuid FROM bundled.oscal_support{where})"
+                )
+            sup_cols = _common_columns("oscal_support")
+            if sup_cols:
+                cols = ", ".join(sup_cols)
+                stmts.append(f"INSERT OR IGNORE INTO oscal_support ({cols}) SELECT {cols} FROM bundled.oscal_support{where}")
+            ver_cols = _common_columns("oscal_versions")
+            if ver_cols:
+                cols = ", ".join(ver_cols)
+                stmts.append(f"INSERT OR IGNORE INTO oscal_versions ({cols}) SELECT {cols} FROM bundled.oscal_versions{where}")
+
+            ok = self.db.db_execute(stmts) if stmts else False
+            if ok:
+                # Merged rows from an older bundle may lack index_version; treat them as the
+                # current schema (a bundle is always built by a compatible library).
+                self.db.db_execute(
+                    f"UPDATE oscal_versions SET index_version = '{METASCHEMA_INDEX_VERSION}' "
+                    "WHERE index_version IS NULL"
+                )
+                logger.info(
+                    f"Merged {'all versions' if not versions else ', '.join(versions)} "
+                    "from the bundled support database."
+                )
+            return bool(ok)
+        except Exception as e:
+            logger.warning(f"Failed to merge from bundled support DB: {e}")
+            return False
+        finally:
+            if attached:
+                try:
+                    conn.execute("DETACH DATABASE bundled")
+                except Exception as e:
+                    logger.debug(f"DETACH bundled failed (non-fatal): {e}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    # -------------------------------------------------------------------------
     def startup(self, check_for_updates=False, refresh_all=False):
         """
         Perform startup tasks required to provide OSCAL support.
@@ -554,8 +698,9 @@ class OSCALSupport:
             logger.debug(f"Support database tables check status: {status}")
 
             if status: # Tables exist
-                # TODO: Check database structure against current
-                #       structure and modify fields as needed.
+                # Bring an older database schema up to date (adds columns introduced
+                # after the database was first created), then load versions.
+                self.__migrate_schema()
                 status = self.__load_versions()
                 if status:
                     self.db_state = "populated"
@@ -576,7 +721,85 @@ class OSCALSupport:
                 logger.error("Unable to update OSCAL support capability. Exiting.")
                 self.ready = False
 
+        # Resolve which metaschema-index-schema version this instance will use, healing
+        # the database from the bundled copy if it holds no compatible index version.
+        if self.ready:
+            self.resolve_index_version()
+
         return status
+
+    # -------------------------------------------------------------------------
+    def __migrate_schema(self) -> None:
+        """Add columns introduced after an existing database was first created.
+
+        ``check_for_tables`` creates missing *tables* but never alters existing ones, so a
+        database created before a column was added would lack it. Each table's current
+        field list in :data:`OSCAL_SUPPORT_TABLES` is compared against the live columns and
+        any missing ones are added via ``ALTER TABLE``. The ``oscal_versions.index_version``
+        column is additionally backfilled to :data:`METASCHEMA_INDEX_VERSION` for pre-existing
+        rows — indexes built by this codebase already conform to the current index schema, so
+        backfilling avoids a needless heal on upgrade.
+        """
+        if self.db_type != "sqlite3":
+            return
+        for table_name, table_def in OSCAL_SUPPORT_TABLES.items():
+            if not self.db.table_exists(table_name):
+                continue
+            existing = {row.get("name") for row in self.db.query(f"PRAGMA table_info('{table_name}')") or []}
+            for field in table_def.get("table_fields", []):
+                col = field["name"]
+                if col in existing:
+                    continue
+                logger.info(f"Support DB migration: adding column '{col}' to '{table_name}'.")
+                self.db.db_execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {field['type']}")
+                if table_name == "oscal_versions" and col == "index_version":
+                    self.db.db_execute(
+                        f"UPDATE oscal_versions SET index_version = '{METASCHEMA_INDEX_VERSION}' "
+                        "WHERE index_version IS NULL"
+                    )
+
+    # -------------------------------------------------------------------------
+    def resolve_index_version(self) -> str:
+        """Select the metaschema-index-schema version this instance will use.
+
+        Reads the distinct ``index_version`` values recorded in ``oscal_versions`` and keeps
+        those in the compatible range ``[METASCHEMA_INDEX_VERSION, next-major)``. When at
+        least one qualifies, the **lowest** in range is chosen (the most conservative
+        compatible schema) and assigned to :attr:`active_index_version`. When none qualify,
+        the library's bundled database is merged into the local one (which supplies indexes
+        built at this library's index version) and the resolution is retried once. Returns
+        the resolved value.
+        """
+        target = METASCHEMA_INDEX_VERSION
+        next_major = f"{int(target.split('.')[0]) + 1}.0.0"
+
+        def _in_range_versions() -> list[str]:
+            rows = self.db.query("SELECT DISTINCT index_version FROM oscal_versions WHERE index_version IS NOT NULL") or []
+            found = [r.get("index_version") for r in rows if r.get("index_version")]
+            return [v for v in found
+                    if compare_semver(v, target) >= 0 and compare_semver(v, next_major) < 0]
+
+        candidates = _in_range_versions()
+        if not candidates:
+            logger.warning(
+                "Support DB holds no metaschema index compatible with this library "
+                f"(need {target} <= index_version < {next_major}); healing from the bundled database."
+            )
+            if self._merge_from_bundled_db():
+                self.__load_versions()
+                candidates = _in_range_versions()
+
+        if candidates:
+            self.active_index_version = sorted(candidates, key=cmp_to_key(compare_semver))[0]
+        else:
+            # Could not obtain a compatible index version; fall back to the library's own.
+            self.active_index_version = target
+            logger.error(
+                "Support DB still holds no compatible metaschema index after healing; "
+                f"defaulting to index version {target}. Indexes may need rebuilding."
+            )
+        logger.debug(f"Active metaschema index version: {self.active_index_version}")
+        return self.active_index_version
 
     # -------------------------------------------------------------------------
     def update(self, mode="new", fetch=None, save_to_fs=False): # , backend=None):
@@ -762,7 +985,7 @@ class OSCALSupport:
         return self.get_asset(oscal_version, model_name, asset_type)
 
     # -------------------------------------------------------------------------
-    def get_metaschema_index(self, version: str, model: str) -> dict | None:
+    def get_metaschema_index(self, version: str, model: str, index_version: str | None = None) -> dict | None:
         """
         Return the parsed metaschema index dict for the given OSCAL version and model.
 
@@ -771,15 +994,24 @@ class OSCALSupport:
         A cached entry is reused until it is older than :data:`INDEX_REFRESH`
         seconds (24 hours), at which point it is refreshed from the database.
 
+        The index is identified by ``(version, model, index_version)``: a stored index
+        whose ``index_version`` has a **different major** than the requested one is
+        incompatible with this library and is rebuilt from the raw metaschema (stamping
+        the current :data:`METASCHEMA_INDEX_VERSION`); a same-major difference is trusted
+        as backward compatible and used as-is.
+
         Args:
             version: OSCAL version string, e.g. ``"v1.1.3"``.
             model:   OSCAL model name, e.g. ``"catalog"``.
+            index_version: Metaschema-index-schema version to require. Defaults to this
+                instance's :attr:`active_index_version` (resolved at startup).
 
         Returns:
             The model-specific index dict on success, or ``None`` when the index
             is unavailable.
         """
-        key = (version, model)
+        resolved_iv = index_version or self.active_index_version
+        key = (version, model, resolved_iv)
         now = time.time()
 
         entry = _metaschema_index_cache.get(key)
@@ -809,6 +1041,17 @@ class OSCALSupport:
                 except json.JSONDecodeError as exc:
                     logger.error(f"Could not parse legacy 'complete' metaschema index for {version}: {exc}")
 
+        # No stored index — build it on demand from the raw metaschema when that is
+        # available. Self-heals a partially-built version (the metaschema files are
+        # present but this model's processed index was never generated); the rebuilt
+        # index is stored so later lookups hit it directly.
+        if not raw and self.get_asset(version, model, "metaschema"):
+            logger.info(f"No processed index for {version}/{model}; building it from the raw metaschema.")
+            from .metaschema_parser import _rebuild_model_index
+            fresh = _rebuild_model_index(self, version, model)
+            if fresh is not None:
+                raw = json.dumps(fresh)
+
         if not raw:
             logger.error(f"No processed metaschema index found for {version}/{model}. Run the metaschema parser to populate support assets.")
             return None
@@ -822,6 +1065,26 @@ class OSCALSupport:
         if not model_index:
             logger.error(f"Empty metaschema index for {version}/{model}.")
             return None
+
+        # Reconcile the stored index's schema version against the one requested. A
+        # different major is incompatible — rebuild from the raw metaschema so the fresh
+        # index conforms to (and is stamped with) the current index schema. A missing
+        # index_version predates index versioning and is handled by the format-specific
+        # migrations below; a same-major difference is trusted as backward compatible.
+        stored_iv = model_index.get("index_version")
+        if stored_iv and self._semver_major(stored_iv) != self._semver_major(resolved_iv):
+            logger.info(
+                f"Metaschema index for {version}/{model} was built with index schema "
+                f"{stored_iv}, incompatible with requested {resolved_iv} — rebuilding."
+            )
+            from .metaschema_parser import _rebuild_model_index
+            fresh_index = _rebuild_model_index(self, version, model)
+            if fresh_index is not None:
+                model_index = fresh_index
+            else:
+                logger.warning(
+                    f"Rebuild failed for {version}/{model}; continuing with index schema {stored_iv}."
+                )
 
         # Ensure json-path (node-level) and condition (constraint-level) are present.
         # Indexes built before these features were added lack these keys; annotate lazily.
@@ -999,9 +1262,13 @@ class OSCALSupport:
             else:
                 self._cache[CACHE_MODELS_PER_VERSION] = {}
 
+            # Prefer the authoritative "document-model" marker: it is written for every
+            # document model and is therefore complete even when the "processed" indexes
+            # were only partially built. Fall back to "processed" (the only type retained
+            # in a minimized, indexes-only database once document-model rows are pruned),
+            # then "xml-schema".
             if version == "all":
-                doc_query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'document-model' and model != 'complete'"
-                xml_query = "SELECT DISTINCT model FROM oscal_support WHERE type = 'xml-schema' and model != 'complete'"
+                where = ""
             else:
                 # NIST did not publish resolved metaschema files before v1.1.1, so no
                 # model rows exist for earlier versions. The library reuses the v1.1.1
@@ -1009,12 +1276,16 @@ class OSCALSupport:
                 query_version = version
                 if helper.compare_semver(version, METASCHEMA_MIN_VERSION) < 0:
                     query_version = METASCHEMA_MIN_VERSION
-                doc_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{query_version}' and type = 'document-model' and model != 'complete'"
-                xml_query = f"SELECT DISTINCT model FROM oscal_support WHERE version = '{query_version}' and type = 'xml-schema' and model != 'complete'"
+                where = f"version = '{query_version}' and "
 
-            results = self.db.query(doc_query)
-            if not results:
-                results = self.db.query(xml_query)
+            results = None
+            for source_type in ("document-model", "processed", "xml-schema"):
+                results = self.db.query(
+                    f"SELECT DISTINCT model FROM oscal_support "
+                    f"WHERE {where}type = '{source_type}' and model != 'complete'"
+                )
+                if results:
+                    break
             if results is not None:
                 for entry in results:
                     models.append(entry.get("model", ""))
@@ -1123,6 +1394,74 @@ class OSCALSupport:
         return status
 
     # -------------------------------------------------------------------------
+    def remove_asset(self, version: str | None = None, model: str | None = None,
+                     asset_type: str | None = None) -> int:
+        """Remove support assets matching any combination of version / model / asset_type.
+
+        At least one of the three criteria must be supplied; the criteria are ANDed. Every
+        matching ``oscal_support`` row is deleted, and each cached file it referenced is
+        deleted from ``filecache`` **once it is no longer referenced by any surviving
+        asset row** — a single cached file can back more than one asset row (e.g. a
+        document model's ``metaschema`` and ``document-model`` rows share one
+        ``filecache_uuid``), so orphan-checking prevents deleting a file another row still
+        needs.
+
+        Args:
+            version (str | None, optional): OSCAL version tag (e.g. ``"v1.2.3"``).
+            model (str | None, optional): Model name (e.g. ``"catalog"``).
+            asset_type (str | None, optional): Asset type (e.g. ``"metaschema"``,
+                ``"document-model"``, ``"processed"``).
+
+        Returns:
+            int: The number of ``oscal_support`` rows removed (0 when nothing matched or
+                no criterion was supplied).
+        """
+        criteria = {"version": version, "model": model, "type": asset_type}
+        provided = {k: v for k, v in criteria.items() if v}
+        if not provided:
+            logger.error("remove_asset requires at least one of version, model, or asset_type.")
+            return 0
+
+        where = " AND ".join(
+            f"{col} = '{str(val).replace(chr(39), chr(39) * 2)}'" for col, val in provided.items()
+        )
+        matched = self.db.query(f"SELECT filecache_uuid FROM oscal_support WHERE {where}")
+        if not matched:
+            logger.debug(f"remove_asset: no assets match {provided}.")
+            return 0
+        uuids = sorted({r.get("filecache_uuid") for r in matched if r.get("filecache_uuid")})
+
+        stmts = [f"DELETE FROM oscal_support WHERE {where}"]
+        if uuids:
+            uuid_list = ", ".join(f"'{u}'" for u in uuids)
+            # Runs after the oscal_support delete above (same transaction), so the NOT IN
+            # subquery sees the already-reduced table and only orphaned files are removed.
+            stmts.append(
+                f"DELETE FROM filecache WHERE uuid IN ({uuid_list}) "
+                "AND uuid NOT IN (SELECT filecache_uuid FROM oscal_support)"
+            )
+        if not self.db.db_execute(stmts):
+            logger.error(f"remove_asset: failed to remove assets matching {provided}.")
+            return 0
+
+        # Derived state that may now be stale.
+        self._cache.pop("models_per_version", None)
+        if asset_type in (None, "processed"):
+            _metaschema_index_cache.clear()
+
+        logger.info(f"remove_asset: removed {len(matched)} asset row(s) matching {provided}.")
+        return len(matched)
+
+    # -------------------------------------------------------------------------
+    def vacuum(self) -> None:
+        """Reclaim free space in the support database (SQLite ``VACUUM``).
+
+        A public wrapper over the internal VACUUM; a no-op on non-SQLite backends. Useful
+        after a bulk :meth:`remove_asset` to shrink the database file on disk.
+        """
+        self.__vacuum_database()
+
+    # -------------------------------------------------------------------------
     def is_valid_version(self, version) -> bool:
         """
         Check if the specified OSCAL version is valid and supported.
@@ -1145,6 +1484,7 @@ class OSCALSupport:
         query = "SELECT * FROM oscal_versions ORDER BY released DESC"
         results = self.db.query(query)
         if results is not None:
+            self.versions.clear()  # full resync from the database (also used after a merge)
             for entry in results:
                 self.versions[entry["version"]] = {
                     "title"                 : entry.get("title", ""),
@@ -1153,6 +1493,7 @@ class OSCALSupport:
                     "documentation_location": entry.get("documentation_location", ""),
                     "acquired"              : entry.get("acquired", ""),
                     "successful"            : entry.get("successful", None),
+                    "index_version"         : entry.get("index_version", None),
                 }
             status = True
 
@@ -1179,6 +1520,112 @@ class OSCALSupport:
             Optional[str]: The latest OSCAL version tag, or None if none are loaded.
         """
         return self.latest_version()
+
+    # -------------------------------------------------------------------------
+    def set_version_index_version(self, version: str, index_version: str = METASCHEMA_INDEX_VERSION) -> bool:
+        """Record the metaschema-index-schema version used to build *version*'s indexes.
+
+        Writes ``index_version`` into the version's ``oscal_versions`` row and updates the
+        in-memory registry. Called after a version's ``"processed"`` indexes are (re)built
+        so the database records which index schema they conform to.
+
+        Args:
+            version (str, required): OSCAL version tag (e.g. ``"v1.2.3"``).
+            index_version (str, optional): Index-schema version; defaults to the library's
+                current :data:`METASCHEMA_INDEX_VERSION`.
+
+        Returns:
+            bool: True on success.
+        """
+        ok = self.db.db_execute(
+            f"UPDATE oscal_versions SET index_version = '{index_version}' WHERE version = '{version}'"
+        )
+        if ok and version in self.versions:
+            self.versions[version]["index_version"] = index_version
+        return bool(ok)
+
+    # -------------------------------------------------------------------------
+    def ensure_version(self, version: str) -> tuple[Optional[str], str]:
+        """Make support for OSCAL *version* available, acquiring or substituting it.
+
+        Invoked when content declares an OSCAL version not present in the local support
+        database. Resolution order:
+
+        1. Already present locally → return it (``"exact"``).
+        2. Merge that version from the library's bundled database, if present there
+           (offline; logged INFO).
+        3. Otherwise fetch it from the NIST OSCAL GitHub repository (logged INFO on success).
+        4. If it still cannot be obtained → substitute the closest available version within
+           the same OSCAL major (logged WARN; ``"closest-match"``).
+        5. If nothing usable exists → ``"unavailable"`` (logged ERROR).
+
+        Args:
+            version (str, required): The requested OSCAL version tag (e.g. ``"v1.2.3"``).
+
+        Returns:
+            tuple[str | None, str]: ``(resolved_version, outcome)`` where ``outcome`` is
+                ``"exact"``, ``"closest-match"``, or ``"unavailable"``. ``resolved_version``
+                is None only when ``outcome`` is ``"unavailable"``.
+        """
+        if version in self.versions:
+            return version, "exact"
+
+        # 1) Try the library's bundled database (offline, fast).
+        if self._merge_from_bundled_db(versions=[version]):
+            self.__load_versions()
+            if version in self.versions:
+                logger.info(f"Acquired OSCAL {version} support by merging from the bundled database.")
+                return version, "exact"
+
+        # 2) Try fetching from NIST GitHub.
+        logger.info(f"OSCAL {version} not available locally or in the bundle; fetching from NIST GitHub...")
+        try:
+            fetched = self.update(mode=version)
+        except Exception as e:
+            fetched = False
+            logger.debug(f"Fetch of OSCAL {version} raised: {e}")
+        if fetched and version in self.versions:
+            logger.info(f"Acquired OSCAL {version} support from NIST GitHub.")
+            return version, "exact"
+
+        # 3) Substitute the closest available version within the same OSCAL major.
+        logger.warning(f"Could not acquire OSCAL {version}; seeking the closest available version in the same major.")
+        closest = self._closest_same_major(version)
+        if closest:
+            logger.warning(f"Using OSCAL {closest} in place of unavailable {version}.")
+            return closest, "closest-match"
+
+        logger.error(f"OSCAL {version} is unavailable and no compatible version could be substituted.")
+        return None, "unavailable"
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _semver_major(version: str) -> int:
+        """Return the integer major component of an OSCAL version tag, or -1."""
+        s = version[1:] if version.startswith("v") else version
+        try:
+            return int(s.split(".")[0])
+        except (ValueError, IndexError):
+            return -1
+
+    # -------------------------------------------------------------------------
+    def _closest_same_major(self, version: str) -> Optional[str]:
+        """Return the locally available version closest to *version* in the same major.
+
+        Prefers the highest available version at or below the requested one (a slightly
+        older release is the safest substitute); if every same-major version is newer,
+        returns the lowest of those. Returns None when no same-major version is available.
+        """
+        target_major = self._semver_major(version)
+        same_major = [v for v in self.versions if self._semver_major(v) == target_major]
+        if not same_major:
+            return None
+        at_or_below = sorted((v for v in same_major if compare_semver(v, version) <= 0),
+                             key=cmp_to_key(compare_semver))
+        if at_or_below:
+            return at_or_below[-1]
+        return sorted(same_major, key=cmp_to_key(compare_semver))[0]
+
     # -------------------------------------------------------------------------
     def __get_oscal_versions(self, fetch="latest", save_to_fs=False):
         """Pulls OSCAL version information and support files from GitHub and loads it into the database."""

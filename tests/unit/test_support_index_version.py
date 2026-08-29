@@ -49,6 +49,38 @@ def support(bundled_db_path):
     return OSCALSupport(db_conn=bundled_db_path, db_init_mode="auto")
 
 
+def _is_fat(db_path) -> bool:
+    """True when the DB retains raw ``metaschema`` assets (not a minimized indexes-only DB)."""
+    c = sqlite3.connect(db_path)
+    try:
+        return c.execute("SELECT count(*) FROM oscal_support WHERE type='metaschema'").fetchone()[0] > 0
+    finally:
+        c.close()
+
+
+@pytest.fixture
+def fat_db_path(tmp_path):
+    """A writable copy of a *fat* support DB (retaining metaschema/document-model assets).
+
+    The packaged bundle is minimized to processed indexes only, so scenarios that exercise
+    the raw metaschema (removing it, rebuilding an index from it) need a fat source. Prefer
+    the checked-out ``tests/support`` DB; skip cleanly when only a minimized DB is available.
+    """
+    import shutil
+    candidate = os.path.join(os.path.dirname(__file__), "..", "support", "oscal_support.db")
+    if os.path.exists(candidate) and _is_fat(candidate):
+        dest = str(tmp_path / "fat_oscal_support.db")
+        shutil.copy(candidate, dest)
+        return dest
+    pytest.skip("no fat support DB available (metaschema assets required for this test)")
+
+
+@pytest.fixture
+def fat_support(fat_db_path):
+    """An OSCALSupport backed by a fat DB (metaschema present); startup already run."""
+    return OSCALSupport(db_conn=fat_db_path, db_init_mode="auto")
+
+
 def _columns(db_path, table):
     c = sqlite3.connect(db_path)
     try:
@@ -86,8 +118,13 @@ def _filecache_count(db_path):
 # ===========================================================================
 class TestMigration:
 
-    def test_bundled_db_lacks_column_until_migrated(self, bundled_db_path):
-        # The shipped bundle predates the column; startup adds it.
+    def test_migration_adds_missing_column(self, bundled_db_path):
+        # Simulate a pre-versioning database by dropping the column, then confirm startup
+        # re-adds it (SQLite 3.35+ supports DROP COLUMN).
+        c = sqlite3.connect(bundled_db_path)
+        c.execute("ALTER TABLE oscal_versions DROP COLUMN index_version")
+        c.commit()
+        c.close()
         assert "index_version" not in _columns(bundled_db_path, "oscal_versions")
         OSCALSupport(db_conn=bundled_db_path, db_init_mode="auto")
         assert "index_version" in _columns(bundled_db_path, "oscal_versions")
@@ -143,9 +180,9 @@ class TestStamping:
         assert val == "9.9.9"
         assert support.versions["v1.2.3"]["index_version"] == "9.9.9"
 
-    def test_rebuilt_index_is_stamped(self, support):
+    def test_rebuilt_index_is_stamped(self, fat_support):
         from oscal.metaschema_parser import _rebuild_model_index
-        fresh = _rebuild_model_index(support, "v1.2.3", "catalog")
+        fresh = _rebuild_model_index(fat_support, "v1.2.3", "catalog")
         assert fresh is not None
         assert fresh.get("index_version") == METASCHEMA_INDEX_VERSION
 
@@ -298,16 +335,16 @@ class TestRemoveAsset:
     def test_no_match_returns_zero(self, support):
         assert support.remove_asset(version="v9.9.9") == 0
 
-    def test_remove_by_type(self, support):
-        removed = support.remove_asset(asset_type="metaschema")
+    def test_remove_by_type(self, fat_support):
+        removed = fat_support.remove_asset(asset_type="metaschema")
         assert removed > 0
-        assert "metaschema" not in _type_counts(support.db_conn)
+        assert "metaschema" not in _type_counts(fat_support.db_conn)
 
-    def test_remove_by_version_and_model(self, support):
+    def test_remove_by_version_and_model(self, fat_support):
         # catalog for v1.2.3 has three rows: metaschema, document-model, processed.
-        removed = support.remove_asset(version="v1.2.3", model="catalog")
+        removed = fat_support.remove_asset(version="v1.2.3", model="catalog")
         assert removed == 3
-        c = sqlite3.connect(support.db_conn)
+        c = sqlite3.connect(fat_support.db_conn)
         remaining = c.execute(
             "SELECT count(*) FROM oscal_support WHERE version='v1.2.3' AND model='catalog'"
         ).fetchone()[0]
@@ -319,14 +356,14 @@ class TestRemoveAsset:
         assert remaining == 0
         assert other > 0
 
-    def test_filecache_orphan_safety(self, support):
+    def test_filecache_orphan_safety(self, fat_support):
         # metaschema and document-model rows share a filecache_uuid; removing only the
         # metaschema rows must NOT delete files still referenced by document-model rows.
-        before = _filecache_count(support.db_conn)
-        support.remove_asset(asset_type="metaschema")
-        after_meta = _filecache_count(support.db_conn)
+        before = _filecache_count(fat_support.db_conn)
+        fat_support.remove_asset(asset_type="metaschema")
+        after_meta = _filecache_count(fat_support.db_conn)
         # Some files survive (still referenced by document-model), so not everything is gone.
-        c = sqlite3.connect(support.db_conn)
+        c = sqlite3.connect(fat_support.db_conn)
         dangling = c.execute(
             "SELECT count(*) FROM oscal_support WHERE filecache_uuid NOT IN (SELECT uuid FROM filecache)"
         ).fetchone()[0]
@@ -334,36 +371,65 @@ class TestRemoveAsset:
         assert dangling == 0            # no asset row left pointing at a deleted file
         assert after_meta < before      # some orphaned files were reclaimed
 
-    def test_prune_to_processed_only(self, support):
-        support.remove_asset(asset_type="metaschema")
-        support.remove_asset(asset_type="document-model")
-        assert set(_type_counts(support.db_conn)) == {"processed"}
+    def test_prune_to_processed_only(self, fat_support):
+        fat_support.remove_asset(asset_type="metaschema")
+        fat_support.remove_asset(asset_type="document-model")
+        assert set(_type_counts(fat_support.db_conn)) == {"processed"}
         # every remaining asset row still has its backing file
-        c = sqlite3.connect(support.db_conn)
+        c = sqlite3.connect(fat_support.db_conn)
         dangling = c.execute(
             "SELECT count(*) FROM oscal_support WHERE filecache_uuid NOT IN (SELECT uuid FROM filecache)"
         ).fetchone()[0]
         c.close()
         assert dangling == 0
 
-    def test_list_models_from_processed_only(self, support):
-        support.remove_asset(asset_type="metaschema")
-        support.remove_asset(asset_type="document-model")
-        support._cache.pop("models_per_version", None)  # ensure a fresh query
-        models = set(support.list_models("v1.2.3"))
+    def test_list_models_from_processed_only(self, fat_support):
+        fat_support.remove_asset(asset_type="metaschema")
+        fat_support.remove_asset(asset_type="document-model")
+        fat_support._cache.pop("models_per_version", None)  # ensure a fresh query
+        models = set(fat_support.list_models("v1.2.3"))
         assert {"catalog", "profile", "system-security-plan"} <= models
         assert "metadata" not in models     # shared module, not a document model
 
-    def test_processed_only_db_still_validates(self, support, monkeypatch):
+    def _drop_processed(self, db_path, version, model):
+        c = sqlite3.connect(db_path)
+        c.execute(
+            "DELETE FROM filecache WHERE uuid IN "
+            "(SELECT filecache_uuid FROM oscal_support WHERE version=? AND model=? AND type='processed')",
+            (version, model),
+        )
+        c.execute("DELETE FROM oscal_support WHERE version=? AND model=? AND type='processed'",
+                  (version, model))
+        c.commit()
+        c.close()
+
+    def test_partial_build_model_still_recognized(self, fat_support):
+        # A version missing a model's processed index (but keeping metaschema +
+        # document-model) must still recognize the model — list_models sources from the
+        # authoritative document-model marker, not the possibly-incomplete processed set.
+        self._drop_processed(fat_support.db_conn, "v1.2.3", "profile")
+        fat_support._cache.pop("models_per_version", None)
+        assert "profile" in fat_support.list_models("v1.2.3")
+
+    def test_missing_index_built_from_metaschema(self, fat_support):
+        # get_metaschema_index self-heals a missing processed index from the raw
+        # metaschema, and stores the result for next time.
+        self._drop_processed(fat_support.db_conn, "v1.2.3", "profile")
+        support_mod._metaschema_index_cache.clear()
+        idx = fat_support.get_metaschema_index("v1.2.3", "profile")
+        assert idx is not None and idx.get("nodes")
+        assert fat_support.get_asset("v1.2.3", "profile", "processed")  # now persisted
+
+    def test_processed_only_db_still_validates(self, fat_support, monkeypatch):
         # A processed-only support DB is sufficient for validation/conversion.
-        support.remove_asset(asset_type="metaschema")
-        support.remove_asset(asset_type="document-model")
-        support.vacuum()
+        fat_support.remove_asset(asset_type="metaschema")
+        fat_support.remove_asset(asset_type="document-model")
+        fat_support.vacuum()
 
         import oscal.oscal_support as sm
         from importlib import resources
         original = sm.support
-        monkeypatch.setattr(sm, "support", support)  # use this pruned instance directly
+        monkeypatch.setattr(sm, "support", fat_support)  # use this pruned instance directly
         sm._metaschema_index_cache.clear()
         try:
             from oscal import OSCAL

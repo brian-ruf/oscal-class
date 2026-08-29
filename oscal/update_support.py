@@ -74,6 +74,16 @@ logger.info(f"Emit metaschema files to file system: {args.save_files}")
 if support_obj.update(mode=update_mode, save_to_fs=args.save_files):
     logger.info("Support assets updated successfully.")
 
+    # Minimize the shipped database to only what runtime validation/conversion needs:
+    # the parsed "processed" metaschema indexes. The raw "metaschema" files were only
+    # needed to build those indexes, and the "document-model" rows are a redundant tag
+    # over the metaschema rows (list_models now derives models from the processed
+    # indexes). Drop both, then reclaim the freed space.
+    pruned = support_obj.remove_asset(asset_type="metaschema")
+    pruned += support_obj.remove_asset(asset_type="document-model")
+    logger.info(f"Pruned {pruned} non-index support asset(s); retaining only processed metaschema indexes.")
+    support_obj.vacuum()
+
     if zip_file(SUPPORT_DB_PATH, SUPPORT_ZIP_PATH, overwrite=True):
         logger.info(f"Updated support database compressed and saved to {SUPPORT_ZIP_PATH}.")
     else:

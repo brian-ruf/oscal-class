@@ -18,15 +18,31 @@ from oscal.oscal_controls import ResolutionStatus
 
 
 # Normalize away representation differences that are NOT modify concerns:
-#   * out-of-scope cross-references, which the official resolver rewrites to absolute
-#     source URIs (a separate resolution feature not yet implemented here);
+#   * out-of-scope cross-references. This library REMOVES a structured ``link`` to an
+#     out-of-scope control; the official resolver rewrites the href to an absolute source
+#     URI (``file:...#id``) — which is actually schema-invalid OSCAL, since a ``related``
+#     link's href must be a catalog-local fragment (a blind spot in the long-"draft" Profile
+#     Resolution spec). Both are normalized away here so the comparison focuses on modify
+#     (add/remove/set-parameter) content: official ``link`` entries with a ``file:`` href are
+#     dropped (matching the library's removal), while ``file:...#`` inside prose markdown is
+#     collapsed back to ``#`` (the library still rewrites inline prose).
 #   * markdown bracket escaping (``\[`` vs ``[``).
 _FILE_REF = re.compile(r"file:[^\s)#]*#")
 
 
 def _norm(x):
     if isinstance(x, dict):
-        return {k: _norm(v) for k, v in sorted(x.items())}
+        out = {}
+        for k, v in sorted(x.items()):
+            if k == "links" and isinstance(v, list):
+                # Drop out-of-scope cross-reference links (official: file: source URIs);
+                # omit an entirely-empty links list to match the library removing it.
+                v = [ln for ln in v
+                     if not (isinstance(ln, dict) and str(ln.get("href", "")).startswith("file:"))]
+                if not v:
+                    continue
+            out[k] = _norm(v)
+        return out
     if isinstance(x, list):
         import json
         return sorted((_norm(i) for i in x), key=lambda e: json.dumps(e, sort_keys=True))

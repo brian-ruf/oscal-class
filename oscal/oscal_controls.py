@@ -5,85 +5,27 @@ Provides the editable model classes for the OSCAL control models: ``Catalog``
 (defines controls), ``Profile`` (selects and tailors controls into baselines),
 and ``Mapping`` (relates controls across frameworks). Each class subclasses
 ``OSCAL`` from ``oscal_content`` and adds model-specific navigation and
-mutation helpers. ``ImportResult`` is the structured return value of
-``Profile.add_import``.
-
-Module constants:
-    MEDIA_TYPES (dict): Maps a lower-case file extension (``.xml``, ``.json``,
-        ``.yaml``, ``.yml``) to its OSCAL media type (``application/xml``,
-        ``application/json``, ``application/yaml``). Used to infer an ``rlink``
-        media type from a referenced file's href.
+mutation helpers. ``ImportResult`` (the structured return value of
+:meth:`OSCAL.add_import`) and the ``MEDIA_TYPES`` / ``_infer_media_type`` media-type
+helpers are defined in ``oscal_content`` / ``oscal_helpers`` and re-exported here for
+backward compatibility.
 """
-import os
 import re
 import copy
 import fnmatch
-from urllib.parse import urlparse
-from dataclasses import dataclass
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional, cast
 from enum import Enum
 
-from .oscal_content import (
+from .oscal_content import (  # noqa: F401  (ImportResult/MEDIA_TYPES/_infer_media_type re-exported)
     OSCAL, requires, if_update_successful, append_props, append_links, new_uuid,
     register_model, get_props, prune_tree_copy, ImportState, _collect_ids, _OSCAL_NS,
+    ImportResult, MEDIA_TYPES, _infer_media_type,
 )
 from .oscal_datatypes import oscal_date_time_with_timezone
 
 logger = logging.getLogger(__name__)
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Best-effort OSCAL media types by file extension (mirrors oscal.fix_references).
-MEDIA_TYPES = {
-    ".xml":  "application/xml",
-    ".json": "application/json",
-    ".yaml": "application/yaml",
-    ".yml":  "application/yaml",
-}
-
-
-def _infer_media_type(href: str) -> str:
-    """Best-effort OSCAL media type from an href's file extension.
-
-    Args:
-        href (str, required): The reference href (path or URL).
-
-    Returns:
-        str: The matching OSCAL media type, or "" when the extension is unknown.
-    """
-    ext = os.path.splitext(urlparse(href).path)[1].lower()
-    return MEDIA_TYPES.get(ext, "")
-
-
-@dataclass
-class ImportResult:
-    """Outcome of a :meth:`Profile.add_import` call.
-
-    Attributes:
-        status (str): One of "added", "replaced", "duplicate", or "error". A
-            "duplicate" is a blocking condition (``ok`` is False) — the href already
-            appears among this document's own imports.
-        entry (dict | None): The import entry — the newly added/replaced entry for
-            "added"/"replaced", or the conflicting existing import for "duplicate".
-        resource (dict | None): The back-matter resource created for the import
-            (None for "duplicate"/"error").
-        message (str): Human-readable detail, primarily for "duplicate"/"error".
-    """
-    status: str
-    entry: Optional[dict] = None
-    resource: Optional[dict] = None
-    message: str = ""
-
-    @property
-    def ok(self) -> bool:
-        """bool: True when an import was actually added or replaced."""
-        return self.status in ("added", "replaced")
-
-    @property
-    def is_duplicate(self) -> bool:
-        """bool: True when the href already matched one of this document's imports."""
-        return self.status == "duplicate"
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Dict navigation helpers
@@ -897,9 +839,13 @@ def _cited_param_ids(content: dict) -> set:
 # Profile resolution — out-of-scope cross-reference rewriting
 #
 # After resolution, a control may still reference (by ``#id``) a control/part that was
-# not selected into the baseline. Matching the official resolver, such out-of-scope
-# references are rewritten to absolute URIs pointing at the import that still resolves
-# them, both in ``href`` values and in prose markdown links.
+# not selected into the baseline. A structured ``link`` element to such an out-of-scope id
+# is REMOVED. This is a deliberate, correctness-driven departure from the official (still
+# "draft" after years) profile-resolution behavior, which rewrites the href to an absolute
+# source URI: OSCAL requires a ``related`` link's href to be a catalog-local fragment, so an
+# external ``file:...#id`` value is schema-invalid — deletion is the only valid outcome.
+# A prose markdown link (inline text, not a schema-constrained href) is instead rewritten to
+# an absolute URI pointing at the import that still resolves it, rather than mangling prose.
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # A markdown link into a document fragment, e.g. "[AC-1](#ac-1)".
@@ -951,6 +897,46 @@ def _apply_ref_rewrite(node, base_for: dict) -> None:
     elif isinstance(node, list):
         for item in node:
             _apply_ref_rewrite(item, base_for)
+
+
+def _remove_out_of_scope_links(node, in_scope: set) -> int:
+    """Remove ``links`` entries whose ``#fragment`` href targets an out-of-scope id.
+
+    A structured ``link`` pointing at a control/part that was dropped from the baseline
+    (its id is not in the resolved catalog) is a dangling reference; rather than rewrite it
+    to an external source URI, it is removed entirely. In-scope fragments — including carried
+    back-matter resources, whose ``uuid`` values are collected into *in_scope* — are kept, as
+    are non-fragment hrefs. Prose markdown links are left untouched here (the rewrite pass
+    handles those).
+
+    Args:
+        node: The catalog subtree (dict/list) to prune, in place.
+        in_scope (set, required): ids/uuids present in the resolved catalog.
+
+    Returns:
+        int: The number of link entries removed.
+    """
+    removed = 0
+    if isinstance(node, dict):
+        links = node.get("links")
+        if isinstance(links, list):
+            kept = [ln for ln in links
+                    if not (isinstance(ln, dict)
+                            and isinstance(ln.get("href"), str)
+                            and ln["href"].startswith("#")
+                            and ln["href"][1:] not in in_scope)]
+            removed += len(links) - len(kept)
+            if kept:
+                node["links"] = kept
+            else:
+                node.pop("links", None)
+        for key, val in node.items():
+            if key != "links":
+                removed += _remove_out_of_scope_links(val, in_scope)
+    elif isinstance(node, list):
+        for item in node:
+            removed += _remove_out_of_scope_links(item, in_scope)
+    return removed
 
 
 def _apply_one_set_parameter(param: dict, setp: dict) -> list:
@@ -2532,145 +2518,30 @@ class Profile(OSCAL):
         self.controls_tree = state.get("controls_tree", self.controls_tree)
 
     # -------------------------------------------------------------------------
-    def _find_duplicate_import(self, href: str) -> Optional[dict]:
-        """Return this profile's own import entry that already targets ``href``.
+    def _new_import_body(self, include_all: bool = False) -> dict:
+        """Seed a new profile import with a control selection.
 
-        Only this document's direct imports are considered — duplicate imports
-        farther down the import tree are out of scope and intentionally ignored.
-        Each existing import is compared by its resolved target: fragment imports
-        (``href="#uuid"``) are followed through back-matter to their ``rlink``
-        target(s); direct imports are compared by their resolved href.
-
-        Args:
-            href (str, required): The candidate import target (a file href, not a
-                ``#uuid`` fragment).
-
-        Returns:
-            Optional[dict]: The conflicting existing import entry, or None.
+        By default supplies ``include-controls`` with an empty ``with-ids`` array —
+        the minimum valid selection structure, selecting nothing until the caller
+        narrows it. When ``include_all`` is True the import selects all controls via
+        ``include-all`` instead. See base :meth:`OSCAL.add_import`.
         """
-        resolved_new = self._resolve_import_href(href)
-        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
-        resources = root.get("back-matter", {}).get("resources", [])
-        res_by_uuid = {r.get("uuid"): r for r in resources if isinstance(r, dict)}
-
-        for imp in root.get("imports", []):
-            if not isinstance(imp, dict):
-                continue
-            imp_href = str(imp.get("href", "")).strip()
-            targets: list[str] = []
-            if imp_href.startswith("#"):
-                res = res_by_uuid.get(imp_href[1:])
-                if res:
-                    for rlink in res.get("rlinks", []):
-                        rl_href = rlink.get("href", "")
-                        if rl_href:
-                            targets.append(self._resolve_import_href(rl_href))
-            elif imp_href:
-                targets.append(self._resolve_import_href(imp_href))
-
-            if resolved_new in targets:
-                return imp
-        return None
+        if include_all:
+            return {"include-all": {}}
+        return {"include-controls": [{"with-ids": []}]}
 
     # -------------------------------------------------------------------------
-    def add_import(self, href: str, title: str = "", description: str = "", remarks: str = "", include_all: bool = False) -> ImportResult:
+    def _after_imports_changed(self) -> None:
+        """Refresh profile-derived state after an import was added or removed.
+
+        Extends the base refresh (re-resolve imports, recompute content_state, and
+        drop any stale resolved catalog via :meth:`_on_content_mutated`) by marking the
+        controls_tree stale and rebuilding it, so the profile's scope/organization
+        reflects the changed import set.
         """
-        Add an import to the profile, backed by a new back-matter resource.
-
-        Steps:
-            1. If ``href`` already appears among this profile's own imports, block it
-               and report a "duplicate" (an error condition). Duplicate imports
-               farther down the import tree are acceptable and out of scope.
-            2. Create a back-matter ``resource`` (with an ``rlink`` to ``href`` and a
-               best-effort ``media-type`` inferred from the href's file extension).
-            3. Add an ``imports`` entry that references the resource by UUID fragment
-               (``href="#<resource-uuid>"``). An existing empty placeholder import
-               (href ``""`` or ``"#"``) is replaced in place; otherwise the entry is
-               appended.
-            4. Refresh the import tree (:meth:`resolve_imports`). The natural import
-               process loads the referenced content and reports success or failure;
-               an unreachable or invalid href simply resolves to ``INVALID`` in the
-               tree, and the caller decides whether that is acceptable.
-
-        Args:
-            href (str, required): Reference to the imported OSCAL file (XML, JSON, or
-                YAML). Used as the resource ``rlink`` href.
-            title (str, optional): Title for the created back-matter resource.
-            description (str, optional): Description for the created resource.
-            remarks (str, optional): Remarks (markdown) for the created resource.
-            include_all (bool, optional): When True, the import selects all controls
-                via ``include-all``. Defaults to False.
-
-        Returns:
-            ImportResult: The outcome — ``status`` of "added", "replaced",
-                "duplicate", or "error", with the relevant ``entry`` and ``resource``.
-        """
-        if not href:
-            logger.error("add_import: 'href' is required.")
-            return ImportResult("error", message="'href' is required.")
-
-        if not self._can_mutate("add_import"):
-            return ImportResult("error", message="content is read-only or unavailable.")
-
-        # 1. Block duplicates among this profile's own imports.
-        existing = self._find_duplicate_import(href)
-        if existing is not None:
-            logger.error(f"add_import: '{href}' is already imported by this profile.")
-            return ImportResult("duplicate", entry=existing, message=f"'{href}' is already imported.")
-
-        # 2. Create the back-matter resource.
-        resource_uuid = new_uuid()
-        rlink: dict[str, Any] = {"href": href}
-        media_type = _infer_media_type(href)
-        if media_type:
-            rlink["media-type"] = media_type
-        else:
-            logger.debug(f"add_import: could not infer media-type for '{href}'.")
-
-        resource: dict[str, Any] = {"uuid": resource_uuid}
-        if title:
-            resource["title"] = title
-        if description:
-            resource["description"] = description
-        resource["rlinks"] = [rlink]
-        if remarks:
-            resource["remarks"] = remarks
-
-        if not self.put("back-matter/resources", resource, mode="insert"):
-            logger.error(f"add_import: failed to add back-matter resource for '{href}'.")
-            return ImportResult("error", message="failed to add back-matter resource.")
-
-        # 3. Build the import entry; replace an empty placeholder if one exists.
-        import_entry: dict[str, Any] = {"href": f"#{resource_uuid}"}
-        if include_all:
-            import_entry["include-all"] = {}
-
-        imports = self._dict.get(self.model, {}).get("imports", [])
-        placeholder_idx = next(
-            (i for i, imp in enumerate(imports)
-             if isinstance(imp, dict) and str(imp.get("href", "")).strip() in ("", "#")),
-            None,
-        )
-        if placeholder_idx is not None:
-            if not self.put(f"imports/{placeholder_idx}", import_entry, mode="replace"):
-                logger.error(f"add_import: failed to replace placeholder import for '{href}'.")
-                return ImportResult("error", message="failed to replace placeholder import.")
-            status = "replaced"
-        else:
-            if not self.put("imports", import_entry, mode="insert"):
-                logger.error(f"add_import: failed to add import entry for '{href}'.")
-                return ImportResult("error", message="failed to add import entry.")
-            status = "added"
-
-        # 4. Refresh the import tree; the natural load reports success/failure.
-        self.resolve_imports()
-
-        # 5. Imports changed — the controls_tree (scope/organization) is now stale.
+        super()._after_imports_changed()
         self._tree_dirty = True
         self._ensure_controls_tree()
-
-        logger.info(f"add_import: {status} import '{href}' as resource {resource_uuid}.")
-        return ImportResult(status, entry=import_entry, resource=resource)
 
     # -------------------------------------------------------------------------
     def control(self, control_id: str, with_history: bool = False,
@@ -3570,17 +3441,30 @@ class Profile(OSCAL):
 
     # -------------------------------------------------------------------------
     def _rewrite_out_of_scope_refs(self, target: "Catalog") -> None:
-        """Rewrite references to out-of-scope ids to absolute source URIs.
+        """Resolve references to ids dropped from the baseline.
 
-        Any ``#id`` reference in the resolved catalog (an ``href`` value or a prose
-        markdown link) whose id is not present in the resolved catalog is rewritten to
-        ``<source-uri>#id``, where the source is the import that still resolves it — the
-        behavior of the official resolver for controls dropped from the baseline. In-scope
-        references (including carried back-matter resources) are left untouched.
+        For a ``#id`` reference whose id is not present in the resolved catalog:
+
+        * a structured ``link`` element is **removed**. OSCAL requires a ``related`` link's
+          href to be a catalog-local fragment, so the official resolver's rewrite to an
+          external ``file:...#id`` URI yields schema-invalid content — deletion is the only
+          valid resolution. (The Profile Resolution spec has been "draft" for years; this is
+          a blind spot in it.)
+        * a prose markdown link — inline text, not a schema-constrained href — is instead
+          rewritten to ``<source-uri>#id``, where the source is the import that still
+          resolves it, rather than mangling the prose.
+
+        In-scope references (including carried back-matter resources, matched by ``uuid``)
+        are left untouched.
         """
         cat_root = target._dict.get("catalog", {})
         in_scope: set[str] = set()
         _collect_ids(cat_root, in_scope)
+
+        # Drop dangling structured links to out-of-scope controls/parts.
+        removed = _remove_out_of_scope_links(cat_root, in_scope)
+        if removed:
+            logger.info(f"resolve: removed {removed} out-of-scope control link(s).")
 
         refs: set[str] = set()
         _collect_fragment_refs(cat_root, refs)

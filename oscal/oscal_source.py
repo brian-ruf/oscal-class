@@ -300,8 +300,8 @@ def _remove_import_from_dict(
         return False
 
     elif model == "assessment-results":
-        if "import-assessment-plan" in root:
-            del root["import-assessment-plan"]
+        if "import-ap" in root:
+            del root["import-ap"]
             return True
         return False
 

@@ -427,6 +427,19 @@ def _cast(value: str, datatype: str) -> str | int | float | bool:
     return value
 
 
+def _scalar_to_xml_text(value) -> str:
+    """Render a JSON scalar as its OSCAL/XML text form.
+
+    Python ``bool`` must serialize as lowercase ``true``/``false`` (OSCAL/XML
+    boolean lexical form), not ``str(True)`` → ``"True"`` which fails schema
+    validation. ``True`` is a subclass of ``int`` so it is checked first. All other
+    scalars (str, int, float) use ``str()``.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _markup_to_md(element: Element, datatype: str) -> str:
     """
     Extract the inner HTML content of an XML element and convert it to
@@ -876,7 +889,7 @@ class OSCALConverter:
             fname = flag_nd.get("use-name", "")
             if fname in remaining:
                 val = remaining.pop(fname)
-                elem.set(fname, "true" if val is True else "false" if val is False else str(val))
+                elem.set(fname, _scalar_to_xml_text(val))
 
         # 2. Field value → XML text/markup content
         if stype == "field":
@@ -889,7 +902,7 @@ class OSCALConverter:
                 if datatype in _MARKUP_TYPES:
                     _md_to_xml(str(val), elem, datatype, self.namespace)
                 else:
-                    elem.text = str(val)
+                    elem.text = _scalar_to_xml_text(val)
 
             elif jvkf:
                 # The first remaining key is the flag value; its value is the text
@@ -898,12 +911,12 @@ class OSCALConverter:
                     if datatype in _MARKUP_TYPES:
                         _md_to_xml(str(v), elem, datatype, self.namespace)
                     else:
-                        elem.text = str(v)
+                        elem.text = _scalar_to_xml_text(v)
                     del remaining[k]
                     break
 
             elif "STRVALUE" in remaining:
-                elem.text = str(remaining.pop("STRVALUE"))
+                elem.text = _scalar_to_xml_text(remaining.pop("STRVALUE"))
 
         # 3. Children → XML sub-elements (in index order)
         self._json_children(remaining, node, elem)
@@ -959,7 +972,7 @@ class OSCALConverter:
             _md_to_xml(str(md_text), parent, datatype, self.namespace)
         else:
             # Plain-text embedded field: append as text on the parent
-            parent.text = (parent.text or "") + str(md_text)
+            parent.text = (parent.text or "") + _scalar_to_xml_text(md_text)
 
     def _json_child(
         self,
@@ -1008,7 +1021,7 @@ class OSCALConverter:
                     if datatype in _MARKUP_TYPES:
                         _md_to_xml(str(item), child_elem, datatype, self.namespace)
                     else:
-                        child_elem.text = str(item)
+                        child_elem.text = _scalar_to_xml_text(item)
                     c.append(child_elem)
 
         else:
@@ -1020,7 +1033,7 @@ class OSCALConverter:
                 if datatype in _MARKUP_TYPES:
                     _md_to_xml(str(json_val), child_elem, datatype, self.namespace)
                 else:
-                    child_elem.text = str(json_val)
+                    child_elem.text = _scalar_to_xml_text(json_val)
                 parent.append(child_elem)
 
     def _json_any(self, remaining: dict, parent: Element) -> None:
