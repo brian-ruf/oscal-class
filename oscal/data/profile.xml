@@ -13,7 +13,7 @@
    </import>
    
    <merge>
-      <combine method="keep"/>
+      <combine method="use-first"/>
       <as-is>true</as-is>
    </merge>
 
