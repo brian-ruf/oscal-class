@@ -2661,6 +2661,13 @@ class Profile(OSCAL):
                   custom: Optional[dict] = None, combine: Optional[str] = None) -> Optional[dict]:
         """Set the profile's ``merge`` directives (``combine`` plus flat/as-is/custom).
 
+        .. deprecated::
+            Prefer :meth:`set_directives` (paired with :meth:`get_directives`), which
+            edits ``combine`` and the hierarchy directive independently and validates
+            ``custom`` through the shared metaschema staging gate. This method writes the
+            whole ``merge`` element as a direct pass-through and is retained for
+            compatibility.
+
         The ``merge`` assembly instructs how imported controls are organized after
         profile resolution. Exactly one of ``flat``, ``as_is``, or ``custom`` must be
         chosen — they are mutually exclusive — while ``combine`` is optional and may
@@ -2762,6 +2769,11 @@ class Profile(OSCAL):
                             combine: Optional[str] = None) -> Optional[dict]:
         """Change just the profile's merge *directive* (``as-is`` / ``flat`` / ``custom``).
 
+        .. deprecated::
+            Prefer :meth:`set_directives`, which changes the hierarchy directive (and/or
+            ``combine``) independently and validates ``custom`` through the shared
+            metaschema staging gate. Retained for compatibility.
+
         A focused convenience wrapper over :meth:`set_merge` for the common case of
         switching the organization directive without restating the other arguments. The
         existing ``combine`` method is preserved unless a new one is supplied, and when
@@ -2805,6 +2817,166 @@ class Profile(OSCAL):
                          "object (none supplied and none present on the profile).")
             return None
         return self.set_merge(custom=custom, combine=combine)
+
+    # -------------------------------------------------------------------------
+    def get_directives(self) -> dict:
+        """Return the profile's merge directives as a simple, normalized dict.
+
+        A library-level view of the ``merge`` element that does not pass the raw OSCAL
+        through. Always includes:
+
+        * ``combine`` — ``"use-first"`` when that method is set; ``"keep"`` when ``keep``
+          is set *or* no ``combine`` is present (the effective default); ``"invalid"`` for
+          any other stored method (e.g. the OSCAL ``merge`` method, which this library does
+          not model).
+        * ``hierarchy`` — ``"flat"`` / ``"as-is"`` / ``"custom"`` from whichever directive
+          is present (an ``as-is`` directive maps to ``"as-is"`` regardless of its boolean
+          value). Defaults to ``"as-is"`` — OSCAL's default organization — when no
+          directive (or no ``merge``) is present.
+
+        And, only when ``hierarchy == "custom"``:
+
+        * ``custom`` — a safe copy of the ``custom`` object (with its ``groups`` /
+          ``insert-controls`` children).
+
+        Returns:
+            dict: ``{"combine": ..., "hierarchy": ...[, "custom": {...}]}``.
+        """
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        merge = root.get("merge") or {}
+
+        combine_obj = merge.get("combine")
+        if not isinstance(combine_obj, dict):
+            combine = "keep"                         # no combine present -> effective keep
+        else:
+            method = combine_obj.get("method")
+            combine = method if method in ("use-first", "keep") else "invalid"
+
+        if "flat" in merge:
+            hierarchy = "flat"
+        elif "as-is" in merge:
+            hierarchy = "as-is"
+        elif "custom" in merge:
+            hierarchy = "custom"
+        else:
+            hierarchy = "as-is"                      # OSCAL default organization
+
+        directives: dict[str, Any] = {"combine": combine, "hierarchy": hierarchy}
+        if hierarchy == "custom":
+            directives["custom"] = copy.deepcopy(merge.get("custom"))
+        return directives
+
+    # -------------------------------------------------------------------------
+    def set_directives(self, combine: Optional[str] = None,
+                       hierarchy: Optional[str] = None,
+                       custom: Optional[dict] = None) -> bool:
+        """Set the profile's merge directives without raw pass-through to OSCAL.
+
+        Edits ``combine`` and/or the hierarchy directive independently; at least one of
+        ``combine`` / ``hierarchy`` must be given. Changes are assembled in a **staging**
+        copy and committed only when the whole result is valid — a rejected call changes
+        nothing (roll back). The counterpart reader is :meth:`get_directives`.
+
+        Args:
+            combine (str, optional): ``"use-first"`` or ``"keep"``. Replaces
+                ``merge.combine.method`` with that value. Any other value is rejected.
+            hierarchy (str, optional): ``"flat"``, ``"as-is"``, or ``"custom"``.
+
+                * ``"flat"`` — remove any ``as-is`` / ``custom``; add ``flat`` if absent.
+                * ``"as-is"`` — remove any ``flat`` / ``custom``; set ``as-is`` to ``true``.
+                * ``"custom"`` — requires the ``custom`` argument (below); remove any
+                  ``as-is`` / ``flat``; set ``custom`` to the provided object.
+            custom (dict, optional): Required when ``hierarchy == "custom"`` (ignored
+                otherwise). Must be a dict following the OSCAL ``merge.custom`` syntax; it
+                is pruned/validated through the shared metaschema staging gate
+                (:meth:`_stage_against_index`). If it is not valid the hierarchy is left
+                unchanged and the method returns ``False``.
+
+        Returns:
+            bool: ``True`` on success; ``False`` on any failure (read-only content, no
+                directive supplied, an invalid ``combine``/``hierarchy`` value, a missing
+                or invalid ``custom``, or a result with no hierarchy directive).
+        """
+        if not self._can_mutate("set_directives"):
+            return False
+        if combine is None and hierarchy is None:
+            logger.error("set_directives: provide at least one of 'combine' or 'hierarchy'.")
+            return False
+        if combine is not None and combine not in ("use-first", "keep"):
+            logger.error("set_directives: 'combine' must be 'use-first' or 'keep'; "
+                         f"got {combine!r}.")
+            return False
+        if hierarchy is not None and hierarchy not in ("flat", "as-is", "custom"):
+            logger.error("set_directives: 'hierarchy' must be 'flat', 'as-is', or "
+                         f"'custom'; got {hierarchy!r}.")
+            return False
+
+        # Validate/prune custom up front through the shared gate, so an invalid custom
+        # aborts before any change is made to the live content.
+        clean_custom = None
+        if hierarchy == "custom":
+            if not isinstance(custom, dict):
+                logger.error("set_directives: 'custom' (a dict) is required when "
+                             "hierarchy='custom'.")
+                return False
+            custom_node = self._merge_index_nodes()[1]
+            if custom_node is not None:
+                clean_custom, dropped, errors = self._stage_against_index(
+                    custom, custom_node, "/profile/merge/custom")
+                if errors:
+                    logger.error("set_directives: 'custom' is not valid OSCAL: "
+                                 f"{self._format_index_errors(errors)}")
+                    return False
+                if dropped:
+                    logger.warning("set_directives: dropped keys not permitted in "
+                                   f"'custom': {dropped}")
+            else:
+                clean_custom = copy.deepcopy(custom)  # index unavailable — degrade
+
+        # STAGE a candidate merge from the current content.
+        root = self._dict.setdefault(self.model, {}) if isinstance(self._dict, dict) else {}
+        candidate = copy.deepcopy(root.get("merge") or {})
+
+        if combine is not None:
+            candidate["combine"] = {"method": combine}
+
+        if hierarchy == "flat":
+            candidate.pop("as-is", None)
+            candidate.pop("custom", None)
+            candidate.setdefault("flat", {})
+        elif hierarchy == "as-is":
+            candidate.pop("flat", None)
+            candidate.pop("custom", None)
+            candidate["as-is"] = True
+        elif hierarchy == "custom":
+            candidate.pop("as-is", None)
+            candidate.pop("flat", None)
+            candidate["custom"] = clean_custom
+
+        # A merge must carry exactly one hierarchy directive (the OSCAL choice). Guard the
+        # case of setting only combine on a profile that has no directive yet.
+        if not any(k in candidate for k in ("flat", "as-is", "custom")):
+            logger.error("set_directives: the profile has no merge hierarchy to keep; "
+                         "pass 'hierarchy' (flat/as-is/custom) together with 'combine'.")
+            return False
+
+        # Canonical order: combine first, then the single directive.
+        ordered: dict[str, Any] = {}
+        if "combine" in candidate:
+            ordered["combine"] = candidate["combine"]
+        for key in ("flat", "as-is", "custom"):
+            if key in candidate:
+                ordered[key] = candidate[key]
+
+        # COMMIT.
+        root["merge"] = ordered
+        self._tree_dirty = True
+        self._ensure_controls_tree()
+        self._refresh_merge_directive()
+        self.is_unsaved = True
+        self.last_modified = oscal_date_time_with_timezone()
+        self._on_content_mutated()
+        return True
 
     # -------------------------------------------------------------------------
     def _import_index_node(self) -> Optional[dict]:

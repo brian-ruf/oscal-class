@@ -35,6 +35,10 @@ def _imports(p):
     return p._dict["profile"]["imports"]
 
 
+def _merge(p):
+    return p._dict["profile"].get("merge")
+
+
 def _new_with_import(include_all=False):
     """Fresh writable profile with a single import; returns (profile, href)."""
     p = Profile.new("Selection Test Profile")
@@ -424,3 +428,160 @@ class TestStagingGate:
                                                 "with-ids": ["ac-1"]}]},
             import_node, "/import")
         assert any(e["error-type"] == "allowed-values" for e in errors)
+
+
+# ===========================================================================
+# get_directives() — normalized read of the merge directives
+# ===========================================================================
+class TestGetDirectives:
+
+    def test_no_merge_defaults(self):
+        p = Profile.new("P")
+        p._dict["profile"].pop("merge", None)   # genuinely no merge element
+        assert p.get_directives() == {"combine": "keep", "hierarchy": "as-is"}
+
+    def test_combine_missing_is_keep(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"flat": {}}
+        assert p.get_directives()["combine"] == "keep"
+
+    def test_combine_use_first(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"combine": {"method": "use-first"}, "flat": {}}
+        assert p.get_directives()["combine"] == "use-first"
+
+    def test_combine_keep_explicit(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"combine": {"method": "keep"}, "flat": {}}
+        assert p.get_directives()["combine"] == "keep"
+
+    def test_combine_other_method_is_invalid(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"combine": {"method": "merge"}, "as-is": True}
+        assert p.get_directives()["combine"] == "invalid"
+
+    def test_hierarchy_flat(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"flat": {}}
+        assert p.get_directives()["hierarchy"] == "flat"
+
+    def test_hierarchy_as_is_ignores_boolean(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"as-is": False}   # legacy flat encoding
+        assert p.get_directives()["hierarchy"] == "as-is"
+
+    def test_hierarchy_custom(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"custom": {"groups": [{"id": "g", "title": "T"}]}}
+        d = p.get_directives()
+        assert d["hierarchy"] == "custom"
+        assert d["custom"] == {"groups": [{"id": "g", "title": "T"}]}
+
+    def test_custom_key_absent_unless_custom(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"flat": {}}
+        assert "custom" not in p.get_directives()
+
+    def test_custom_is_safe_copy(self):
+        p = Profile.new("P")
+        p._dict["profile"]["merge"] = {"custom": {"groups": [{"id": "g", "title": "T"}]}}
+        d = p.get_directives()
+        d["custom"]["groups"].append({"id": "INJECT"})
+        assert len(p._dict["profile"]["merge"]["custom"]["groups"]) == 1
+
+
+# ===========================================================================
+# set_directives() — independent, staged edits of the merge directives
+# ===========================================================================
+class TestSetDirectives:
+
+    def test_requires_at_least_one_argument(self, overlay):
+        assert overlay.set_directives() is False
+
+    def test_returns_bool(self, overlay):
+        assert overlay.set_directives(hierarchy="flat") is True
+
+    def test_combine_only_preserves_hierarchy(self, overlay):
+        h_before = overlay.get_directives()["hierarchy"]
+        assert overlay.set_directives(combine="keep") is True
+        d = overlay.get_directives()
+        assert d["combine"] == "keep" and d["hierarchy"] == h_before
+
+    def test_combine_only_on_directiveless_fails(self):
+        p = Profile.new("P")
+        p._dict["profile"].pop("merge", None)   # remove the default merge directive
+        assert p.set_directives(combine="keep") is False
+        assert _merge(p) is None   # nothing written
+
+    def test_invalid_combine_value_rejected(self, overlay):
+        before = copy.deepcopy(_merge(overlay))
+        assert overlay.set_directives(combine="merge") is False
+        assert _merge(overlay) == before
+
+    def test_invalid_hierarchy_value_rejected(self, overlay):
+        assert overlay.set_directives(hierarchy="sideways") is False
+
+    def test_set_flat_removes_other_directives(self, overlay):
+        overlay.set_directives(hierarchy="custom", custom={"groups": []})
+        overlay.set_directives(hierarchy="flat")
+        m = _merge(overlay)
+        assert "flat" in m and "custom" not in m and "as-is" not in m
+
+    def test_set_as_is_sets_true(self, overlay):
+        overlay._dict["profile"]["merge"] = {"as-is": False}
+        overlay.set_directives(hierarchy="as-is")
+        assert _merge(overlay)["as-is"] is True
+
+    def test_hierarchy_preserves_existing_combine(self, overlay):
+        overlay.set_directives(combine="use-first")
+        overlay.set_directives(hierarchy="flat")
+        assert overlay.get_directives()["combine"] == "use-first"
+
+    def test_custom_requires_custom_argument(self, overlay):
+        before = copy.deepcopy(_merge(overlay))
+        assert overlay.set_directives(hierarchy="custom") is False
+        assert _merge(overlay) == before
+
+    def test_custom_stores_pruned_object(self, overlay):
+        ok = overlay.set_directives(
+            hierarchy="custom",
+            custom={"groups": [{"id": "g", "title": "T", "BOGUS": 1}]})
+        assert ok is True
+        assert overlay.get_directives()["custom"] == {"groups": [{"id": "g", "title": "T"}]}
+
+    def test_invalid_custom_rolls_back(self, overlay):
+        before = copy.deepcopy(_merge(overlay))
+        # insert-controls violates its required choice -> genuine metaschema failure
+        ok = overlay.set_directives(hierarchy="custom",
+                                    custom={"insert-controls": [{"order": "keep"}]})
+        assert ok is False
+        assert _merge(overlay) == before   # hierarchy unchanged
+
+    def test_custom_argument_ignored_when_not_custom(self, overlay):
+        overlay.set_directives(hierarchy="flat", custom={"junk": 1})
+        assert "custom" not in _merge(overlay)
+
+    def test_canonical_key_order(self, overlay):
+        overlay.set_directives(combine="keep", hierarchy="flat")
+        assert list(_merge(overlay).keys()) == ["combine", "flat"]
+
+    def test_read_only_guard(self, overlay):
+        overlay.is_read_only = True
+        before = copy.deepcopy(_merge(overlay))
+        assert overlay.set_directives(hierarchy="flat") is False
+        assert _merge(overlay) == before
+
+    def test_scope_change_drops_resolution(self, overlay):
+        overlay.resolve()
+        assert overlay.catalog is not None
+        overlay.set_directives(hierarchy="flat")
+        assert overlay.catalog is None
+        assert overlay._tree_dirty is False
+
+    def test_merge_directive_attribute_synced(self, overlay):
+        overlay.set_directives(hierarchy="flat")
+        assert overlay.merge_directive == "flat"
+
+    def test_round_trip_valid(self, overlay):
+        overlay.set_directives(combine="use-first", hierarchy="flat")
+        assert Profile.loads(overlay.dumps()).is_valid

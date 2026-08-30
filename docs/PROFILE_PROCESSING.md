@@ -42,7 +42,8 @@ specification.
 | `get_parameter_by_id(id)` | param `dict` \| `None` | No — materialized just-in-time |
 | `get_import_selection(href)` | selection `dict` \| `None` | No — reads the import statement |
 | `set_import_selection(href, ...)` | rewritten import `dict` \| `None` | No — edits scope |
-| `set_merge_directive(directive, ...)` | `merge` `dict` \| `None` | No — edits organization |
+| `get_directives()` | `{"combine","hierarchy"[,"custom"]}` | No — reads the merge directives |
+| `set_directives(combine=, hierarchy=, custom=)` | `bool` | No — edits organization |
 | `resolve()` | `ResolutionStatus` | — builds `profile.catalog` |
 | `catalog` (attribute) | `Catalog` \| `None` | `None` until `resolve()` |
 | `dumps_catalog(format, pretty_print)` | `str` | Yes |
@@ -226,12 +227,10 @@ profile.set_metadata({"title": "My Baseline"})
 # Add imports (each backed by a back-matter resource)
 profile.add_import("nist-800-53.json", include_all=True)
 
-# Choose how imported controls are organized:
-profile.set_merge(as_is=True, combine="use-first")   # preserve source grouping
-# profile.set_merge(flat=True)                        # flatten (no groups)
-
-# Or change only the directive, preserving the existing combine method:
-profile.set_merge_directive("flat")                  # -> profile.merge_directive == "flat"
+# Choose how imported controls are organized (combine + hierarchy, set independently):
+profile.set_directives(hierarchy="as-is", combine="use-first")  # preserve source grouping
+# profile.set_directives(hierarchy="flat")                      # flatten (no groups)
+# profile.set_directives(combine="keep")                        # change only combine
 
 controls = profile.get_control_list()   # reflects the new scope immediately (JIT)
 profile.resolve()                       # (re)build profile.catalog
@@ -243,11 +242,19 @@ Directive summary:
   (`with-ids`, `matching` glob patterns, `with-child-controls`). Read/replace the
   selection for one import with `get_import_selection(href)` /
   `set_import_selection(href, ...)` (see below).
-- **`merge`** — organization: `as-is` (preserve grouping) or `flat` (no groups).
-  `custom` grouping is not yet implemented and falls back to `as-is`. The directive
-  currently in force is exposed as the `profile.merge_directive` attribute
-  (`"as-is"` / `"flat"` / `"custom"`), kept in sync on load and after every merge edit.
-- **`combine`** — duplicate handling: `use-first` or `keep` (default).
+- **`merge`** — organization. Read and write the directives with `get_directives()` /
+  `set_directives(combine=, hierarchy=, custom=)`:
+  - `hierarchy` — `flat` (no groups), `as-is` (preserve grouping), or `custom`. `custom`
+    grouping is not yet applied during resolution and falls back to `as-is`, but the
+    directive is stored and validated.
+  - `combine` — duplicate handling: `use-first` or `keep`.
+
+  `get_directives()` returns a normalized `{"combine", "hierarchy"[, "custom"]}` dict;
+  `set_directives()` edits each independently, validates `custom` through the metaschema
+  staging gate, and commits only a valid result (rolls back otherwise). The hierarchy in
+  force is also mirrored on the `profile.merge_directive` attribute. The older
+  `set_merge()` / `set_merge_directive()` pass-throughs are **deprecated** in favor of
+  `set_directives()`.
 - **`modify`** — per-control tailoring: `alters` (removes → adds) and `set-parameters`,
   applied during resolution and JIT reads alike.
 
