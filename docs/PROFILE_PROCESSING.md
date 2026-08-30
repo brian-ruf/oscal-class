@@ -40,6 +40,9 @@ specification.
 | `get_group_by_id(id, depth=None)` | group `dict` \| `None` | No — materialized just-in-time |
 | `get_control_list()` | `list[dict]` | No — materialized just-in-time |
 | `get_parameter_by_id(id)` | param `dict` \| `None` | No — materialized just-in-time |
+| `get_import_selection(href)` | selection `dict` \| `None` | No — reads the import statement |
+| `set_import_selection(href, ...)` | rewritten import `dict` \| `None` | No — edits scope |
+| `set_merge_directive(directive, ...)` | `merge` `dict` \| `None` | No — edits organization |
 | `resolve()` | `ResolutionStatus` | — builds `profile.catalog` |
 | `catalog` (attribute) | `Catalog` \| `None` | `None` until `resolve()` |
 | `dumps_catalog(format, pretty_print)` | `str` | Yes |
@@ -227,6 +230,9 @@ profile.add_import("nist-800-53.json", include_all=True)
 profile.set_merge(as_is=True, combine="use-first")   # preserve source grouping
 # profile.set_merge(flat=True)                        # flatten (no groups)
 
+# Or change only the directive, preserving the existing combine method:
+profile.set_merge_directive("flat")                  # -> profile.merge_directive == "flat"
+
 controls = profile.get_control_list()   # reflects the new scope immediately (JIT)
 profile.resolve()                       # (re)build profile.catalog
 ```
@@ -234,12 +240,56 @@ profile.resolve()                       # (re)build profile.catalog
 Directive summary:
 
 - **`import` / `include-controls` / `exclude-controls`** — which controls are in scope
-  (`with-ids`, `matching` glob patterns, `with-child-controls`).
+  (`with-ids`, `matching` glob patterns, `with-child-controls`). Read/replace the
+  selection for one import with `get_import_selection(href)` /
+  `set_import_selection(href, ...)` (see below).
 - **`merge`** — organization: `as-is` (preserve grouping) or `flat` (no groups).
-  `custom` grouping is not yet implemented and falls back to `as-is`.
+  `custom` grouping is not yet implemented and falls back to `as-is`. The directive
+  currently in force is exposed as the `profile.merge_directive` attribute
+  (`"as-is"` / `"flat"` / `"custom"`), kept in sync on load and after every merge edit.
 - **`combine`** — duplicate handling: `use-first` or `keep` (default).
 - **`modify`** — per-control tailoring: `alters` (removes → adds) and `set-parameters`,
   applied during resolution and JIT reads alike.
+
+### Editing one import's control selection
+
+`get_import_selection(href)` returns a safe copy of just the `include-all` /
+`include-controls` / `exclude-controls` structures of a single import; only keys actually
+present are returned (`None` if no import matches). The `href` may be any form tracked for
+the import — the authored `href`, a resolved location, or a back-matter `#uuid` fragment.
+
+`set_import_selection(href, include_all=..., include_controls=..., exclude_controls=...)`
+replaces those structures wholesale. An argument left as `None` is omitted from the
+rewritten import; pass an empty list to keep a key present but empty. The replacement is
+validated against the metaschema before it is written — `include-all` and
+`include-controls` are mutually exclusive and exactly one must be present — and on success
+the `controls_tree` is rebuilt and any resolved catalog is dropped, since scope changed.
+
+```python
+# Narrow an import to two controls, excluding one enhancement:
+profile.set_import_selection(
+    "nist-800-53.json",
+    include_controls=[{"with-ids": ["ac-1", "ac-2"]}],
+    exclude_controls=[{"with-ids": ["ac-2.1"]}],
+)
+sel = profile.get_import_selection("nist-800-53.json")
+# {"include-controls": [{"with-ids": ["ac-1", "ac-2"]}],
+#  "exclude-controls": [{"with-ids": ["ac-2.1"]}]}
+```
+
+### `merge_directive` vs `MergeStrategy` (as-is only)
+
+Do not confuse the OSCAL **merge directive** with the library's `MergeStrategy`:
+
+- `profile.merge_directive` — the OSCAL directive authored on the profile
+  (`"as-is"` / `"flat"` / `"custom"`); it *is* serialized content.
+- `profile.merge_strategy` (a `MergeStrategy`) — a library-only, non-serialized option
+  that refines **how `as-is` reconstructs control hierarchy** (`REFERENTIAL`, the default,
+  vs `POSITIONAL`). It **applies only when `merge_directive == "as-is"`**; under `flat`
+  (no nesting) or `custom` (own structure) it is inert. `REFERENTIAL` reconstructs
+  control→control containment from source provenance (so a selected enhancement nests
+  under its selected parent even across import branches); `POSITIONAL` keeps each import's
+  presented structure. See the `MergeStrategy` docstring for details.
 
 ---
 
