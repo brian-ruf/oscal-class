@@ -223,6 +223,29 @@ catalog.set_metadata({"title": "Updated Title"})
 catalog.validate()
 ```
 
+### `version_support` / `VersionSupport`
+
+A non-progressive qualifier (separate from `content_state`) recording how the content's
+declared OSCAL version was resolved against available support. When the declared version
+isn't in the local support database the library tries to acquire it (bundled DB, then
+NIST) or substitutes the closest same-major version — see
+[SUPPORT_MODULE.md](SUPPORT_MODULE.md#self-healing-version-acquisition--ensure_versionversion).
+
+```python
+class VersionSupport(Enum):
+    EXACT         = "exact"          # declared version's support was available/acquired
+    CLOSEST_MATCH = "closest-match"  # substituted the closest same-major version
+    UNSUPPORTED   = "unsupported"    # unavailable; content cannot pass WELL_FORMED
+```
+
+| Attribute | Meaning |
+|---|---|
+| `.version_support` | `VersionSupport` (defaults to `EXACT`) |
+| `.requested_oscal_version` | The version the content declares (e.g. `"v1.2.3"`) |
+| `.resolved_oscal_version` | The version whose support was used (differs only for `CLOSEST_MATCH`) |
+
+`UNSUPPORTED` leaves `content_state` at `ACQUIRED` (it never reaches `WELL_FORMED`).
+
 ---
 
 ## Origin and Mutability States
@@ -287,12 +310,26 @@ xml_str   = catalog.dumps(format="xml",  pretty_print=True)
 yaml_str  = catalog.dumps(format="yaml")
 ```
 
+### Canonical key/element ordering
+
+All serialization (`dump`, `dumps`, and the `json`/`xml`/`yaml` properties) emits
+keys/elements in the canonical NIST metaschema order (see
+[`oscal_resequence`](./OVERVIEW.md)):
+
+- **XML** — element order is schema-significant, so it is **always** produced in
+  canonical order. XML is (re)built from the current dict via the metaschema
+  converter on each serialization, so the output reflects the latest edits.
+- **JSON/YAML** — keys are ordered canonically on a **best-effort** basis. Key
+  order in JSON/YAML is presentational, so if no metaschema index is available
+  for the model/version the document is still emitted (in its current order)
+  rather than failing.
+
 ### Convenience properties
 
 ```python
-catalog.json   # → JSON string (always pretty-printed)
-catalog.xml    # → XML string  (builds XML from dict on demand)
-catalog.yaml   # → YAML string (always pretty-printed)
+catalog.json   # → JSON string (always pretty-printed, canonical key order)
+catalog.xml    # → XML string  (rebuilt from dict; canonical element order)
+catalog.yaml   # → YAML string (always pretty-printed, canonical key order)
 ```
 
 ---
@@ -382,6 +419,24 @@ catalog.append_resource(
 )
 ```
 
+### `update_resource(uuid, *, title=None, description=None, props=None, rlinks=None, remarks=None)`
+
+Update fields of an existing local back-matter resource (found by `uuid`). Each field is
+optional: `None` leaves it unchanged, a scalar replaces it (empty string removes it), and
+an **array replaces the existing list wholesale** (`[]` clears it). Returns a safe copy of
+the updated resource, or `None`.
+
+> **Warning — array replacement is total, not a merge.** Whatever you pass for `props` /
+> `rlinks` becomes the complete new list; entries you omit are permanently dropped (a
+> resource may carry rlinks/hashes/props you didn't author). Read the current resource with
+> `get_resource_by_uuid(uuid)` first, edit that copy, then pass the full arrays back.
+
+```python
+res = catalog.get_resource_by_uuid(uuid)
+res["rlinks"].append({"href": "catalog.json", "media-type": "application/json"})
+catalog.update_resource(uuid, rlinks=res["rlinks"])   # full list, nothing dropped
+```
+
 ---
 
 ## Import Handling
@@ -443,6 +498,39 @@ doc.retry_import(
 
 Depth-first walk of the import tree. `visitor_fn(entry, depth)` is called for each
 entry. `scope` is `"successful"` (default), `"failed"`, or `"all"`.
+
+### Modifying a document's own imports
+
+`add_import` / `remove_import` / `update_import` operate only on **this** document's
+first-level import statement(s), never on descendants. Each refreshes the import tree and
+any derived state (e.g. a `Profile`'s `controls_tree` / resolved `catalog`). Legality is
+enforced per model's import cardinality:
+
+| Model | Import | add / remove | update_import |
+|---|---|---|---|
+| catalog, mapping-collection | none | invalid | invalid |
+| system-security-plan, assessment-plan, assessment-results | exactly 1 | invalid | ✓ (the way to change it) |
+| plan-of-action-and-milestones | 0..1 | ✓ | ✓ |
+| profile | 1..∞ | add ✓; remove ✓ (not the last) | invalid — use add/remove |
+| component-definition | 0..∞ | ✓ | invalid — use add/remove |
+
+- **`add_import(href, uuid="", title="", description="", props=[], version="", remarks="", *, include_all=False) → ImportResult`**
+  — adds an import backed by a back-matter resource (reusing an existing resource whose
+  `rlink` targets `href`, else creating one via `append_resource`; `version` is stored as
+  a `version` prop). Profile imports get an empty `include-controls`/`with-ids` placeholder
+  (or `include-all` when `include_all=True`). Returns an `ImportResult`
+  (`status` `"added"`/`"replaced"`/`"duplicate"`/`"invalid"`/`"error"`; `.ok`/`.is_invalid`).
+- **`remove_import(href) → bool`** — removes a first-level import (matched by literal href,
+  `#uuid` fragment, or resolved target). Refused when it would drop below the model's
+  minimum. Back-matter resources are preserved.
+- **`update_import(*, title=None, description=None, props=None, rlinks=None, remarks=None, new_resource=True) → ImportResult`**
+  — for the single-import models (SSP/AP/AR/POA&M), changes the one import. Takes the same
+  resource fields as `update_resource`. When the import references a `#uuid`,
+  `new_resource=True` (default) points it at a **new** resource (preserving the old one, which
+  other content may reference); `new_resource=False` edits the existing resource in place.
+
+To *change* a profile or component-definition import, `remove_import` then `add_import`.
+Use `retry_import` (below) to repair an import that failed to load.
 
 ---
 

@@ -5,8 +5,19 @@ Defines the ``OSCAL`` base class used by all eight model classes for creating,
 loading, manipulating, validating, and format-converting OSCAL content. All
 published OSCAL versions, formats, and models can be validated and converted;
 newly published versions can be "learned" by updating the OSCAL Support
-database. This module also provides import-resolution machinery, dict-building
-helpers (props/links/resources), and Metapath/JSON query support.
+database. This module also drives import resolution and Metapath/JSON query
+support, and defines the library exception hierarchy (``OSCALError`` and its
+subclasses, e.g. ``UnsupportedModelOperation``).
+
+Two supporting modules are imported and re-exported here so existing
+``from .oscal_content import ...`` call sites keep working:
+
+* ``oscal_helpers`` — model-agnostic dict/markup helpers (props/links, UUID
+  generation/validation, id lookups, depth-limited safe copies).
+* ``oscal_source`` — source acquisition and reference/import resolution
+  (``OscalRef``, ``load_content``/``load_source``, ``classify_source``, href
+  resolution, and the ``ImportState``/``ImportFailureCode``/``ImportLoadError``/
+  ``ImportFailure`` types).
 
 See https://github.com/brian-ruf/oscal-class for more details.
 
@@ -27,39 +38,51 @@ import copy
 import contextvars
 from contextlib         import contextmanager
 import yaml
-import uuid
 import logging
 from typing             import Optional, Any, Literal, Protocol, runtime_checkable
+from dataclasses        import dataclass
 from datetime           import datetime
 from functools          import wraps
 from enum               import Enum, IntEnum
-from urllib.parse       import urlparse, urljoin, urlunparse
-from urllib.request     import urlopen
-from urllib.error       import HTTPError, URLError
+from urllib.parse       import urlparse
 from xml.etree          import ElementTree
-from dataclasses        import dataclass, field
 
-from ruf_common.network import download_file
 from ruf_common.data    import detect_data_format, safe_load, safe_load_xml, xpath_atomic
 from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
-from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES
+from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES, normalize_uri_reference
 from .oscal_registry    import get_registry
-from .oscal_cache       import get_local_cache, CacheDirective, CACHE_NEVER
+from .oscal_cache       import CacheDirective, CACHE_NEVER
 from .oscal_converter   import (
-    oscal_markdown_to_html, OSCALConverter, _html_to_et, _markup_to_md,
-    OSCALPath, native_path,
+    OSCALConverter, _markup_to_md, OSCALPath, native_path,
 )
+# Model-agnostic dict/markup helpers live in oscal_helpers; imported (and thereby
+# re-exported) here so existing ``from .oscal_content import ...`` call sites in
+# the model modules keep working after the extraction.
+from .oscal_helpers     import (  # noqa: F401  (re-exported for callers)
+    new_uuid, _is_valid_uuid, prune_tree_copy, _collect_ids, _find_part_by_id,
+    _find_model_element, append_props, append_prop, get_props, append_links,
+    append_link, oscal_markdown_to_html_tree, _format_table_helper,
+    MEDIA_TYPES, _infer_media_type,
+)
+# Source acquisition and reference/import-resolution machinery lives in
+# oscal_source; imported (and thereby re-exported) here so existing
+# ``from .oscal_content import load_content`` (etc.) call sites in the model
+# modules, workspace, and tests keep working after the extraction.
+from .oscal_source      import (  # noqa: F401  (re-exported for callers)
+    OscalRef, _normalize_refs, ImportState, ImportFailureCode, ImportLoadError,
+    ImportFailure, load_content, load_source, classify_source, _resolve_href,
+    _canonicalize_ref, _oscal_format_variants, _find_import_candidates,
+    _pick_import_target, _remove_import_from_dict, _hrefs_from_dict_spec,
+    _backmatter_resource,
+)
+from .oscal_resequence  import resequence_oscal
 
 logger = logging.getLogger(__name__)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Constants
 INDENT = 2 # Number of spaces to use for indentation in pretty-printed output
-# URI schemes we recognise but cannot fetch yet
-_KNOWN_URI_SCHEMES = {"ftp", "ftps", "sftp", "s3", "gs", "az"}
-# URI schemes we can handle with Python stdlib tooling (no third-party SDKs)
-_SIMPLE_URI_SCHEMES = {"http", "https", "file", "ftp", "data"}
 # OSCAL Default Namespace for XML processing
 _NSMAP = {"": OSCAL_DEFAULT_XML_NAMESPACE} # XML namespace map
 
@@ -84,7 +107,7 @@ _IMPORT_PATTERNS: dict[str, list[tuple[str, str]]] = {
         ("/*/import-ssp",                                "href"),
     ],
     "assessment-results": [
-        ("/*/import-assessment-plan",                    "href"),
+        ("/*/import-ap",                                 "href"),
     ],
     "mapping-collection": [
         ("/*/mapping/source",                            "href"),
@@ -117,12 +140,35 @@ _IMPORT_PATTERNS_DICT: dict[str, list[dict]] = {
         {"path": "import-ssp",               "key": "href", "single": True},
     ],
     "assessment-results": [
-        {"path": "import-assessment-plan",   "key": "href", "single": True},
+        {"path": "import-ap",                "key": "href", "single": True},
     ],
     "mapping-collection": [
         {"path": "mappings", "subkey": "source-resource", "key": "href"},
         {"path": "mappings", "subkey": "target-resource", "key": "href"},
     ],
+}
+
+# Per-model spec for the *primary document import* — the single first-level import
+# location that add_import/remove_import operate on. Distinct from _IMPORT_PATTERNS_DICT
+# (which enumerates every OSCAL-document reference for resolution): this table describes
+# only the top-level import statement(s) and their cardinality.
+#   path    : model-root key holding the import(s); None ⇒ the model has no top-level import
+#   single  : True when the path is a single object (import-profile/-ssp/-ap), else a list
+#   href    : key within an import entry that carries the href
+#   min/max : allowed cardinality of the import; max None ⇒ unbounded
+# Cardinality rule: when min == max the count is fixed and both add and remove are
+# invalid (catalog 0/0, mapping-collection 0/0, SSP/AP/AR 1/1); such imports are set via
+# the retry_import modify path. Otherwise add is allowed while count < max and remove
+# while count > min (counting only imports with a non-empty, non-"#" href).
+_IMPORT_SPEC: dict[str, dict] = {
+    "catalog":                       {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0},
+    "profile":                       {"path": "imports",                      "single": False, "href": "href", "min": 1, "max": None},
+    "component-definition":          {"path": "import-component-definitions", "single": False, "href": "href", "min": 0, "max": None},
+    "system-security-plan":          {"path": "import-profile",               "single": True,  "href": "href", "min": 1, "max": 1},
+    "assessment-plan":               {"path": "import-ssp",                   "single": True,  "href": "href", "min": 1, "max": 1},
+    "assessment-results":            {"path": "import-ap",                    "single": True,  "href": "href", "min": 1, "max": 1},
+    "plan-of-action-and-milestones": {"path": "import-ssp",                   "single": True,  "href": "href", "min": 0, "max": 1},
+    "mapping-collection":            {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0},
 }
 
 # Conditional origin states — not progressive; freshness is time-based and computed on demand.
@@ -141,6 +187,30 @@ class OriginState(Enum):
     REMOTE_UNCACHED = "remote-uncached" # Remote content, no local cache copy
     REMOTE_FRESH    = "remote-fresh"    # Remote content, cached and within TTL
     REMOTE_STALE    = "remote-stale"    # Remote content, cached but TTL exceeded
+
+
+# How the content's declared OSCAL version was resolved against available support
+# (not progressive; a qualifier on the validation/conversion path).
+class VersionSupport(Enum):
+    """Whether the content's declared OSCAL version was supported as-is.
+
+    Set during initial validation once the model/version are identified. A
+    ``CLOSEST_MATCH`` or ``UNSUPPORTED`` result means the requested version was not
+    available locally and could not be acquired from the bundled database or NIST.
+
+    Members:
+        EXACT (str): "exact" — the declared OSCAL version's support was available (or
+            was successfully acquired); validation/conversion used that exact version.
+        CLOSEST_MATCH (str): "closest-match" — the declared version was unavailable;
+            the closest available version within the same OSCAL major was substituted.
+            ``requested_oscal_version`` and ``resolved_oscal_version`` differ.
+        UNSUPPORTED (str): "unsupported" — the declared version/model could not be
+            supported at all; the document cannot advance past ``ACQUIRED``.
+    """
+    EXACT         = "exact"
+    CLOSEST_MATCH = "closest-match"
+    UNSUPPORTED   = "unsupported"
+
 
 def _check_datatype(value: str, datatype: str, location: str, field: str) -> dict | None:
     """Validate a string *value* against an OSCAL *datatype* pattern.
@@ -263,33 +333,6 @@ def requires(**conditions):
     return decorator
 
 # -----------------------------------------------------------------------------
-def requires_state(min_state: ContentState):
-    """Decorator factory gating a method on a minimum ``ContentState`` level.
-
-    The wrapped method runs only when ``self.content_state >= min_state``;
-    otherwise it logs an error and returns None.
-
-    Args:
-        min_state (ContentState, required): Minimum content state required to run
-            the method.
-
-    Returns:
-        Callable: A decorator that wraps the target method with the guard.
-    """
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(self, *args, **kwargs):
-            if self.content_state < min_state:
-                logger.error(
-                    f"'{fn.__name__}' requires content_state >= {min_state.name} "
-                    f"(current: {self.content_state.name})"
-                )
-                return None
-            return fn(self, *args, **kwargs)
-        return wrapper
-    return decorator
-
-# -----------------------------------------------------------------------------
 def if_update_successful(fn):
     """Decorator marking content dirty after a successful mutation.
 
@@ -331,6 +374,84 @@ def register_model(model_name: str, cls: type) -> None:
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Library exception hierarchy
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class OSCALError(Exception):
+    """Base class for every error intentionally raised by the oscal library.
+
+    Catch this at an application boundary to handle any library-originated
+    failure uniformly — typically to log the developer-facing detail and show
+    the end user a friendly message — without also swallowing unrelated Python
+    errors. Instances expose two messages:
+
+    * ``developer_message`` — precise, actionable detail for logs/telemetry.
+    * ``user_message`` — a safe, generic sentence suitable for end users.
+
+    ``str(err)`` returns the developer message.
+    """
+
+    #: Generic, end-user-safe fallback. Subclasses may override.
+    default_user_message = "The requested OSCAL operation could not be completed."
+
+    @property
+    def developer_message(self) -> str:
+        """str: Precise, actionable detail for developers (the default ``str``)."""
+        return super().__str__()
+
+    @property
+    def user_message(self) -> str:
+        """str: A safe, generic message that omits internal detail."""
+        return self.default_user_message
+
+
+class UnsupportedModelOperation(OSCALError, AttributeError):
+    """Raised when a method/attribute valid for *some* OSCAL model is accessed on
+    a model that does not define it (e.g. calling ``add_control`` on an SSP).
+
+    Also raised — with an empty ``valid_on`` — for names no OSCAL model defines,
+    which almost always indicates a typo.
+
+    This subclasses :class:`AttributeError` as well as :class:`OSCALError` so that
+    ``hasattr(obj, name)`` and ``getattr(obj, name, default)`` keep their normal
+    semantics (return ``False`` / the default rather than propagating), while the
+    error remains catchable as an ``OSCALError``.
+
+    Attributes:
+        method (str): The attribute/method name that was accessed.
+        model (str): The model name of the instance it was accessed on.
+        valid_on (list[str]): Model names that *do* define the name (may be empty).
+    """
+
+    default_user_message = "This action isn't available for this type of OSCAL document."
+
+    def __init__(self, method: str, model: str, valid_on: "list[str] | None" = None):
+        """Initialize the error.
+
+        Args:
+            method (str, required): The attribute/method name that was accessed.
+            model (str, required): The model name of the instance it was used on.
+            valid_on (list[str], optional): Model names that define ``method``.
+        """
+        self.method = method
+        self.model = model or "OSCAL"
+        self.valid_on = sorted(valid_on) if valid_on else []
+        super().__init__(self.developer_message)
+
+    @property
+    def developer_message(self) -> str:
+        """str: Which model was called, the missing operation, and where it's valid."""
+        if self.valid_on:
+            return (
+                f"{self.model!r} model has no operation {self.method!r}; "
+                f"it is defined on: {', '.join(self.valid_on)}."
+            )
+        return (
+            f"{self.model!r} model has no operation {self.method!r} "
+            f"(no OSCAL model defines it — likely a typo)."
+        )
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Current actor (view/session) — identifies who is performing mutations, so a
 # Workspace's write locks can be enforced per view on shared documents.
 _current_actor: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
@@ -367,6 +488,52 @@ def use_actor(actor: "str | None"):
         _current_actor.reset(token)
 
 
+@dataclass
+class ImportResult:
+    """Outcome of an :meth:`OSCAL.add_import` or :meth:`OSCAL.update_import` call.
+
+    Attributes:
+        status (str): One of "added", "replaced", "updated", "duplicate", "invalid", or
+            "error". "added"/"replaced"/"updated" are the success cases (``ok`` is True):
+            "added"/"replaced" come from :meth:`add_import` (new entry vs placeholder
+            filled), while :meth:`update_import` returns "replaced" when it repointed the
+            import at a new/other resource and "updated" when it modified the existing
+            resource in place. "duplicate" means the href already appears among this
+            document's own imports. "invalid" means the operation is not permitted by this
+            model's import cardinality (e.g. a catalog has no imports). "error" is a
+            bad-input or read-only failure.
+        entry (dict | None): The import entry — the newly added/replaced/updated entry, or
+            the conflicting existing import for "duplicate".
+        resource (dict | None): The back-matter resource referenced by the import
+            (created, reused, or updated). None for "duplicate"/"invalid"/"error".
+        message (str): Human-readable detail, primarily for the non-success statuses.
+    """
+    status: str
+    entry: Optional[dict] = None
+    resource: Optional[dict] = None
+    message: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """bool: True when an import was added, replaced, or updated."""
+        return self.status in ("added", "replaced", "updated")
+
+    @property
+    def is_duplicate(self) -> bool:
+        """bool: True when the href already matched one of this document's imports."""
+        return self.status == "duplicate"
+
+    @property
+    def is_invalid(self) -> bool:
+        """bool: True when the model's import cardinality forbids the operation."""
+        return self.status == "invalid"
+
+    @property
+    def is_updated(self) -> bool:
+        """bool: True when an existing resource was modified in place (update_import)."""
+        return self.status == "updated"
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # OSCAL CLASS
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -375,9 +542,12 @@ class OSCAL:
 
     Provides loading, saving, validation, format conversion (XML/JSON/YAML),
     import resolution, and query support shared by every OSCAL model. Content is
-    held internally as a JSON-primary dict (``self._dict``) with an XML tree
-    (``self._tree``) maintained for conversion. Do not instantiate directly; use
-    the factory classmethods ``load``, ``loads``, or ``new``, or a model subclass.
+    held internally as a JSON-primary dict (``self._dict``); the XML tree
+    (``self._tree``) is a transient, derived view built on demand for XML
+    serialization and released afterward (it persists only in the degraded case
+    where XML was loaded but could not be converted to a dict). Do not instantiate
+    directly; use the factory classmethods ``load``, ``loads``, or ``new``, or a
+    model subclass.
 
         Attributes (Content Location):
             href_original: The original href as provided (e.g., in an import statement)
@@ -414,6 +584,16 @@ class OSCAL:
         Properties:
             is_editable: True if the content can be modified, False otherwise
 
+    Cross-model operation guard:
+        Many mutation/query methods are only valid for certain models (e.g.
+        ``resolve`` on a Profile, ``append_component`` on an SSP). Calling one on a
+        model that does not define it does not raise a bare ``AttributeError``:
+        ``__getattr__`` raises :class:`UnsupportedModelOperation` (an ``OSCALError``
+        and ``AttributeError``) reporting which models — if any — define the name,
+        logs that detail, and records it on ``self.errors``. Use :meth:`supports`
+        to check before calling. Applications catch :class:`OSCALError` at their
+        boundary and show the user ``err.user_message`` instead of internals.
+
     """
     def __init_common__(self, ttl: int = 0, support_db_conn: str = "", support_db_type: str = ""):
 
@@ -443,6 +623,12 @@ class OSCAL:
         self.original_format : str = ""
         self.model           : str = ""
         self.oscal_version   : str = ""
+        # OSCAL-version support resolution (see VersionSupport). requested = the version
+        # the content declares; resolved = the version whose support was actually used
+        # (differs only for CLOSEST_MATCH).
+        self.version_support        : VersionSupport = VersionSupport.EXACT
+        self.requested_oscal_version: str = ""
+        self.resolved_oscal_version : str = ""
         self.uuid            : str = ""   # root document UUID (as loaded)
         self.last_modified   : str = ""
         self.title           : str = ""
@@ -526,6 +712,9 @@ class OSCAL:
             "errors":            self.errors,
             "is_unsaved":        self.is_unsaved,
             "last_modified":     self.last_modified,
+            "version_support":         self.version_support.value,
+            "requested_oscal_version": self.requested_oscal_version,
+            "resolved_oscal_version":  self.resolved_oscal_version,
         }
 
     # -------------------------------------------------------------------------
@@ -542,6 +731,79 @@ class OSCAL:
         self.errors = state.get("errors", {})
         self.is_unsaved = state.get("is_unsaved", self.is_unsaved)
         self.last_modified = state.get("last_modified", self.last_modified)
+        self.requested_oscal_version = state.get("requested_oscal_version", self.requested_oscal_version)
+        self.resolved_oscal_version = state.get("resolved_oscal_version", self.resolved_oscal_version)
+        raw_vs = state.get("version_support")
+        if raw_vs is not None:
+            try:
+                self.version_support = VersionSupport(raw_vs)
+            except ValueError:
+                pass
+
+    # =========================================================================
+    # Cross-model operation guard
+    # -------------------------------------------------------------------------
+    def supports(self, name: str) -> bool:
+        """Return True if this model exposes ``name`` as a method or attribute.
+
+        Lets callers look before they leap when an operation is only valid for
+        some OSCAL models::
+
+            if doc.supports("add_control"):
+                doc.add_control(...)
+
+        Only class-level (shared, model-defined) members count; per-instance
+        attributes set at runtime are ignored, so the check reflects the model's
+        capabilities rather than incidental state.
+
+        Args:
+            name (str, required): The method/attribute name to test.
+
+        Returns:
+            bool: True if the model defines ``name``.
+        """
+        return hasattr(type(self), name)
+
+    def __getattr__(self, name: str):
+        """Turn access to an undefined member into an actionable, catchable error.
+
+        Python calls this only when normal attribute lookup fails, so it adds no
+        overhead to valid calls. Rather than the bare ``AttributeError`` Python
+        would raise, it reports *which* OSCAL models (if any) define ``name`` —
+        distinguishing a wrong-model call from a typo — logs that detail for
+        developers, and raises :class:`UnsupportedModelOperation`. Applications
+        catch :class:`OSCALError` at their boundary to keep running and show the
+        end user ``err.user_message`` instead of internals.
+
+        Args:
+            name (str, required): The attribute name that could not be found.
+
+        Raises:
+            UnsupportedModelOperation: For any non-dunder missing attribute.
+            AttributeError: For missing dunder names, so protocol probing
+                (copy/deepcopy/pickle) fails normally.
+        """
+        # Let dunder probing (copy, deepcopy, pickle, etc.) fail the normal way,
+        # and avoid recursion before __init_common__ has populated instance state.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+
+        model = self.__dict__.get("model") or type(self).__name__
+        valid_on = [
+            m for m, cls in _MODEL_REGISTRY.items() if hasattr(cls, name)
+        ]
+        error = UnsupportedModelOperation(name, model, valid_on)
+
+        # Capture for developers two ways: the library logger, and the instance's
+        # own error record (when initialized) so a caller can inspect it later.
+        logger.error(error.developer_message)
+        errors = self.__dict__.get("errors")
+        if isinstance(errors, dict):
+            errors.setdefault("unsupported_operations", []).append(
+                {"method": name, "model": model, "valid_on": error.valid_on}
+            )
+
+        raise error
 
     # =========================================================================
     # Content state properties (progressive — each implies all prior levels passed)
@@ -598,9 +860,10 @@ class OSCAL:
     def load(cls, source: str | os.PathLike | _ReadableSource, *, href: str | None = None):
         """Initialize an instance from a local file path or file-like object.
 
-        Aligns with Python's conventional ``load(...)`` behavior. Use ``loads(...)``
-        for in-memory strings/dicts, and ``acquire(...)`` for URI/reference
-        resolution and fallback sources.
+        Aligns with Python's conventional ``load(...)`` behavior (cf. ``json.load`` /
+        ``pickle.load``): the source is a **local** path or a file-like object. Use
+        ``loads(...)`` for in-memory strings/dicts, and ``acquire(...)`` for URI/reference
+        sources (``http``/``https``/``file``/``ftp``/…) — ``load`` does not fetch remotely.
 
         Args:
             source (str | os.PathLike | file-like, required): A filesystem path or an
@@ -631,6 +894,15 @@ class OSCAL:
                 resolved_href = str(getattr(source, "name", ""))
         elif isinstance(source, (str, os.PathLike)):
             path = os.fspath(source)
+            # load() reads local sources only. A string carrying a real URI scheme (length
+            # > 1, so a Windows drive letter like "C:" is still a path) is a remote source —
+            # flag the misuse clearly instead of silently reading a nonexistent file and
+            # reporting "format unknown"; the caller should use acquire().
+            if isinstance(source, str):
+                scheme = urlparse(source).scheme
+                if scheme and len(scheme) > 1:
+                    logger.error(f"load() received a URL ('{source}') but reads local files only; "
+                                 "use acquire() for http/https/file/URI sources.")
             content = getfile(path)
             if not resolved_href:
                 resolved_href = path
@@ -777,6 +1049,7 @@ class OSCAL:
         Write the current OSCAL content to a file.
         With no parameters, saves to the original location in the original format.
         This will save to any valid filename, even if the file extension does not match the format.
+        Output keys/elements are emitted in canonical metaschema order (see :meth:`dumps`).
 
         Args:
             filename (str, optional): Path to write to. Defaults to the original
@@ -1140,66 +1413,547 @@ class OSCAL:
 
     # -------------------------------------------------------------------------
     def remove_import(self, href: str) -> bool:
-        """Remove an import entry from both import_list and the document content.
+        """Remove a first-level import statement from this document.
 
-        The import *statement* is deleted from ``self._dict``, placing the
-        document in an edited and unsaved state.  Any back-matter resource
-        referenced by the import via a URI fragment (``href="#uuid"``) is
-        intentionally preserved — only the import element itself is removed.
+        Operates only on this document's own imports, never on descendants. The
+        import *statement* is deleted from ``self._dict``; any back-matter resource
+        it referenced via a URI fragment (``href="#uuid"``) is intentionally
+        preserved. The affected part of the import tree is refreshed and any
+        model-specific derived state (e.g. a Profile's resolved catalog) is reset
+        via :meth:`_after_imports_changed`.
 
-        The cached import_tree is updated in-place (same object, one node
-        shorter).  content_state is recomputed: if the removed entry was the
-        last thing blocking resolution, content_state advances to
-        IMPORTS_RESOLVED.
+        Cardinality is enforced from :data:`_IMPORT_SPEC`:
 
-        The same priority ordering used by retry_import applies when multiple
-        entries share the same href — DUPLICATE and IGNORED are preferred over
-        INVALID which is preferred over READY — so the problematic entry is
-        always targeted.
+        * Models with no top-level import (catalog, mapping-collection) — invalid.
+        * Fixed-cardinality models where ``min == max`` (SSP/AP/AR require exactly
+          one) — invalid; change that import with :meth:`retry_import` instead.
+        * Otherwise the removal is rejected when it would drop the count of *real*
+          imports (non-empty, non-``"#"`` href) below the model's minimum. Removing
+          an empty placeholder is always allowed for variable-cardinality models.
 
         Args:
-            href: Any href that identifies the entry (href_original, href_valid,
-                  failure.uri, or an href_list item href).
+            href: Any href that identifies the import — its literal href (including
+                a ``"#uuid"`` fragment or an empty ``""``/``"#"`` placeholder), or
+                the resolved target href of the back-matter resource it references.
 
         Returns:
-            True if an entry was found and removed, False if not found or the
-            content is read-only.
+            True if an import was found and removed; False if not found, the
+            cardinality forbids removal, or the content is read-only.
         """
         if not self._can_mutate("remove_import"):
             return False
 
-        candidates = _find_import_candidates(self.import_list, href)
-        if not candidates:
-            logger.warning(f"remove_import: href '{href}' not found in import_list.")
+        spec = _IMPORT_SPEC.get(self.model)
+        if not spec or spec["path"] is None:
+            logger.warning(f"remove_import: the {self.model} model has no top-level imports.")
+            return False
+        if spec["min"] == spec["max"]:
+            logger.warning(
+                f"remove_import: the {self.model} model requires exactly {spec['min']} "
+                "import(s); its import is fixed — modify it with retry_import instead."
+            )
             return False
 
-        target = _pick_import_target(candidates)
-        idx = self.import_list.index(target)
+        # Prefer an import_list entry (resolution-aware: DUPLICATE/INVALID are targeted
+        # over READY when several share an href) so problematic imports are removed and
+        # any prior retry_import fix on a sibling is preserved. Fall back to the raw
+        # content when nothing is resolved yet (e.g. removing an empty placeholder).
+        list_target = _pick_import_target(_find_import_candidates(self.import_list, href))
+        if list_target is not None:
+            target_href = str(list_target.get("href_original", "")).strip()
+        else:
+            raw_target = self._find_import_entry(href)
+            if raw_target is None:
+                logger.warning(f"remove_import: href '{href}' not found in this document's imports.")
+                return False
+            target_href = str(raw_target.get(spec["href"], "")).strip()
 
-        # Remove the import statement from the dict first, while import_list
-        # is still intact so _remove_import_from_dict can count preceding
-        # entries to identify which dict occurrence to remove.
-        dict_removed = _remove_import_from_dict(self._dict, self.model, self.import_list, target)
+        is_placeholder = target_href in ("", "#")
+        if not is_placeholder and self._real_import_count() - 1 < spec["min"]:
+            logger.warning(
+                f"remove_import: the {self.model} model requires at least {spec['min']} "
+                f"import(s); '{href}' cannot be removed."
+            )
+            return False
+
+        if list_target is not None:
+            idx = self.import_list.index(list_target)
+            dict_removed = _remove_import_from_dict(self._dict, self.model, self.import_list, list_target)
+            # Keep the cached tree in step (import_list[i] ↔ import_tree.imports[i]).
+            if self._import_tree is not None:
+                tree_imports = self._import_tree.get("imports", [])
+                if idx < len(tree_imports):
+                    tree_imports.pop(idx)
+            self.import_list.remove(list_target)
+        else:
+            dict_removed = self._remove_import_entry(spec, raw_target)
+            self._import_tree = None
+
         if not dict_removed:
             logger.warning(
-                f"remove_import: import statement for '{target.get('href_original')}' "
-                "could not be located in document content."
+                f"remove_import: import statement for '{href}' could not be located "
+                "in document content."
+            )
+            return False
+
+        self.is_unsaved = True
+        self._after_imports_changed()
+        logger.info(f"remove_import: '{href}' removed from {self.model}.")
+        return True
+
+    # -------------------------------------------------------------------------
+    # First-level import manipulation (add / remove) — shared across all models.
+    # -------------------------------------------------------------------------
+    def add_import(self, href: str, uuid: str = "", title: str = "", description: str = "",
+                   props: list = [], version: str = "", remarks: str = "", *,
+                   include_all: bool = False) -> ImportResult:
+        """Add a first-level import to this document, backed by a back-matter resource.
+
+        Uniform across every model; legality is governed by :data:`_IMPORT_SPEC`:
+
+        * Models with no top-level import (catalog, mapping-collection) — ``invalid``.
+        * Fixed-cardinality models where ``min == max`` (SSP/AP/AR) — ``invalid``; set
+          their single import with :meth:`retry_import` instead of add/remove.
+        * Otherwise an import is added while the count of *real* imports is below the
+          model's ``max`` (unbounded when ``max`` is None).
+
+        The import references a back-matter ``resource`` by UUID fragment
+        (``href="#<uuid>"``): if a resource whose ``rlink`` already targets ``href``
+        exists it is reused, otherwise one is created via :meth:`append_resource` with
+        which this method shares its resource parameters (``uuid``/``title``/
+        ``description``/``props``/``remarks``). The ``href`` becomes the resource's
+        single ``rlink`` (with a best-effort ``media-type`` inferred from it), and
+        ``version`` is appended to ``props`` as a ``prop`` named ``"version"``. An empty
+        placeholder import (href ``""``/``"#"``) is filled in place; otherwise the entry
+        is appended (list models) or set (single-import models). After placement the
+        import tree and any derived state are refreshed via :meth:`_after_imports_changed`.
+
+        Args:
+            href (str, required): Reference to the imported OSCAL file (XML/JSON/YAML);
+                becomes the created resource's ``rlink`` href.
+            uuid (str, optional): UUID for the created resource; generated when empty.
+                Ignored when an existing resource is reused. Mirrors :meth:`append_resource`.
+            title (str, optional): Title for the created resource.
+            description (str, optional): Description for the created resource.
+            props (list, optional): Property dicts for the created resource; ``version``
+                (below) is appended to these. Mirrors :meth:`append_resource`.
+            version (str, optional): Convenience — appended to ``props`` as a ``prop``
+                named ``"version"`` (resources have no native version field).
+            remarks (str, optional): Remarks (markdown) for the created resource.
+            include_all (bool, optional): Keyword-only, profile-only. When True a new
+                profile import selects all controls via ``include-all`` instead of the
+                default empty ``include-controls``/``with-ids`` placeholder. Ignored by
+                models whose imports carry no selection. Defaults to False.
+
+        Returns:
+            ImportResult: ``status`` of "added", "replaced", "duplicate", "invalid",
+                or "error", with the relevant ``entry`` and ``resource``.
+        """
+        if not href:
+            logger.error("add_import: 'href' is required.")
+            return ImportResult("error", message="'href' is required.")
+
+        if not self._can_mutate("add_import"):
+            return ImportResult("error", message="content is read-only or unavailable.")
+
+        spec = _IMPORT_SPEC.get(self.model)
+        if not spec or spec["path"] is None:
+            return ImportResult(
+                "invalid",
+                message=f"the {self.model} model has no top-level imports; add_import is not applicable.",
+            )
+        if spec["min"] == spec["max"]:
+            return ImportResult(
+                "invalid",
+                message=(f"the {self.model} model requires exactly {spec['min']} import(s); "
+                         "its import is fixed — modify it with retry_import instead of add/remove."),
+            )
+        if spec["max"] is not None and self._real_import_count() >= spec["max"]:
+            return ImportResult(
+                "invalid",
+                message=(f"the {self.model} model allows at most {spec['max']} import(s); "
+                         "remove one before adding another."),
             )
 
-        # Update the cached tree in-place before removing from import_list.
-        if self._import_tree is not None:
-            tree_imports = self._import_tree.get("imports", [])
-            if idx < len(tree_imports):
-                tree_imports.pop(idx)
+        # Block duplicates among this document's own imports.
+        existing = self._find_duplicate_import(href)
+        if existing is not None:
+            logger.error(f"add_import: '{href}' is already imported by this {self.model}.")
+            return ImportResult("duplicate", entry=existing, message=f"'{href}' is already imported.")
 
-        self.import_list.remove(target)
+        # Reuse a back-matter resource already targeting this href, else create one
+        # through the shared append_resource path. The href becomes the resource's
+        # single rlink and version is folded into props.
+        resource = self._find_resource_by_href(href)
+        if resource is None:
+            rlink: dict[str, Any] = {"href": href}
+            media_type = _infer_media_type(href)
+            if media_type:
+                rlink["media-type"] = media_type
+            else:
+                logger.debug(f"add_import: could not infer media-type for '{href}'.")
+            res_props = list(props or [])
+            if version:
+                res_props.append({"name": "version", "value": version})
+            created = self.append_resource(
+                uuid=uuid, title=title, description=description,
+                props=res_props, rlinks=[rlink], remarks=remarks,
+            )
+            if created is None:
+                logger.error(f"add_import: failed to add back-matter resource for '{href}'.")
+                return ImportResult("error", message="failed to add back-matter resource.")
+            # append_resource returns a safe copy; carry the live stored resource so the
+            # import fragment and the ImportResult reference the same object.
+            resource = self._find_resource_by_href(href) or created
 
-        if dict_removed:
-            self.is_unsaved = True
+        import_entry: dict[str, Any] = {spec["href"]: f"#{resource['uuid']}"}
+        import_entry.update(self._new_import_body(include_all=include_all))
 
+        status = self._place_import_entry(spec, import_entry)
+        if status is None:
+            logger.error(f"add_import: failed to place import entry for '{href}'.")
+            return ImportResult("error", message="failed to place import entry.")
+
+        # Refresh the import tree so the new import is loaded/validated, then reset
+        # any model-specific derived state.
+        self._import_tree = None
+        self.resolve_imports()
+        self._after_imports_changed()
+        logger.info(f"add_import: {status} import '{href}' as resource {resource['uuid']}.")
+        return ImportResult(status, entry=import_entry, resource=resource)
+
+    # -------------------------------------------------------------------------
+    def update_import(self, *, title: Optional[str] = None, description: Optional[str] = None,
+                      props: Optional[list] = None, rlinks: Optional[list] = None,
+                      remarks: Optional[str] = None, new_resource: bool = True) -> ImportResult:
+        """Modify the single import of a one-import model (SSP, AP, AR, or POA&M).
+
+        These models carry exactly one import (POA&M: at most one), so :meth:`add_import`
+        and :meth:`remove_import` do not apply — this is how their import is changed. It
+        takes the same resource fields as :meth:`update_resource` (``title``,
+        ``description``, ``props``, ``rlinks``, ``remarks`` — ``None`` leaves a field
+        unchanged; arrays replace wholesale) plus ``new_resource``. The behavior depends
+        on what the existing import points at:
+
+        * **No import yet** (only possible for POA&M): the call is forwarded to
+          :meth:`add_import` (``new_resource`` does not apply and is omitted); the import
+          target's href is taken from the first supplied ``rlink``.
+        * **Import is a direct URI** (or an empty ``""``/``"#"`` placeholder): a new
+          back-matter resource is created (via :meth:`append_resource`) — its ``rlink`` is
+          the supplied ``rlinks`` when given, otherwise the existing URI — and the import's
+          href is repointed to that resource's ``#uuid``. (``new_resource`` does not apply:
+          there is no backing resource to update.) Status: "replaced".
+        * **Import is a ``#uuid`` fragment**:
+
+          - ``new_resource=True`` (default): a brand-new resource with a new UUID is
+            created via :meth:`append_resource` from the supplied fields, and the import's
+            href is repointed to it. The prior resource is **left in place** — it is not
+            deleted, because other content may reference it (including OSCAL documents not
+            currently loaded that import this one and cite that resource by UUID). Because
+            the new resource is built only from the fields you pass, supply ``rlinks`` (and
+            any props) for the new target; read the old resource first with
+            :meth:`get_resource_by_uuid` if you want to carry values forward. Status:
+            "replaced".
+          - ``new_resource=False``: the existing resource is edited in place via
+            :meth:`update_resource` (same wholesale array-replacement semantics and
+            data-loss caveats — see that method). The import's href is unchanged. Status:
+            "updated".
+
+        Args:
+            title (str | None, optional): Resource title; ``""`` removes it.
+            description (str | None, optional): Resource description; ``""`` removes it.
+            props (list | None, optional): Replacement property dicts.
+            rlinks (list | None, optional): Replacement ``rlink`` dicts (``href`` plus
+                optional ``media-type``/``hashes``). Also the source of the import target's
+                href when creating a resource or bootstrapping a POA&M import.
+            remarks (str | None, optional): Resource remarks (markdown); ``""`` removes it.
+            new_resource (bool, optional): When the import already references a ``#uuid``
+                resource, True (default) creates a new resource and repoints; False edits
+                the existing resource in place. Ignored for the direct-URI/placeholder and
+                no-import cases. Defaults to True.
+
+        Returns:
+            ImportResult: ``status`` "added"/"replaced"/"updated" on success (``ok`` True),
+                or "invalid"/"error" otherwise, carrying the import ``entry`` and the
+                created/updated ``resource``.
+        """
+        if not self._can_mutate("update_import"):
+            return ImportResult("error", message="content is read-only or unavailable.")
+
+        spec = _IMPORT_SPEC.get(self.model)
+        if not spec or spec["path"] is None or spec["max"] != 1:
+            return ImportResult(
+                "invalid",
+                message=("update_import applies only to single-import models "
+                         "(system-security-plan, assessment-plan, assessment-results, "
+                         "plan-of-action-and-milestones)."),
+            )
+
+        key = spec["href"]
+        entries = self._import_entries()
+
+        # No import present. Only POA&M (min 0) can legitimately be here; bootstrap via
+        # add_import using the href from the supplied rlink.
+        if not entries:
+            if spec["min"] != 0:
+                return ImportResult("error", message=f"the {self.model} is missing its required import.")
+            target_href = str(rlinks[0].get("href", "")).strip() if rlinks else ""
+            if not target_href:
+                return ImportResult(
+                    "error",
+                    message="no existing import and no rlink href supplied to create one.",
+                )
+            return self.add_import(
+                target_href, title=title or "", description=description or "",
+                props=list(props or []), remarks=remarks or "",
+            )
+
+        imp = entries[0]
+        current = str(imp.get(key, "")).strip()
+
+        if current.startswith("#") and len(current) > 1 and not new_resource:
+            # Edit the existing resource in place; the import href is unchanged.
+            resource = self.update_resource(
+                current[1:], title=title, description=description,
+                props=props, rlinks=rlinks, remarks=remarks,
+            )
+            if resource is None:
+                return ImportResult(
+                    "error",
+                    message=f"could not update resource '{current[1:]}' referenced by the import.",
+                )
+            status = "updated"
+        else:
+            # Create a new resource and repoint the import's href at it. Covers: an
+            # existing #uuid fragment with new_resource=True, a direct-URI import, and an
+            # empty/# placeholder. The prior resource (if any) is intentionally preserved.
+            fallback_uri = current if (current and not current.startswith("#")) else ""
+            resource = self._make_import_resource(rlinks, title, description, props, remarks, fallback_uri)
+            if resource is None:
+                return ImportResult("error", message="failed to create back-matter resource for the import.")
+            if not self.put(f"{spec['path']}/{key}", f"#{resource['uuid']}"):
+                return ImportResult("error", message="failed to repoint the import href.")
+            status = "replaced"
+
+        self._import_tree = None
+        self.resolve_imports()
+        self._after_imports_changed()
+        entry_copy = copy.deepcopy(self._import_entries()[0]) if self._import_entries() else None
+        logger.info(f"update_import: {status} import for {self.model}.")
+        return ImportResult(status, entry=entry_copy, resource=resource)
+
+    # -------------------------------------------------------------------------
+    def _make_import_resource(self, rlinks: Optional[list], title: Optional[str],
+                              description: Optional[str], props: Optional[list],
+                              remarks: Optional[str], fallback_uri: str) -> Optional[dict]:
+        """Create a back-matter resource for an import target via :meth:`append_resource`.
+
+        The resource's ``rlinks`` are the supplied *rlinks* (key-filtered) when given,
+        else a single rlink to *fallback_uri* (with inferred media-type) when non-empty,
+        else none. Returns the created resource (safe copy), or None on failure.
+        """
+        if rlinks:
+            rls = [
+                {k: v for k, v in rl.items() if k in ("href", "media-type", "hashes")}
+                for rl in rlinks
+            ]
+        elif fallback_uri:
+            rl: dict[str, Any] = {"href": fallback_uri}
+            media_type = _infer_media_type(fallback_uri)
+            if media_type:
+                rl["media-type"] = media_type
+            rls = [rl]
+        else:
+            rls = []
+        return self.append_resource(
+            title=title or "", description=description or "",
+            props=list(props or []), rlinks=rls, remarks=remarks or "",
+        )
+
+    # -------------------------------------------------------------------------
+    def _new_import_body(self, include_all: bool = False) -> dict:
+        """Extra keys to seed a new import entry beyond its href.
+
+        Base returns ``{}`` (most models' imports carry no body);
+        :class:`~oscal.oscal_controls.Profile` overrides this to supply a control
+        selection. ``include_all`` is honored only by models that support it.
+        """
+        return {}
+
+    # -------------------------------------------------------------------------
+    def _import_root(self) -> dict:
+        """The live model-root dict (``self._dict[self.model]``), or ``{}``."""
+        if isinstance(self._dict, dict):
+            root = self._dict.get(self.model)
+            if isinstance(root, dict):
+                return root
+        return {}
+
+    # -------------------------------------------------------------------------
+    def _import_entries(self) -> list[dict]:
+        """Raw first-level import entry dicts currently present in the content.
+
+        A single-object import location (import-profile/-ssp/-ap) is wrapped in a
+        one-element list; a missing or empty location yields ``[]``.
+        """
+        spec = _IMPORT_SPEC.get(self.model)
+        if not spec or spec["path"] is None:
+            return []
+        item = self._import_root().get(spec["path"])
+        if spec["single"]:
+            return [item] if isinstance(item, dict) else []
+        return [e for e in item if isinstance(e, dict)] if isinstance(item, list) else []
+
+    # -------------------------------------------------------------------------
+    def _real_import_count(self) -> int:
+        """Count first-level imports with a real (non-empty, non-``"#"``) href."""
+        spec = _IMPORT_SPEC.get(self.model)
+        key = spec["href"] if spec else "href"
+        return sum(1 for e in self._import_entries()
+                   if str(e.get(key, "")).strip() not in ("", "#"))
+
+    # -------------------------------------------------------------------------
+    def _find_import_entry(self, href: str) -> Optional[dict]:
+        """Return the raw first-level import entry identified by *href*, or None.
+
+        Matches an import whose literal href equals *href* (covering ``""``/``"#"``
+        placeholders and ``"#uuid"`` fragments), or whose referenced back-matter
+        resource resolves to the same target as *href*.
+        """
+        spec = _IMPORT_SPEC.get(self.model)
+        if not spec:
+            return None
+        key = spec["href"]
+        entries = self._import_entries()
+
+        # 1) literal href match (placeholders, fragments, or direct href).
+        for imp in entries:
+            if str(imp.get(key, "")).strip() == str(href).strip():
+                return imp
+
+        # 2) resolved-target match (import references a resource whose rlink → href).
+        resolved = self._resolve_import_href(href)
+        resources = self._import_root().get("back-matter", {}).get("resources", [])
+        res_by_uuid = {r.get("uuid"): r for r in resources if isinstance(r, dict)}
+        for imp in entries:
+            imp_href = str(imp.get(key, "")).strip()
+            if imp_href.startswith("#"):
+                res = res_by_uuid.get(imp_href[1:])
+                for rlink in (res.get("rlinks", []) if res else []):
+                    if self._resolve_import_href(str(rlink.get("href", ""))) == resolved:
+                        return imp
+            elif imp_href and self._resolve_import_href(imp_href) == resolved:
+                return imp
+        return None
+
+    # -------------------------------------------------------------------------
+    def _remove_import_entry(self, spec: dict, target: dict) -> bool:
+        """Delete the *target* import entry from the content per its model *spec*."""
+        path = spec["path"]
+        root = self._import_root()
+        if spec["single"]:
+            if root.get(path) is target or root.get(path) == target:
+                del root[path]
+                return True
+            return False
+        container = root.get(path)
+        if isinstance(container, list):
+            for i, imp in enumerate(container):
+                if imp is target:
+                    container.pop(i)
+                    return True
+        return False
+
+    # -------------------------------------------------------------------------
+    def _place_import_entry(self, spec: dict, import_entry: dict) -> Optional[str]:
+        """Insert *import_entry* into the content, replacing an empty placeholder.
+
+        Returns "replaced" when an existing placeholder/single-import slot was
+        overwritten, "added" when a new entry was appended/created, or None on failure.
+        """
+        path = spec["path"]
+        key = spec["href"]
+        if spec["single"]:
+            existed = path in self._import_root()
+            if not self.put(path, import_entry, mode="replace"):
+                return None
+            return "replaced" if existed else "added"
+
+        imports = self._import_root().get(path, [])
+        placeholder_idx = next(
+            (i for i, imp in enumerate(imports)
+             if isinstance(imp, dict) and str(imp.get(key, "")).strip() in ("", "#")),
+            None,
+        )
+        if placeholder_idx is not None:
+            if not self.put(f"{path}/{placeholder_idx}", import_entry, mode="replace"):
+                return None
+            return "replaced"
+        if not self.put(path, import_entry, mode="insert"):
+            return None
+        return "added"
+
+    # -------------------------------------------------------------------------
+    def _find_resource_by_href(self, href: str) -> Optional[dict]:
+        """Return a back-matter resource whose ``rlink`` resolves to *href*, or None."""
+        resolved = self._resolve_import_href(href)
+        for res in self._import_root().get("back-matter", {}).get("resources", []):
+            if not isinstance(res, dict):
+                continue
+            for rlink in res.get("rlinks", []):
+                if isinstance(rlink, dict) and \
+                        self._resolve_import_href(str(rlink.get("href", ""))) == resolved:
+                    return res
+        return None
+
+    # -------------------------------------------------------------------------
+    def _find_duplicate_import(self, href: str) -> Optional[dict]:
+        """Return this document's own import that already targets *href*, or None.
+
+        Fragment imports (``href="#uuid"``) are followed through back-matter to their
+        ``rlink`` target(s); direct imports are compared by resolved href. Empty
+        placeholders never count as duplicates.
+        """
+        spec = _IMPORT_SPEC.get(self.model)
+        if not spec or spec["path"] is None:
+            return None
+        key = spec["href"]
+        resolved_new = self._resolve_import_href(href)
+        resources = self._import_root().get("back-matter", {}).get("resources", [])
+        res_by_uuid = {r.get("uuid"): r for r in resources if isinstance(r, dict)}
+
+        for imp in self._import_entries():
+            imp_href = str(imp.get(key, "")).strip()
+            if imp_href in ("", "#"):
+                continue
+            targets: list[str] = []
+            if imp_href.startswith("#"):
+                res = res_by_uuid.get(imp_href[1:])
+                for rlink in (res.get("rlinks", []) if res else []):
+                    rl_href = str(rlink.get("href", "")).strip()
+                    if rl_href:
+                        targets.append(self._resolve_import_href(rl_href))
+            else:
+                targets.append(self._resolve_import_href(imp_href))
+            if resolved_new in targets:
+                return imp
+        return None
+
+    # -------------------------------------------------------------------------
+    def _after_imports_changed(self) -> None:
+        """Refresh derived state after a first-level import was added or removed.
+
+        Base behavior: recompute content_state from the (already updated) import_list,
+        then fire :meth:`_on_content_mutated` so any model-specific derived state resets.
+        The caller is responsible for bringing the import tree itself up to date first —
+        :meth:`add_import` re-resolves so the new import is loaded, while
+        :meth:`remove_import` patches import_list/import_tree in place (preserving any
+        prior :meth:`retry_import` fix on a sibling). Subclasses with derived structures
+        (e.g. :class:`~oscal.oscal_controls.Profile` with its controls_tree / resolved
+        catalog) override this to rebuild them.
+        """
         self._refresh_content_state()
-        logger.info(f"remove_import: '{target.get('href_original')}' removed.")
-        return True
+        self._on_content_mutated()
 
     # -------------------------------------------------------------------------
     def _identity_key(self) -> tuple | None:
@@ -1342,7 +2096,7 @@ class OSCAL:
             system-security-plan       → import-profile/@href
             assessment-plan            → import-ssp/@href
             plan-of-action-and-milestones → import-ssp/@href
-            assessment-results         → import-assessment-plan/@href
+            assessment-results         → import-ap/@href
             mapping-collection         → mapping/source/@href,
                                          mapping/target/@href
 
@@ -1853,6 +2607,18 @@ class OSCAL:
         oscal_root = ""
         oscal_version = ""
 
+        # --- Defensive normalization ---
+        # Accept bytes (decode as UTF-8, which also strips a BOM via 'utf-8-sig') and strip
+        # a leading UTF-8 BOM from str input. Content handed in from an external fetch (an API
+        # response with no file extension, a re-encoded file) is detected by its actual data;
+        # a stray BOM otherwise misdetects JSON as YAML, and raw bytes crash format detection.
+        if isinstance(content, (bytes, bytearray)):
+            content = bytes(content).decode("utf-8-sig", errors="replace")
+            logger.debug("Content was bytes; decoded as UTF-8 for detection.")
+        elif isinstance(content, str) and content[:1] == "\ufeff":
+            content = content.lstrip("\ufeff")
+            logger.debug("Stripped a leading UTF-8 BOM from string content.")
+
         # --- Step: acquired ---
         if not content or not content.strip():
             logger.error("No content to validate — source may be empty or unreadable.")
@@ -1901,18 +2667,45 @@ class OSCAL:
             status = False
 
         if status:
-            if oscal_version in self._support.versions:
-                self.oscal_version = oscal_version
+            self.requested_oscal_version = oscal_version
+            resolved_version = oscal_version
+
+            # If the declared version has no local support, try to acquire it (bundled DB,
+            # then NIST) or substitute the closest same-major version — reflecting the
+            # outcome in version_support (see OSCALSupport.ensure_version).
+            if oscal_version not in self._support.versions:
+                resolved_version, outcome = self._support.ensure_version(oscal_version)
+                if outcome == "closest-match":
+                    self.version_support = VersionSupport.CLOSEST_MATCH
+                    logger.warning(
+                        f"OSCAL version '{oscal_version}' is unavailable; validating and "
+                        f"converting against the closest available version '{resolved_version}'."
+                    )
+                elif outcome == "unavailable":
+                    self.version_support = VersionSupport.UNSUPPORTED
+                    self.resolved_oscal_version = ""
+                    logger.error(
+                        f"OSCAL version '{oscal_version}' is not supported and could not be acquired."
+                    )
+                    status = False
+
+            if status:
+                self.oscal_version = resolved_version
+                self.resolved_oscal_version = resolved_version
                 if oscal_root in self._support.list_models(self.oscal_version):
                     self.model = oscal_root
-                    logger.debug(f"OSCAL model '{self.model}' and version '{self.oscal_version}' identified.")
+                    logger.debug(
+                        f"OSCAL model '{self.model}' identified (declared version "
+                        f"'{self.requested_oscal_version}', using support version '{self.oscal_version}')."
+                    )
                     status = True
                 else:
-                    logger.error(f"Root element '{oscal_root}' is not a recognized OSCAL model.")
+                    logger.error(
+                        f"Root element '{oscal_root}' is not a recognized OSCAL model "
+                        f"for version '{self.oscal_version}'."
+                    )
+                    self.version_support = VersionSupport.UNSUPPORTED
                     status = False
-            else:
-                logger.error(f"OSCAL version '{oscal_version}' is not recognized.")
-                status = False
 
         self.validation_status["well-formed"] = status
         if status:
@@ -2153,6 +2946,13 @@ class OSCAL:
             # Data type check
             datatype = flag_node.get("datatype")
             if datatype and isinstance(flag_val, str) and flag_val:
+                # Defensively repair a non-conformant URI (e.g. backslashes/spaces) in place
+                # so the content becomes valid rather than merely flagged.
+                if datatype in ("uri", "uri-reference"):
+                    fixed = normalize_uri_reference(flag_val)
+                    if fixed != flag_val:
+                        logger.warning(f"Repaired non-conformant {datatype} @{flag_name} at {location}: {flag_val!r} -> {fixed!r}")
+                        instance[flag_name] = flag_val = fixed
                 err = _check_datatype(flag_val, datatype, location, f"@{flag_name}")
                 if err:
                     errors.append(err)
@@ -2214,6 +3014,12 @@ class OSCAL:
             if stype == "field" and isinstance(child_val, str) and child_val:
                 datatype = child_node.get("datatype")
                 if datatype:
+                    # Defensively repair a non-conformant URI value in place (see flags above).
+                    if datatype in ("uri", "uri-reference"):
+                        fixed = normalize_uri_reference(child_val)
+                        if fixed != child_val:
+                            logger.warning(f"Repaired non-conformant {datatype} {child_name} at {location}: {child_val!r} -> {fixed!r}")
+                            instance[json_key] = child_val = fixed
                     err = _check_datatype(child_val, datatype, location, child_name)
                     if err:
                         errors.append(err)
@@ -2329,30 +3135,30 @@ class OSCAL:
     # -------------------------------------------------------------------------
     @property
     def xml(self) -> str:
-        """Return the content as an XML string, converting from dict if necessary."""
-        if self._tree is None:
-            if not self._build_tree():
-                logger.error("Failed to build XML tree for serialization.")
-                return ""
-        return self._xml_serializer()
+        """Return the content as an XML string in canonical element order.
+
+        Rebuilds from the current dict via the metaschema converter (reflecting
+        the latest edits, in schema-required element order) and retains no tree.
+        """
+        return self._serialize_xml()
 
     # -------------------------------------------------------------------------
     @property
     def json(self) -> str:
-        """Return the content as a JSON string."""
+        """Return the content as a JSON string in canonical key order."""
         if self._dict is None:
             logger.error("No content available for JSON serialization.")
             return ""
-        return json.dumps(self._dict, indent=INDENT)
+        return json.dumps(self._ordered_dict(), indent=INDENT)
 
     # -------------------------------------------------------------------------
     @property
     def yaml(self) -> str:
-        """Return the content as a YAML string."""
+        """Return the content as a YAML string in canonical key order."""
         if self._dict is None:
             logger.error("No content available for YAML serialization.")
             return ""
-        return yaml.dump(self._dict, sort_keys=False, indent=INDENT)
+        return yaml.dump(self._ordered_dict(), sort_keys=False, indent=INDENT)
 
     # -------------------------------------------------------------------------
     def _can_mutate(self, operation: str = "") -> bool:
@@ -2884,6 +3690,99 @@ class OSCAL:
         return copy.deepcopy(append_resource(self, uuid, title, description, props, rlinks, base64, remarks))
 
     # -------------------------------------------------------------------------
+    @if_update_successful
+    def update_resource(self, uuid: str, *, title: Optional[str] = None,
+                        description: Optional[str] = None, props: Optional[list] = None,
+                        rlinks: Optional[list] = None, remarks: Optional[str] = None) -> dict | None:
+        """Update fields of an existing ``back-matter`` resource, selected by ``uuid``.
+
+        Only a resource defined in THIS document's own ``back-matter`` is editable
+        (imported resources are not). Each field is optional and independent:
+
+        * ``None`` (the default) leaves that field untouched.
+        * A scalar (``title``/``description``/``remarks``) replaces the current value;
+          an empty string removes the field entirely.
+        * An array (``props``/``rlinks``) **replaces the existing array wholesale** — the
+          old list is discarded and the supplied list becomes the new one. Passing an
+          empty list removes the field.
+
+        .. warning::
+            Array replacement is destructive and total, not a merge. Whatever you pass
+            for ``props`` or ``rlinks`` becomes the *complete* new list; every entry not
+            present in your list is permanently dropped. A resource frequently carries
+            entries you did not author and may not be aware of — for example multiple
+            ``rlinks`` pointing at format variants (``.xml``/``.json``) of the same file,
+            ``rlinks`` bearing ``hashes`` for integrity, a ``base64`` payload, or ``props``
+            added by other tools or pipelines. Supplying a partial list here silently
+            deletes all of those. There is no undo.
+
+            **Recommended pattern:** read the current resource first with
+            :meth:`get_resource_by_uuid`, mutate the copy it returns (append to / edit the
+            existing ``props``/``rlinks`` rather than rebuilding them from scratch), then
+            pass those full arrays back to this method. That way you extend the resource
+            instead of overwriting it, and nothing you did not intend to touch is lost::
+
+                res = doc.get_resource_by_uuid(uuid)          # safe copy of the whole resource
+                res["rlinks"].append({"href": "catalog.json",
+                                      "media-type": "application/json"})
+                doc.update_resource(uuid, rlinks=res["rlinks"])   # full list, nothing dropped
+
+        Args:
+            uuid (str, required): UUID of the local back-matter resource to update.
+            title (str | None, optional): New title; ``""`` removes it. ``None`` = unchanged.
+            description (str | None, optional): New description; ``""`` removes it.
+            props (list | None, optional): Replacement property dicts (see
+                :func:`append_props`). ``[]`` removes all props. ``None`` = unchanged.
+            rlinks (list | None, optional): Replacement ``rlink`` dicts (``href`` plus
+                optional ``media-type``/``hashes``). ``[]`` removes all rlinks.
+            remarks (str | None, optional): New remarks (markdown); ``""`` removes them.
+
+        Returns:
+            dict | None: A safe copy of the updated resource, or None when the content is
+                read-only, ``uuid`` is empty, or no local resource with that UUID exists.
+        """
+        if not self._can_mutate("update_resource"):
+            return None
+        if not uuid:
+            logger.error("update_resource: 'uuid' is required.")
+            return None
+
+        resources = self._import_root().get("back-matter", {}).get("resources", [])
+        resource = next(
+            (r for r in resources if isinstance(r, dict) and r.get("uuid") == uuid), None
+        )
+        if resource is None:
+            logger.warning(f"update_resource: no local back-matter resource with uuid '{uuid}'.")
+            return None
+
+        # Scalars: None = unchanged; truthy = set; "" = remove.
+        for field, value in (("title", title), ("description", description), ("remarks", remarks)):
+            if value is None:
+                continue
+            if value:
+                resource[field] = value
+            else:
+                resource.pop(field, None)
+
+        # Arrays: None = unchanged; otherwise replace the whole list ([] removes it).
+        if props is not None:
+            resource.pop("props", None)
+            if props:
+                append_props(resource, props)  # normalizes ns defaults per prop
+        if rlinks is not None:
+            if rlinks:
+                resource["rlinks"] = [
+                    {k: v for k, v in rl.items() if k in ("href", "media-type", "hashes")}
+                    for rl in rlinks
+                ]
+            else:
+                resource.pop("rlinks", None)
+
+        logger.debug(f"update_resource: resource '{uuid}' updated.")
+        # Return a safe copy — the live resource stays in _dict; further edits go through methods.
+        return copy.deepcopy(resource)
+
+    # -------------------------------------------------------------------------
     def walk_imports(self, visitor_fn, depth=0, _seen=None, *, scope="successful"):
         """Walk the import tree depth-first, calling ``visitor_fn(entry, depth)`` for each entry.
 
@@ -2959,15 +3858,17 @@ class OSCAL:
     # -------------------------------------------------------------------------
     # Kinds of element the import-tree resolver can locate, mapped to how they are
     # identified (uuid vs id). Extensible for model-specific needs.
-    _RESOLVE_KINDS = ("resource", "role", "party", "control", "group", "param", "part")
+    _RESOLVE_KINDS = ("resource", "role", "party", "location", "responsible-party",
+                      "control", "group", "param", "part")
 
     def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None) -> Optional[dict]:
         """Resolve an id/uuid by searching this document and its import tree.
 
         OSCAL cross-references (``href="#..."``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id) or ``party`` (by uuid), or a ``control``/``group``/``param``/``part`` (by id).
-        This walks ``self`` first, then each imported document depth-first (de-duplicated,
+        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
+        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
         Args:
@@ -3003,16 +3904,130 @@ class OSCAL:
         return None
 
     # -------------------------------------------------------------------------
-    def get_parameter_by_id(self, param_id: str) -> Optional[dict]:
-        """Return a safe copy of a parameter defined anywhere in scope, or None.
+    def _lookup_in_scope(self, fragment_id: str, kind: str, with_source: bool = False,
+                         local_only: bool = False):
+        """Resolve one element ``kind`` by id/uuid in this doc (and, by default, its imports).
+
+        Shared implementation for the ``get_*`` cross-reference getters. Looks in THIS
+        document first; unless ``local_only`` is set it then cascades depth-first through
+        the import tree (de-duplicated, cycle-safe) via :meth:`find_in_import_tree`,
+        returning the first match.
+
+        Args:
+            fragment_id (str, required): The bare id/uuid to resolve (no ``#``).
+            kind (str, required): The element kind to search (a member of
+                :attr:`_RESOLVE_KINDS`).
+            with_source (bool, optional): When False (default) return a safe copy of the
+                element only; when True return the full locator
+                ``{"element", "kind", "id", "object_uuid", "href"}`` — the element plus
+                the owning document's root uuid and resolved href (useful for
+                dereferencing an element's own relative references, e.g. rlinks).
+            local_only (bool, optional): When True, search only THIS document's own
+                content and do not fall back to imported documents. Defaults to False.
+
+        Returns:
+            Optional[dict]: The element (or full locator when ``with_source``), or None.
+        """
+        if local_only:
+            found = self._find_local_element(fragment_id, kinds=[kind])
+            if found is not None:
+                found["object_uuid"] = self.uuid
+                found["href"] = self.href or self.href_original or ""
+        else:
+            found = self.find_in_import_tree(fragment_id, kinds=[kind])
+        if found is None:
+            return None
+        return found if with_source else found["element"]
+
+    # -------------------------------------------------------------------------
+    def get_parameter_by_id(self, param_id: str, with_source: bool = False) -> Optional[dict]:
+        """Return a parameter defined anywhere in scope, or None.
 
         Searches this document and its import tree for a ``param`` with the given id —
         covering parameters defined at control, group, or catalog level (and reached
         through imported catalogs/profiles). Subclasses may override to prefer resolved
-        content.
+        content. See :meth:`_lookup_in_scope` for the ``with_source`` locator form.
         """
-        found = self.find_in_import_tree(param_id, kinds=["param"])
-        return found["element"] if found is not None else None
+        return self._lookup_in_scope(param_id, "param", with_source)
+
+    # -------------------------------------------------------------------------
+    def get_resource_by_uuid(self, resource_uuid: str, with_source: bool = False,
+                             local_only: bool = False) -> Optional[dict]:
+        """Return a back-matter resource defined anywhere in scope, or None.
+
+        Looks in THIS document's ``back-matter`` first; on a local miss the search
+        cascades out through the immediately imported documents and continues depth-first
+        along every branch (de-duplicated and cycle-safe) until a ``resource`` whose
+        ``uuid`` matches is found or every branch is exhausted. This lets a cross-reference
+        (``href="#uuid"``) resolve even when the resource is defined in an imported
+        document rather than locally. Subclasses may override to prefer resolved content.
+
+        Args:
+            resource_uuid (str, required): The bare resource UUID to resolve (no ``#``).
+            with_source (bool, optional): Return the full locator (element + owning
+                ``object_uuid``/``href``) instead of the bare resource; useful for
+                resolving the resource's relative rlink hrefs. Defaults to False.
+            local_only (bool, optional): Search only THIS document, never imports.
+                Defaults to False.
+
+        Returns:
+            Optional[dict]: A safe copy of the matching resource (or locator), or None.
+        """
+        return self._lookup_in_scope(resource_uuid, "resource", with_source, local_only)
+
+    # -------------------------------------------------------------------------
+    def get_role_by_id(self, role_id: str, with_source: bool = False,
+                       local_only: bool = False) -> Optional[dict]:
+        """Return a metadata ``role`` (by id) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.roles`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until a role with the given id is
+        found or every branch is exhausted — so a ``role-id`` reference resolves even when
+        the role is defined in an imported document. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
+        """
+        return self._lookup_in_scope(role_id, "role", with_source, local_only)
+
+    # -------------------------------------------------------------------------
+    def get_party_by_uuid(self, party_uuid: str, with_source: bool = False,
+                          local_only: bool = False) -> Optional[dict]:
+        """Return a metadata ``party`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.parties`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until a party with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
+        """
+        return self._lookup_in_scope(party_uuid, "party", with_source, local_only)
+
+    # -------------------------------------------------------------------------
+    def get_location_by_uuid(self, location_uuid: str, with_source: bool = False,
+                             local_only: bool = False) -> Optional[dict]:
+        """Return a metadata ``location`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.locations`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until a location with the given uuid
+        is found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
+        """
+        return self._lookup_in_scope(location_uuid, "location", with_source, local_only)
+
+    # -------------------------------------------------------------------------
+    def get_responsible_party_by_id(self, role_id: str, with_source: bool = False,
+                                    local_only: bool = False) -> Optional[dict]:
+        """Return a metadata ``responsible-party`` (by role-id) in scope, or None.
+
+        A ``responsible-party`` is keyed by the ``role-id`` it fulfills. Looks in THIS
+        document's ``metadata.responsible-parties`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until one with the given role-id is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
+
+        Note: this targets metadata-level ``responsible-parties`` only. The
+        ``responsible-role`` assemblies embedded throughout implementation/assessment
+        models are model-specific and handled by a separate, later cascade.
+        """
+        return self._lookup_in_scope(role_id, "responsible-party", with_source, local_only)
 
     # -------------------------------------------------------------------------
     def reachable_ids(self, _seen=None) -> set:
@@ -3055,6 +4070,15 @@ class OSCAL:
             for party in metadata.get("parties", []):
                 if isinstance(party, dict) and party.get("uuid") == fragment_id:
                     return {"element": copy.deepcopy(party), "kind": "party", "id": fragment_id}
+        if "location" in wanted:
+            for loc in metadata.get("locations", []):
+                if isinstance(loc, dict) and loc.get("uuid") == fragment_id:
+                    return {"element": copy.deepcopy(loc), "kind": "location", "id": fragment_id}
+        if "responsible-party" in wanted:
+            # responsible-party is keyed by the role it fulfills (role-id), not a uuid.
+            for rp in metadata.get("responsible-parties", []):
+                if isinstance(rp, dict) and rp.get("role-id") == fragment_id:
+                    return {"element": copy.deepcopy(rp), "kind": "responsible-party", "id": fragment_id}
         if any(k in wanted for k in ("control", "group", "param", "part")):
             found = _find_model_element(root, fragment_id, wanted)
             if found is not None:
@@ -3066,6 +4090,11 @@ class OSCAL:
     def dumps(self, format: str = "", pretty_print: bool = False) -> str:
         """
         Serialize the current content to a string in the specified format.
+
+        Keys/elements are emitted in canonical NIST metaschema order: XML element
+        order is schema-required and always canonical; JSON/YAML key order is
+        canonical on a best-effort basis (see :meth:`_ordered_dict`).
+
         Parameters:
         - format (str): The target format for serialization ("xml", "json", or "yaml")
             Defaults to the original format of the content if not specified.
@@ -3083,10 +4112,11 @@ class OSCAL:
             return ""
 
         if format == "xml":
-            if self._tree is None and not self._build_tree():
-                logger.error("Failed to build XML tree for serialization.")
-                return ""
-            return self._xml_serializer(pretty_print=pretty_print)
+            # XML element order is schema-significant (canonical order is required
+            # for valid OSCAL XML). _serialize_xml rebuilds from the current dict
+            # via the metaschema converter (canonical order + latest edits) and
+            # releases the transient tree afterward.
+            return self._serialize_xml(pretty_print=pretty_print)
         elif format == "json":
             if self._dict is None:
                 logger.error("No content available for JSON serialization.")
@@ -3100,6 +4130,39 @@ class OSCAL:
         else:
             logger.error(f"Unsupported format for serialization: {format}")
             return ""
+
+    # -------------------------------------------------------------------------
+    def _serialize_xml(self, pretty_print: bool = False) -> str:
+        """Serialize to XML in canonical element order, retaining no XML tree.
+
+        The XML tree is a transient, derived view of the JSON-primary ``self._dict``
+        needed only at serialization time. Normal path: (re)build it from the
+        current dict via the metaschema converter (canonical element order, and
+        always reflecting the latest edits), serialize, then release it so it does
+        not inflate the object's footprint (e.g. when persisting save-state).
+
+        Degraded path: when no dict is available (XML was loaded but XML→JSON
+        conversion produced no dict), the retained tree is the *only*
+        representation of the content, so it is serialized in place and kept.
+
+        Args:
+            pretty_print (bool): Whether to pretty-print the output.
+
+        Returns:
+            str: The serialized XML, or "" when there is no content to serialize.
+        """
+        if self._dict is not None:
+            if not self._build_tree():
+                logger.error("Failed to build XML tree for serialization.")
+                return ""
+            out = self._xml_serializer(pretty_print=pretty_print)
+            self._tree = None  # release the transient tree; rebuilt on demand next time
+            return out
+        if self._tree is not None:
+            # Degraded fallback: no dict, tree is the sole representation — keep it.
+            return self._xml_serializer(pretty_print=pretty_print)
+        logger.error("No content available for XML serialization.")
+        return ""
 
     # -------------------------------------------------------------------------
     def _xml_serializer(self, pretty_print: bool = False) -> str:
@@ -3139,16 +4202,36 @@ class OSCAL:
         return out_string
 
     # -------------------------------------------------------------------------
+    def _ordered_dict(self) -> dict | None:
+        """Return a canonically key-ordered copy of ``self._dict`` for output.
+
+        Reorders keys to the NIST metaschema canonical order (via
+        :func:`~oscal.oscal_resequence.resequence_oscal`) so serialized JSON/YAML
+        is emitted in canonical order. Best-effort: if resequencing is
+        unavailable (e.g. no metaschema index for the model/version) or fails,
+        the original ``self._dict`` is returned unchanged — key ordering in
+        JSON/YAML is presentational, not semantic, so output is never blocked.
+        Returns None only when there is no content.
+        """
+        if self._dict is None:
+            return None
+        try:
+            return resequence_oscal(self._dict, version=self.oscal_version)
+        except Exception as exc:  # never let cosmetic ordering break serialization
+            logger.warning(f"Key resequencing skipped for {self.model} output: {exc}")
+            return self._dict
+
+    # -------------------------------------------------------------------------
     def _json_serializer(self, pretty_print: bool = False) -> str:
         """
-        Serializes the current dict to a string.
+        Serializes the current dict to a string, in canonical key order.
         Parameters:
         - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized JSON content as a string.
         """
         logger.debug("Serializing dict for string output as JSON.")
-        out_string = json.dumps(self._dict, indent=INDENT if pretty_print else None, sort_keys=False)
+        out_string = json.dumps(self._ordered_dict(), indent=INDENT if pretty_print else None, sort_keys=False)
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
@@ -3156,1057 +4239,21 @@ class OSCAL:
     # -------------------------------------------------------------------------
     def _yaml_serializer(self, pretty_print: bool = False) -> str:
         """
-        Serializes the current dict to a string.
+        Serializes the current dict to a string, in canonical key order.
         Parameters:
         - pretty_print (bool): Whether to pretty-print the output. Defaults to False.
         Returns:
         - str: The serialized YAML content as a string.
         """
         logger.debug("Serializing dict for string output as YAML.")
-        out_string: str = yaml.dump(self._dict, indent=INDENT if pretty_print else None, sort_keys=False)  # type: ignore[assignment]
+        out_string: str = yaml.dump(self._ordered_dict(), indent=INDENT if pretty_print else None, sort_keys=False)  # type: ignore[assignment]
         logger.debug("LEN: " + str(len(out_string)))
 
         return out_string
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Data Classes
+# Module-level functions that operate on an OSCAL document instance
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-class ImportState(str, Enum):
-    """Resolution state of a single import entry in an OSCAL document's import_list.
-
-    Members:
-        READY (str): "ready" — content is valid and loaded.
-        NOT_LOADED (str): "not-loaded" — content has not been loaded.
-        INVALID (str): "invalid" — content could not be loaded or failed validation.
-        EXPIRED (str): "expired" — content is valid but the cached copy has expired.
-        DUPLICATE (str): "duplicate" — the resolved href is already loaded by an earlier import.
-        IGNORED (str): "ignored" — the caller explicitly chose to ignore this import.
-        CYCLIC (str): "cyclic" — this import resolves to one of its own ancestors; the
-            ancestor stays valid and recursion stops here to prevent an infinite loop.
-    """
-    READY        = "ready"        # The content is valid and loaded
-    NOT_LOADED   = "not-loaded"   # The content has not been loaded
-    INVALID      = "invalid"      # The content could not be loaded or failed validation
-    EXPIRED      = "expired"      # The content is valid, but cached copy has expired
-    DUPLICATE    = "duplicate"    # The resolved href is already loaded by an earlier import
-    IGNORED      = "ignored"      # Caller explicitly chose to ignore this import (duplicate or otherwise)
-    CYCLIC       = "cyclic"       # Resolves to an ancestor — recursion stops to avoid a loop
-
-# -------------------------------------------------------------------------
-class ImportFailureCode(str, Enum):
-    """Typed reason codes describing why an OSCAL import could not be resolved.
-
-    Grouped by failure category — fragment/back-matter, full-URI/file,
-    content, and duplicate/retry. Members:
-        FRAGMENT_INVALID_UUID (str): Fragment reference is not a valid UUID.
-        RESOURCE_NOT_FOUND (str): No back-matter resource matches the UUID.
-        RESOURCE_NO_VIABLE_CONTENT (str): Resource has neither rlinks nor base64 content.
-        LOCAL_NOT_FOUND (str): Local file was not found.
-        REMOTE_UNREACHABLE (str): Remote host could not be reached.
-        REMOTE_AUTH_REQUIRED (str): Remote resource requires authentication.
-        REMOTE_UNSUPPORTED (str): URI scheme is not supported.
-        CONTENT_EMPTY (str): Source returned no content.
-        CONTENT_INVALID (str): Content is not valid OSCAL.
-        ALREADY_IMPORTED (str): Retry href resolves to a file already loaded elsewhere.
-    """
-    # Fragment / back-matter failures
-    FRAGMENT_INVALID_UUID      = "fragment-invalid-uuid"       # Fragment is not a valid UUID
-    RESOURCE_NOT_FOUND         = "resource-not-found"          # No back-matter resource with that UUID
-    RESOURCE_NO_VIABLE_CONTENT = "resource-no-viable-content"  # Resource has no rlinks or base64
-    # Full URI / file failures
-    LOCAL_NOT_FOUND            = "local-not-found"             # Local file not found
-    REMOTE_UNREACHABLE         = "remote-unreachable"          # Remote host not reachable
-    REMOTE_AUTH_REQUIRED       = "remote-auth-required"        # Remote resource requires authentication
-    REMOTE_UNSUPPORTED         = "remote-unsupported"          # URI scheme not supported
-    # Content failures (source responded, but content is unusable)
-    CONTENT_EMPTY              = "content-empty"               # Source returned no content
-    CONTENT_INVALID            = "content-invalid"             # Content is not valid OSCAL
-    # Duplicate / retry failures
-    ALREADY_IMPORTED           = "already-imported"            # Retry href resolves to a file already loaded by another import
-
-# -------------------------------------------------------------------------
-class ImportLoadError(Exception):
-    """Exception carrying a typed import failure code from ``load_source()`` to ``resolve_imports()``.
-
-    Attributes:
-        code (ImportFailureCode): The typed reason the import failed.
-        uri (str): The URI that failed to load.
-    """
-    def __init__(self, code: ImportFailureCode, uri: str, message: str = ""):
-        """Initialize the error.
-
-        Args:
-            code (ImportFailureCode, required): The typed import failure reason.
-            uri (str, required): The URI that failed to load.
-            message (str, optional): Human-readable detail; a default is derived from
-                ``code`` and ``uri`` when omitted.
-        """
-        self.code = code
-        self.uri  = uri
-        super().__init__(message or f"{code.value}: {uri}")
-
-# -------------------------------------------------------------------------
-@dataclass
-class ImportFailure:
-    """Structured record of a failed import, carrying enough context for a retry attempt.
-
-    Retry sources the calling module may supply:
-        - A URI fragment (#uuid) pointing to a back-matter resource
-        - A full URI identifying an alternate location for the content
-        - The content itself as an XML, JSON, or YAML string
-    """
-    code: ImportFailureCode
-    href_original: str              # Raw href from the import statement
-
-    # Fragment / back-matter context (populated when href starts with "#")
-    resource_uuid: str = ""
-    resource_title: str = ""
-    resource_description: str = ""
-    rlinks_tried: list = field(default_factory=list)  # hrefs attempted before giving up
-
-    # URI context (populated for full-URI failures)
-    uri: str = ""
-
-    # Human-readable detail
-    message: str = ""
-
-    @property
-    def is_fragment_ref(self) -> bool:
-        """True when the original import href is a back-matter fragment reference."""
-        return self.href_original.startswith("#")
-
-# -------------------------------------------------------------------------
-@dataclass
-class OscalRef:
-    """A single OSCAL source reference: an href with optional media type and hashes.
-
-    Attributes:
-        href (str): The reference target (URI or path).
-        media_type (str | None): Optional media type of the target.
-        hashes (list[dict] | None): Optional integrity hashes for the target.
-        source_type (str): Classified source type (set by classification; not an init arg).
-        source_scheme (str): URI scheme of the source (not an init arg).
-        source_supported (bool): Whether the source scheme can be fetched (not an init arg).
-    """
-    href: str
-    media_type: str | None = None
-    hashes: list[dict] | None = None        # promoted from _extra
-    source_type: str = field(default="unknown", init=False, repr=False, compare=False)
-    source_scheme: str = field(default="", init=False, repr=False, compare=False)
-    source_supported: bool = field(default=False, init=False, repr=False, compare=False)
-    _extra: dict = field(default_factory=dict, repr=False, compare=False)
-
-    def __repr__(self) -> str:
-        if self.media_type:
-            return f"OscalRef({self.href!r}, {self.media_type!r})"
-        return f"OscalRef({self.href!r})"
-
-        # {"href": "<original_href>", "media-type": "<media_type>", "valid": True/False, "error": "<error_message_if_invalid>"}
-
-# -------------------------------------------------------------------------
-# Import-resolution shared helpers
-# Placed after the data classes so ImportState and ImportFailure are available.
-# -------------------------------------------------------------------------
-
-# Priority order for selecting which entry to target when multiple import_list
-# entries match the same href.  Non-READY statuses are preferred so that
-# ignore/remove/retry operations act on the problematic entry, not the working one.
-_IMPORT_RETRY_PRIORITY: tuple = (
-    ImportState.DUPLICATE,
-    ImportState.IGNORED,
-    ImportState.INVALID,
-    ImportState.NOT_LOADED,
-    ImportState.EXPIRED,
-    ImportState.READY,
-)
-
-
-def _find_import_candidates(import_list: list, href: str) -> list:
-    """Return all import_list entries whose href matches in any of the tracked fields.
-
-    Matches against: href_original, href_valid, failure.uri, or any href_list item href.
-    """
-    candidates = []
-    for entry in import_list:
-        failure = entry.get("failure")
-        failure_uri = failure.uri if isinstance(failure, ImportFailure) else ""
-        if (
-            entry.get("href_original") == href
-            or entry.get("href_valid") == href
-            or failure_uri == href
-            or any(item.get("href") == href for item in entry.get("href_list", []))
-        ):
-            candidates.append(entry)
-    return candidates
-
-
-def _pick_import_target(candidates: list) -> dict | None:
-    """Return the highest-priority candidate from a list of matching import_list entries."""
-    if not candidates:
-        return None
-    for status in _IMPORT_RETRY_PRIORITY:
-        hit = next((e for e in candidates if e.get("status") == status), None)
-        if hit is not None:
-            return hit
-    return candidates[0]
-
-
-def _remove_import_from_dict(
-    doc_dict: dict,
-    model: str,
-    import_list: list,
-    target: dict,
-) -> bool:
-    """Remove the import *statement* corresponding to *target* from *doc_dict*.
-
-    Only the import element itself is removed.  If the import referenced a
-    back-matter resource via a URI fragment (``href="#uuid"``), that resource
-    is left intact.
-
-    When multiple import statements share the same ``href_original`` (the
-    duplicate scenario), the preceding-entry count is used to determine which
-    occurrence in the array to remove, preserving the others.
-
-    Returns True if the element was located and removed, False otherwise.
-    """
-    href = target.get("href_original", "")
-    root = doc_dict.get(model, {})
-    if not isinstance(root, dict):
-        return False
-
-    # Count import_list entries that precede *target* and share the same
-    # href_original.  That count tells us how many occurrences of this href
-    # to skip in the dict array before removing.
-    target_idx = import_list.index(target)
-    n_to_keep = sum(
-        1 for e in import_list[:target_idx]
-        if e.get("href_original") == href
-    )
-
-    def _pop_nth(arr: list, key: str) -> bool:
-        """Remove the (n_to_keep)-th element in *arr* whose *key* equals *href*."""
-        kept = 0
-        for i, item in enumerate(arr):
-            if isinstance(item, dict) and item.get(key) == href:
-                if kept >= n_to_keep:
-                    arr.pop(i)
-                    return True
-                kept += 1
-        return False
-
-    if model == "profile":
-        return _pop_nth(root.get("imports", []), "href")
-
-    elif model == "component-definition":
-        # Top-level import-component-definitions
-        if _pop_nth(root.get("import-component-definitions", []), "href"):
-            return True
-        # Nested control-implementation sources within components
-        for comp in root.get("components", []):
-            if isinstance(comp, dict):
-                if _pop_nth(comp.get("control-implementations", []), "source"):
-                    return True
-        # Nested control-implementation sources within capabilities
-        for cap in root.get("capabilities", []):
-            if isinstance(cap, dict):
-                if _pop_nth(cap.get("control-implementations", []), "source"):
-                    return True
-        return False
-
-    elif model == "system-security-plan":
-        if "import-profile" in root:
-            del root["import-profile"]
-            return True
-        return False
-
-    elif model in ("assessment-plan", "plan-of-action-and-milestones"):
-        if "import-ssp" in root:
-            del root["import-ssp"]
-            return True
-        return False
-
-    elif model == "assessment-results":
-        if "import-assessment-plan" in root:
-            del root["import-assessment-plan"]
-            return True
-        return False
-
-    elif model == "mapping-collection":
-        for mapping in root.get("mappings", []):
-            if isinstance(mapping, dict):
-                src = mapping.get("source-resource", {})
-                if isinstance(src, dict) and src.get("href") == href:
-                    del mapping["source-resource"]
-                    return True
-                tgt = mapping.get("target-resource", {})
-                if isinstance(tgt, dict) and tgt.get("href") == href:
-                    del mapping["target-resource"]
-                    return True
-        return False
-
-    return False
-
-
-# -------------------------------------------------------------------------
-def _normalize_refs(source: str | dict | OscalRef | list) -> list[OscalRef]:
-    if isinstance(source, str):
-        return [OscalRef(href=source)]
-    if isinstance(source, OscalRef):
-        return [source]
-    if isinstance(source, dict):
-        href = source.get("href")
-        if not href:
-            raise ValueError(f"ref dict missing required 'href' key: {source!r}")
-        known = {"href", "media-type", "hashes"}
-        return [OscalRef(
-            href=href,
-            media_type=source.get("media-type"),
-            hashes=source.get("hashes"),
-            _extra={k: v for k, v in source.items() if k not in known}
-        )]
-    if isinstance(source, list):
-        return [_normalize_refs(item)[0] for item in source]
-    raise TypeError(
-        f"acquire() expected str, dict, OscalRef, or list — got {type(source).__name__}"
-    )
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Functions
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-def load_content(source: str | dict | OscalRef | list, media_type: str = "", only_oscal: bool = False,
-                 cache_directive: "CacheDirective | None" = None) -> str:
-    """Load content from one or more sources and return the first successful payload.
-
-    Args:
-        source (str | dict | OscalRef | list, required): The source(s) to load, as a
-            URI/path string, reference dict, ``OscalRef``, or a fallback list of these.
-        media_type (str, optional): Expected media type hint. Defaults to "".
-        only_oscal (bool, optional): When True, restrict acceptance to OSCAL content.
-            Defaults to False.
-        cache_directive (CacheDirective | None, optional): Caching directive applied
-            to remote fetches. Defaults to the standard 24h behavior.
-
-    Returns:
-        str: The first successfully loaded content payload, or "" if none load and no
-            typed error was raised.
-
-    Raises:
-        ImportLoadError: When a source fails with a typed reason (the last error is
-            re-raised when every source in a list fails).
-    """
-    logger.debug("Loading content from source")
-    refs = _normalize_refs(source)
-    content = ""
-
-    for ref in refs:
-        classify_source(ref, only_oscal=only_oscal)
-
-    last_error: ImportLoadError | None = None
-
-    for ref in refs:
-        if not ref.source_supported:
-            logger.warning(f"Skipping unsupported source: {ref.href} "
-                           f"(type={ref.source_type}, scheme={ref.source_scheme})")
-            last_error = ImportLoadError(
-                ImportFailureCode.REMOTE_UNSUPPORTED, ref.href,
-                f"URI scheme '{ref.source_scheme}' is not supported"
-            )
-            continue
-
-        try:
-            content = load_source(ref, cache_directive)
-            if content:
-                return content
-        except ImportLoadError as exc:
-            last_error = exc
-            logger.warning(f"Failed to load content from source '{ref.href}': {exc}")
-
-    if last_error:
-        raise last_error
-    logger.error("No usable content could be loaded from provided sources")
-    return ""
-
-def load_source(ref: OscalRef, cache_directive: "CacheDirective | None" = None) -> str:
-    """Fetch or read content from a classified ``OscalRef``.
-
-    Args:
-        ref (OscalRef, required): A reference that has already been classified
-            (via :func:`classify_source`) to set its source type/scheme.
-        cache_directive (CacheDirective | None, optional): Caching directive applied
-            to remote (http/https) fetches. Defaults to the standard 24h behavior.
-
-    Returns:
-        str: The raw content as a string on success.
-
-    Raises:
-        ImportLoadError: With a typed ``ImportFailureCode`` on any load failure.
-    """
-    src = ref.href.strip()
-    content: str = ""
-
-    try:
-        if ref.source_type == "uri" and ref.source_scheme == "file":
-            # file:// URI → convert to local path
-            parsed = urlparse(src)
-            local_path = parsed.path
-            if parsed.netloc:
-                local_path = f"//{parsed.netloc}{parsed.path}"
-            logger.info(f"Loading controls from file:// URI: {local_path}")
-            content = getfile(local_path)
-            if not content:
-                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
-                                      f"File URI returned no content: {local_path}")
-
-        elif ref.source_type == "uri" and ref.source_scheme in {"http", "https"}:
-            # Apply the cache directive, then serve from the on-disk cache when a
-            # reusable copy exists; otherwise fetch and populate/refresh the cache.
-            cache_key = _canonicalize_ref(src)
-            cache = get_local_cache()
-            cached = cache.get(cache_key, cache_directive)
-            if cached is not None:
-                logger.info(f"Loading controls from local cache: {src}")
-                content = cached
-            else:
-                logger.info(f"Loading controls from URL: {src}")
-                try:
-                    content = normalize_content(download_file(src, "oscal_remote_content"))
-                except HTTPError as exc:
-                    if exc.code in (401, 403):
-                        raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
-                                              f"HTTP {exc.code}: authentication required") from exc
-                    raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
-                                          f"HTTP {exc.code}: {exc.reason}") from exc
-                except (URLError, OSError, ConnectionError) as exc:
-                    raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
-                except Exception as exc:
-                    # download_file may raise implementation-specific types; inspect message for auth hints
-                    msg = str(exc).lower()
-                    if any(t in msg for t in ("401", "403", "unauthorized", "forbidden")):
-                        raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src, str(exc)) from exc
-                    raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
-                if content:
-                    cache.put(cache_key, content, cache_directive)
-
-        elif ref.source_type == "uri" and ref.source_scheme in {"ftp", "data"}:
-            logger.info(f"Loading controls from URI via urllib: {src}")
-            try:
-                with urlopen(src) as response:  # nosec B310 - intentional unauthenticated read
-                    payload = response.read()
-                content = payload.decode("utf-8", errors="replace")
-            except HTTPError as exc:
-                if exc.code in (401, 403):
-                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
-                                          f"HTTP {exc.code}: authentication required") from exc
-                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
-                                      f"HTTP {exc.code}: {exc.reason}") from exc
-            except (URLError, OSError, ConnectionError) as exc:
-                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
-
-        elif ref.source_type == "file":
-            logger.info(f"Loading controls from file: {src}")
-            try:
-                content = getfile(src)
-            except FileNotFoundError as exc:
-                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
-                                      f"File not found: {src}") from exc
-            except OSError as exc:
-                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src, str(exc)) from exc
-            if not content:
-                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
-                                      f"File returned no content: {src}")
-
-        else:
-            raise ImportLoadError(ImportFailureCode.REMOTE_UNSUPPORTED, src,
-                                  f"No loader for source type={ref.source_type} scheme={ref.source_scheme}")
-
-    except ImportLoadError:
-        raise  # already typed — let it propagate
-    except Exception as exc:
-        logger.error(f"Unexpected error loading source '{src}': {exc}")
-        raise ImportLoadError(ImportFailureCode.CONTENT_EMPTY, src, str(exc)) from exc
-
-    if not content:
-        raise ImportLoadError(ImportFailureCode.CONTENT_EMPTY, src,
-                              f"Source returned no content: {src}")
-
-    return content
-
-# -------------------------------------------------------------------------
-def _hrefs_from_dict_spec(root_obj: dict, spec: dict) -> list[str]:
-    """Extract all href strings from a JSON model root object using one pattern spec."""
-    hrefs   = []
-    item    = root_obj.get(spec["path"])
-    if item is None:
-        return hrefs
-    key    = spec["key"]
-    single = spec.get("single", False)
-    each   = spec.get("each")
-    subkey = spec.get("subkey")
-
-    if single:
-        # e.g. import-profile, import-ssp — a single object, not a list
-        if isinstance(item, dict):
-            v = item.get(key, "").strip()
-            if v:
-                hrefs.append(v)
-    elif each:
-        # e.g. components[].control-implementations[].source
-        for outer in (item if isinstance(item, list) else []):
-            for inner in (outer.get(each, []) if isinstance(outer, dict) else []):
-                if isinstance(inner, dict):
-                    v = inner.get(key, "").strip()
-                    if v:
-                        hrefs.append(v)
-    elif subkey:
-        # e.g. mappings[].source-resource.href / mappings[].target-resource.href
-        for entry in (item if isinstance(item, list) else []):
-            if isinstance(entry, dict):
-                sub = entry.get(subkey)
-                if isinstance(sub, dict):
-                    v = sub.get(key, "").strip()
-                    if v:
-                        hrefs.append(v)
-    else:
-        # e.g. imports[].href, import-component-definitions[].href
-        for entry in (item if isinstance(item, list) else []):
-            if isinstance(entry, dict):
-                v = entry.get(key, "").strip()
-                if v:
-                    hrefs.append(v)
-    return hrefs
-
-# -------------------------------------------------------------------------
-_OSCAL_EXTENSIONS = {".xml", ".json", ".yaml", ".yml"}
-
-def _resolve_href(base: str, href: str) -> str:
-    """Resolve a (possibly relative) href against a base URL or filesystem path.
-
-    Single-character "schemes" like 'c' are Windows drive letters, not URLs —
-    they are treated as local filesystem paths so os.path operations are used
-    instead of urljoin, which does not understand backslash separators.
-    """
-    parsed = urlparse(href)
-    if parsed.scheme and len(parsed.scheme) > 1:
-        return href  # already an absolute URL
-    if base:
-        base_parsed = urlparse(base)
-        if base_parsed.scheme and len(base_parsed.scheme) > 1:
-            return urljoin(base, href)  # base is a real URL
-        return os.path.normpath(os.path.join(base, href))
-    return os.path.abspath(href)
-
-
-def _canonicalize_ref(href: str) -> str:
-    """Canonicalize a resolved href for object-registry identity.
-
-    Produces a stable key for the same location: URLs get lower-cased scheme/host
-    and their fragment stripped; local paths are resolved with ``os.path.realpath``
-    (collapsing symlinks and ``..``). Format differences are intentionally *not*
-    normalized away — ``catalog.xml`` and ``catalog.json`` are different files and
-    keep distinct href keys (content-identity dedup handles the format-variant case).
-
-    Args:
-        href (str, required): A resolved (absolute) href or path.
-
-    Returns:
-        str: The canonicalized key, or "" when ``href`` is empty.
-    """
-    if not href:
-        return ""
-    parsed = urlparse(href)
-    if parsed.scheme and len(parsed.scheme) > 1 and parsed.scheme.lower() != "file":
-        return urlunparse((
-            parsed.scheme.lower(), parsed.netloc.lower(),
-            parsed.path, parsed.params, parsed.query, "",
-        ))
-    try:
-        return os.path.realpath(href)
-    except Exception:
-        return href
-
-def _oscal_format_variants(href: str) -> list[str]:
-    """Return the same href with each other OSCAL format extension substituted.
-
-    Used as additional fallback candidates when a back-matter rlink can't be
-    loaded — e.g. a profile in json/ directory whose rlink points to file.xml
-    that exists only as file.json in that same directory.
-    """
-    base, ext = os.path.splitext(href)
-    if ext.lower() not in _OSCAL_EXTENSIONS:
-        return []
-    return [base + e for e in sorted(_OSCAL_EXTENSIONS) if e != ext.lower()]
-
-# -------------------------------------------------------------------------
-def _is_valid_uuid(value: str) -> bool:
-    """Return True if value is a well-formed UUID string."""
-    try:
-        uuid.UUID(value)
-        return True
-    except (ValueError, AttributeError):
-        return False
-
-# -------------------------------------------------------------------------
-def _backmatter_resource(doc_obj, resource_uuid: str) -> dict | None:
-    """Return metadata and rlinks for a back-matter resource identified by UUID.
-
-    Returns a dict with keys: uuid, title, description, rlinks (list[dict]), has_base64.
-    Returns None when no resource with the given UUID exists.
-    """
-    if doc_obj._dict is None:
-        return None
-
-    root_obj  = doc_obj._dict.get(doc_obj.model, {})
-    resources = root_obj.get("back-matter", {}).get("resources", [])
-    for res in resources:
-        if res.get("uuid") == resource_uuid:
-            title       = res.get("title", "")
-            description = res.get("description", "")
-            rlinks: list[dict] = []
-            for r in res.get("rlinks", []):
-                href = r.get("href", "").strip()
-                if not href:
-                    continue
-                rl: dict = {"href": href}
-                if "media-type" in r:
-                    rl["media-type"] = r["media-type"]
-                if "hashes" in r:
-                    rl["hashes"] = r["hashes"]
-                rlinks.append(rl)
-            has_base64 = bool(res.get("base64"))
-            break
-    else:
-        return None
-
-    return {
-        "uuid":        resource_uuid,
-        "title":       title,
-        "description": description,
-        "rlinks":      rlinks,
-        "has_base64":  has_base64,
-    }
-
-# -------------------------------------------------------------------------
-def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:
-    """
-    Classify a source reference by path/URI type and Python stdlib accessibility.
-
-    Sets the ``source_type``, ``source_scheme``, and ``source_supported`` fields on
-    ``ref`` in place. Classification intentionally does not use file extensions,
-    because many valid content endpoints (e.g. APIs) lack predictable suffixes.
-
-    Args:
-        ref (OscalRef, required): The reference to classify; mutated in place.
-        only_oscal (bool, optional): Reserved for future content-shape validation;
-            currently does not affect classification. Defaults to False.
-
-    Returns:
-        bool: True if the reference was classified (even if unsupported), False only
-            when the href is empty.
-    """
-    uri = ref.href.strip()
-
-    if not uri:
-        ref.source_type = "unknown"
-        ref.source_scheme = ""
-        ref.source_supported = False
-        logger.warning("Empty source href cannot be classified")
-        return False
-
-    # --- Windows UNC path (\\server\share\...) ---
-    if uri.startswith("\\\\"): # Note: Windows UNC paths start with double backslashes (these are escaped in Python strings, so we check for "\\\\")
-        ref.source_type = "file"
-        ref.source_scheme = ""
-        ref.source_supported = True
-        return True
-
-    # --- UNC-like file path written with forward slashes (//server/share/...) ---
-    if uri.startswith("//"):
-        ref.source_type = "file"
-        ref.source_scheme = ""
-        ref.source_supported = True
-        return True
-
-    # --- Try parsing as a URI ---
-    parsed = urlparse(uri)
-
-    if parsed.scheme and len(parsed.scheme) > 1:
-        # Has a multi-char scheme → treat as URI
-        # (single-char "scheme" is likely a Windows drive letter, e.g. C:)
-        ref.source_type = "uri"
-        ref.source_scheme = parsed.scheme.lower()
-
-        if ref.source_scheme in _SIMPLE_URI_SCHEMES:
-            ref.source_supported = True
-        elif ref.source_scheme in _KNOWN_URI_SCHEMES:
-            ref.source_supported = False
-            logger.warning(f"URI scheme '{ref.source_scheme}' is recognised "
-                            f"but not yet supported: {uri}")
-        else:
-            ref.source_supported = False
-            logger.warning(f"Unknown URI scheme '{ref.source_scheme}': {uri}")
-        return True
-
-    # --- Local / network file path (POSIX, Windows drive-letter, relative) ---
-    ref.source_type = "file"
-    ref.source_scheme = ""
-    ref.source_supported = True
-
-    return True
-
-# -------------------------------------------------------------------------
-def _collect_ids(node, out: set) -> None:
-    """Recursively collect every ``id``/``uuid`` string value into ``out``."""
-    if isinstance(node, dict):
-        for key, val in node.items():
-            if key in ("id", "uuid") and isinstance(val, str):
-                out.add(val)
-            _collect_ids(val, out)
-    elif isinstance(node, list):
-        for item in node:
-            _collect_ids(item, out)
-
-
-# -------------------------------------------------------------------------
-def _find_part_by_id(parts: list, fragment_id: str) -> dict | None:
-    """Recursively find a part by id within a list of parts (and their nested parts)."""
-    for part in parts or []:
-        if isinstance(part, dict):
-            if part.get("id") == fragment_id:
-                return part
-            found = _find_part_by_id(part.get("parts", []), fragment_id)
-            if found is not None:
-                return found
-    return None
-
-
-def _find_model_element(container: dict, fragment_id: str, kinds) -> dict | None:
-    """Find a control/group/param/part by id within a catalog-shaped container.
-
-    Searches ``container`` (a catalog root, group, or control) for a matching group,
-    control, param, or part — descending through nested groups and controls. Returns a
-    result dict ``{"element", "kind", "id"}`` (safe copy) or None.
-    """
-    if "group" in kinds:
-        for grp in container.get("groups", []):
-            if isinstance(grp, dict) and grp.get("id") == fragment_id:
-                return {"element": copy.deepcopy(grp), "kind": "group", "id": fragment_id}
-    if "control" in kinds:
-        for ctrl in container.get("controls", []):
-            if isinstance(ctrl, dict) and ctrl.get("id") == fragment_id:
-                return {"element": copy.deepcopy(ctrl), "kind": "control", "id": fragment_id}
-    if "param" in kinds:
-        for param in container.get("params", []):
-            if isinstance(param, dict) and param.get("id") == fragment_id:
-                return {"element": copy.deepcopy(param), "kind": "param", "id": fragment_id}
-    if "part" in kinds:
-        part = _find_part_by_id(container.get("parts", []), fragment_id)
-        if part is not None:
-            return {"element": copy.deepcopy(part), "kind": "part", "id": fragment_id}
-    for grp in container.get("groups", []):
-        if isinstance(grp, dict):
-            found = _find_model_element(grp, fragment_id, kinds)
-            if found is not None:
-                return found
-    for ctrl in container.get("controls", []):
-        if isinstance(ctrl, dict):
-            found = _find_model_element(ctrl, fragment_id, kinds)
-            if found is not None:
-                return found
-    return None
-
-
-# -------------------------------------------------------------------------
-def prune_tree_copy(node: dict | None, depth: int | None = None,
-                    child_keys: tuple = ("groups", "controls")) -> dict | None:
-    """Return a SAFE COPY of *node* with nested structural children limited to *depth*.
-
-    Shared, model-agnostic helper for the node getters (catalog/profile groups and
-    controls; assessment ``tasks`` once implemented). The returned value shares no
-    references with *node*, so callers may read, mutate, or serialize it without
-    affecting the source document — mutation of live content must go through the
-    OSCAL-standard-enforcing methods, never through a getter's return value.
-
-    Only the collections named in *child_keys* are treated as structural children
-    subject to depth pruning. The node's own intrinsic content (e.g. ``props``,
-    ``links``, ``params``, ``parts``, ``title``) is always copied in full.
-
-        depth = None  -> unlimited: a full deep copy of the entire subtree (the
-                         default; mirrors the historical getter behavior).
-        depth = 0     -> node only: the *child_keys* collections are omitted.
-        depth = N     -> N levels of structural children retained, each recursively
-                         pruned at ``depth - 1``.
-
-    Args:
-        node (dict | None, required): The group/control/task dict to copy, or None.
-        depth (int | None, optional): Structural-child depth limit. Defaults to None.
-        child_keys (tuple, optional): Keys treated as structural children. Defaults
-            to ("groups", "controls"). Use ("tasks",) for assessment tasks.
-
-    Returns:
-        dict | None: A detached copy, or None when *node* is None.
-
-    Raises:
-        ValueError: If *depth* is a negative integer.
-    """
-    if node is None:
-        return None
-    if depth is None:
-        return copy.deepcopy(node)
-    if depth < 0:
-        raise ValueError(f"depth must be None or a non-negative integer, got {depth}")
-
-    result: dict = {}
-    for key, value in node.items():
-        if key in child_keys:
-            continue                      # pruned / handled below by depth
-        result[key] = copy.deepcopy(value)
-    if depth > 0:
-        for key in child_keys:
-            children = node.get(key)
-            if isinstance(children, list):
-                result[key] = [prune_tree_copy(child, depth - 1, child_keys)
-                               for child in children]
-    return result
-
-
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-def append_props(parent_obj: dict, props: list) -> None:
-    """
-    Append multiple prop dicts to ``parent_obj["props"]``.
-
-    Args:
-        parent_obj (dict, required): OSCAL JSON object that will receive the props.
-        props (list, required): Property dicts, each with at minimum "name" and "value".
-
-    Returns:
-        None
-    """
-    for prop in props:
-        append_prop(parent_obj, prop)
-
-# -------------------------------------------------------------------------
-def append_prop(parent_obj: dict, prop: dict) -> dict:
-    """
-    Append a single prop dict to ``parent_obj["props"]``.
-
-    Args:
-        parent_obj (dict, required): OSCAL JSON object that will receive the prop.
-        prop (dict, required): Property dict. Required keys: "name", "value".
-            Optional keys: "uuid", "ns", "class", "group", "remarks".
-
-    Returns:
-        dict: The appended prop entry (filtered to recognized keys).
-    """
-    entry: dict = {}
-    for key in ("uuid", "name", "ns", "value", "class", "group", "remarks"):
-        if key in prop:
-            entry[key] = prop[key]
-    parent_obj.setdefault("props", []).append(entry)
-    return entry
-
-# -------------------------------------------------------------------------
-def get_props(parent_obj: dict, name: str | None = None, uuid: str | None = None,
-              ns: str = _OSCAL_NS, class_: str | None = None,
-              group: str | None = None) -> list:
-    """
-    Retrieve matching prop dicts from ``parent_obj["props"]``.
-
-    Either ``name`` or ``uuid`` must be supplied. The return value is always a
-    list — empty when nothing matches (or when the required parameters are
-    missing) — never ``None``.
-
-    An absent ``ns`` on a prop is treated as the OSCAL default namespace
-    (``_OSCAL_NS``), matching the way ``ns`` defaults on this function's own
-    ``ns`` parameter. Correct default-``ns`` handling is essential: a prop with
-    no ``ns`` is considered to be in the OSCAL namespace.
-
-    Matching behaviour:
-      * ``uuid`` supplied: every prop whose ``uuid`` equals ``uuid`` is
-        returned. If any descriptor parameter (``name``, a non-default ``ns``,
-        ``class_`` or ``group``) is also supplied and does not match a returned
-        prop, a warning is logged, but the prop is still returned.
-      * ``uuid`` not supplied: ``name`` is required. Props are matched on
-        ``name`` **and** effective ``ns``. When ``class_`` and/or ``group`` are
-        supplied they must also match. When ``class_``/``group`` are *not*
-        supplied, all name+ns matches are returned, ordered best match first:
-        props carrying fewer of the un-queried qualifiers (``class``/``group``)
-        sort ahead of more-specific props. Document order is preserved among
-        equally specific matches.
-
-    Args:
-        parent_obj (dict, required): OSCAL JSON object holding a ``props`` list.
-        name (str, optional): Prop ``name`` to match. Required if ``uuid`` is
-            not given.
-        uuid (str, optional): Prop ``uuid`` to match. Required if ``name`` is
-            not given.
-        ns (str, optional): Namespace to match; defaults to ``_OSCAL_NS``.
-        class_ (str, optional): Prop ``class`` to match. Maps to the ``"class"``
-            key (``class`` is a reserved word in Python).
-        group (str, optional): Prop ``group`` to match.
-
-    Returns:
-        list: Matching prop dicts (possibly empty), ordered best match first.
-    """
-    if uuid is None and name is None:
-        logger.warning("get_props() requires either 'name' or 'uuid'; neither "
-                       "was provided. Returning an empty list.")
-        return []
-
-    props = parent_obj.get("props", []) or []
-
-    def _eff_ns(prop: dict) -> str:
-        # Absent @ns defaults to the OSCAL namespace per OSCAL specification.
-        return prop.get("ns") or _OSCAL_NS
-
-    # -- uuid mode: uuid identifies the prop; other params only validate ------
-    if uuid is not None:
-        matches = [p for p in props if p.get("uuid") == uuid]
-        descriptors_given = (name is not None or class_ is not None
-                             or group is not None or ns != _OSCAL_NS)
-        if descriptors_given:
-            for p in matches:
-                mismatched = []
-                if name is not None and p.get("name") != name:
-                    mismatched.append("name")
-                if _eff_ns(p) != ns:
-                    mismatched.append("ns")
-                if class_ is not None and p.get("class") != class_:
-                    mismatched.append("class")
-                if group is not None and p.get("group") != group:
-                    mismatched.append("group")
-                if mismatched:
-                    logger.warning(f"get_props() matched prop uuid={uuid!r} but "
-                                   f"the following supplied parameter(s) did not "
-                                   f"match the prop: {', '.join(mismatched)}.")
-        return matches
-
-    # -- name mode: match on name + effective ns (+ class/group if given) -----
-    results = [p for p in props
-               if p.get("name") == name and _eff_ns(p) == ns
-               and (class_ is None or p.get("class") == class_)
-               and (group is None or p.get("group") == group)]
-
-    # Order best match first: props carrying fewer of the un-queried
-    # qualifiers (class/group) are the closer match. Stable sort keeps
-    # document order among equally specific props.
-    unqueried = [q for q, given in (("class", class_), ("group", group))
-                 if given is None]
-    if unqueried:
-        results.sort(key=lambda p: sum(1 for q in unqueried
-                                       if p.get(q) not in (None, "")))
-    return results
-
-# -----------------------------------------------------------------------------
-def append_links(parent_obj: dict, links: list) -> None:
-    """
-    Append multiple link dicts to ``parent_obj["links"]``.
-
-    Args:
-        parent_obj (dict, required): OSCAL JSON object that will receive the links.
-        links (list, required): Link dicts, each with at minimum an "href" key.
-
-    Returns:
-        None
-    """
-    for link in links:
-        append_link(parent_obj, link)
-
-# -----------------------------------------------------------------------------
-def append_link(parent_obj: dict, link: dict) -> dict:
-    """
-    Append a single link dict to ``parent_obj["links"]``.
-
-    Args:
-        parent_obj (dict, required): OSCAL JSON object that will receive the link.
-        link (dict, required): Link dict. Required key: "href".
-            Optional keys: "rel", "media-type", "resource-fragment", "text".
-
-    Returns:
-        dict: The appended link entry (filtered to recognized keys).
-    """
-    entry: dict = {}
-    for key in ("href", "rel", "media-type", "resource-fragment", "text"):
-        if key in link:
-            entry[key] = link[key]
-    parent_obj.setdefault("links", []).append(entry)
-    return entry
-
-# -----------------------------------------------------------------------------
-def oscal_markdown_to_html_tree(markdown_text: str, multiline: bool = True) -> Optional[ElementTree.Element]:
-    """
-    Convert OSCAL markdown text to an HTML ElementTree element.
-
-    Calls ``oscal_markdown_to_html`` to format the markdown into HTML consistent
-    with the OSCAL XML specification for markup-line / markup-multiline, then parses
-    the resulting string into an XML element suitable for appending into a parent
-    XML object.
-
-    Args:
-        markdown_text (str, required): The markdown text to convert.
-        multiline (bool, optional): If True, handle markup-multiline (block elements);
-            if False, handle markup-line (inline elements only). Defaults to True.
-
-    Returns:
-        Optional[ElementTree.Element]: The parsed XML element, or None if conversion fails.
-    """
-    html_str = oscal_markdown_to_html(markdown_text, multiline=multiline)
-    if html_str:
-        return _html_to_et(html_str, "")
-    return None
-
-# -------------------------------------------------------------------------
-def _format_table_helper(table_lines: list) -> str:
-    """Helper function to format markdown table to HTML"""
-    if len(table_lines) < 2:
-        return ""
-
-    # Parse header row
-    header_cells = [cell.strip() for cell in table_lines[0].split('|')[1:-1]]
-
-    # Parse alignment row
-    alignment_row = table_lines[1]
-    alignments = []
-    for cell in alignment_row.split('|')[1:-1]:
-        cell = cell.strip()
-        if cell.startswith(':') and cell.endswith(':'):
-            alignments.append('center')
-        elif cell.endswith(':'):
-            alignments.append('right')
-        else:
-            alignments.append('left')
-
-    # Ensure we have alignments for all columns
-    while len(alignments) < len(header_cells):
-        alignments.append('left')
-
-    # Build HTML table
-    html = ['<table>']
-
-    # Header row
-    header_html = '  <tr>'
-    for i, cell in enumerate(header_cells):
-        align = alignments[i] if i < len(alignments) else 'left'
-        header_html += f'<th align="{align}">{cell}</th>'
-    header_html += '</tr>'
-    html.append(header_html)
-
-    # Data rows
-    for line in table_lines[2:]:
-        if not line.strip():
-            continue
-        cells = [cell.strip() for cell in line.split('|')[1:-1]]
-        row_html = '  <tr>'
-        for i, cell in enumerate(cells):
-            align = alignments[i] if i < len(alignments) else 'left'
-            row_html += f'<td align="{align}">{cell}</td>'
-        row_html += '</tr>'
-        html.append(row_html)
-
-    html.append('</table>')
-    return '\n'.join(html)
-
-# -------------------------------------------------------------------------
 def append_resource(oscal_obj: OSCAL, uuid: str = "", title: str = "", description: str = "", props: list = [], rlinks: list = [], base64: str = "", remarks: str = "") -> dict | None:
     """
     Appends a resource to the back-matter section of the OSCAL JSON content.
@@ -4304,15 +4351,6 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
         logger.error(f"Unsupported OSCAL model for new content: {model_name}")
 
     return None
-
-# -----------------------------------------------------------------------------
-def new_uuid() -> str:
-    """Generate a new random (version 4) UUID string.
-
-    Returns:
-        str: A newly generated UUID in canonical string form.
-    """
-    return str(uuid.uuid4())
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 if __name__ == '__main__':

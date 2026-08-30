@@ -13,7 +13,9 @@ The OSCAL Library consists of:
 There is a core `OSCAL` class, as well as classes for each OSCAL model (`Catalog`, `Profile`, `Mapping`, `ComponentDefinition`, `SSP`, `AssessmentPlan`, `AssessmentResults` and `POAM`). Each of the model-specific classes inherit the `OSCAL` class for common methods and attributes. 
 
 The modules are organized as follows:
-- `oscal_content.py`: Includes the `OSCAL` class and and related functions common to all OSCAL models. 
+- `oscal_content.py`: Includes the `OSCAL` class and and related functions common to all OSCAL models, plus the library exception hierarchy (`OSCALError`, `UnsupportedModelOperation`).
+- `oscal_helpers.py`: Model-agnostic helper functions that operate on plain OSCAL JSON dicts and markup (props/links, UUID, id lookups, depth-limited safe copies). Re-exported from `oscal_content.py`.
+- `oscal_source.py`: Source acquisition and reference/import resolution (`OscalRef`, `load_content`/`load_source`, `classify_source`, href resolution, and the `ImportState`/`ImportFailureCode`/`ImportLoadError`/`ImportFailure` types). Independent of the model classes; re-exported from `oscal_content.py`.
 - `oscal_controls.py`: Includes `Catalog`, `Profile` and `Mapping` classes and control layer functions.
 - `oscal_implementation.py`: Includes `ComponentDefinition` and `SSP` classes and implementation layer functions.
 - `oscal_assessment.py`: Includes `AssessmentPlan`, `AssessmentResults` and `POAM` classes and assessment layer functions.
@@ -25,7 +27,7 @@ See [Content Management](./CONTENT.md) for more information.
 ### Format Conversion Modules
 
 - `oscal_converters.py`: Primary functions to convert in either direction between XML and  JSON, and between OSCAL HTML and OSCAL markdown (markup-line/markup-multiline). 
-- `oscal_resequence.py`: Resequences keys in OSCAL JSON and YAML files to match the canonical order defined in NIST OSCAL syntax documentation.
+- `oscal_resequence.py`: Resequences keys in OSCAL JSON and YAML files to canonical order derived from the processed metaschema index (the same structural index that drives XML↔JSON conversion). Depends on the OSCAL support database; version is taken from the document's `metadata/oscal-version` (overridable).
 - `xml_formatter.py`: Restructures OSCAL XML for readability
 
 See [Converters](./CONVERTERS.md) for more information.

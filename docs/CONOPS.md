@@ -66,11 +66,13 @@ Upon acquisition, OSCAL XML is initially converted to an ElementTree object, ver
 
 ## Exportation
 
-When exporting to OSCAL JSON or YAML, the Python dict is serialized directly to JSON or YAML. 
-`dict -> JSON`; or
-`dict -> YAML`
+All exports emit keys/elements in canonical NIST metaschema order (via `oscal_resequence`).
 
-When exporting to OSCAL XML, the Python dict is serialized to JSON and converted to XML. 
+When exporting to OSCAL JSON or YAML, the Python dict is resequenced to canonical key order (best-effort — if no metaschema index is available it is emitted as-is) and serialized. 
+`dict -> (resequence) -> JSON`; or
+`dict -> (resequence) -> YAML`
+
+When exporting to OSCAL XML, the dict is converted to XML via the metaschema converter, which produces elements in the schema-required canonical order. The XML tree is transient: built on demand for serialization and released afterward. 
 `dict -> converter -> XML`
 
 ## Metaschema Validation (Future)

@@ -3,35 +3,53 @@
 oscal_resequence.py
 
 Resequences keys in OSCAL JSON and YAML files to match the canonical order
-defined in NIST OSCAL syntax documentation. Data and parent/child
-relationships are preserved exactly; only key ordering changes.
+defined by the NIST OSCAL metaschema. Data and parent/child relationships are
+preserved exactly; only key ordering changes.
 
-Supports all 8 OSCAL models:
-  - Catalog
-  - Profile
-  - Mapping Collection
-  - Component Definition
-  - System Security Plan (SSP)
-  - System Assessment Plan (SAP)
-  - System Assessment Results (SAR)
-  - Plan of Action and Milestones (POA&M)
+Canonical order is derived from the **processed metaschema index** (the same
+structural index that drives XML↔JSON conversion), not from hand-maintained key
+tables. For each object the order is: flags (in metaschema order), then the
+field value key (for a value-bearing field with flags), then child
+fields/assemblies in metaschema order (choices flattened, recursive definitions
+resolved). Each child's JSON key is its ``group-as`` (for collections) or
+``use-name``. This automatically covers every model, version, and nested
+structure the metaschema defines.
+
+Because ordering is metaschema-driven, this module depends on the OSCAL support
+database (via ``OSCALSupport``). The OSCAL version is taken from the document's
+``metadata/oscal-version`` (overridable), falling back to the latest supported
+version; versions below the minimum with a published resolved metaschema fall
+back to that minimum. When no index is available the document is returned
+unchanged (a warning is logged) rather than mis-ordered.
+
+Supports all 8 OSCAL models (catalog, profile, mapping-collection,
+component-definition, SSP, SAP, SAR, POA&M).
 
 Usage:
-    python oscal_resequence.py <input_file> [output_file]
+    python -m oscal.oscal_resequence <input_file> [output_file]
 
     If output_file is omitted, the resequenced content is written back to
     input_file (in-place).
 
-Function for inclusion in oscal-class library:
-    from oscal_resequence import resequence_oscal_file
+Library use:
+    from oscal.oscal_resequence import resequence_oscal, resequence_oscal_file
     resequence_oscal_file("ssp.json")
     resequence_oscal_file("catalog.yaml", "catalog_ordered.yaml")
+    ordered = resequence_oscal(doc_dict)              # version from metadata
+    ordered = resequence_oscal(doc_dict, version="v1.2.0")
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import List, Optional, Union
+
+from ruf_common.helper import compare_semver
+
+from .oscal_support import get_support, METASCHEMA_MIN_VERSION
+
+logger = logging.getLogger(__name__)
 
 try:
     import yaml
@@ -61,834 +79,45 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# OSCAL 1.2.0 canonical key orderings
-#
-# Each entry is a list of keys in the order they appear in the NIST schema
-# documentation.  Keys not present in a given list fall through to the end
-# in their original order (preserves forward-compatibility for unknown keys).
+# Model / version detection
 # ---------------------------------------------------------------------------
 
-# ── Shared / common structures ──────────────────────────────────────────────
-
-COMMON_METADATA_KEYS = [
-    "title", "published", "last-modified", "version", "oscal-version",
-    "revisions", "document-ids", "props", "links", "roles", "locations",
-    "parties", "responsible-parties", "remarks",
-]
-
-COMMON_BACK_MATTER_KEYS = [
-    "resources",
-]
-
-COMMON_RESOURCE_KEYS = [
-    "uuid", "title", "description", "props", "document-ids",
-    "citation", "rlinks", "base64", "remarks",
-]
-
-COMMON_CITATION_KEYS = ["text", "props", "links"]
-
-COMMON_RLINK_KEYS = ["href", "media-type", "hashes"]
-
-COMMON_BASE64_KEYS = ["filename", "media-type", "value"]
-
-COMMON_REVISION_KEYS = [
-    "title", "published", "last-modified", "version", "oscal-version",
-    "props", "links", "remarks",
-]
-
-COMMON_ROLE_KEYS = [
-    "id", "title", "short-name", "description", "props", "links", "remarks",
-]
-
-COMMON_LOCATION_KEYS = [
-    "uuid", "title", "address", "email-addresses", "telephone-numbers",
-    "urls", "props", "links", "remarks",
-]
-
-COMMON_ADDRESS_KEYS = [
-    "type", "addr-lines", "city", "state", "postal-code", "country",
-]
-
-COMMON_PARTY_KEYS = [
-    "uuid", "type", "name", "short-name", "external-ids", "props", "links",
-    "email-addresses", "telephone-numbers", "addresses", "location-uuids",
-    "member-of-organizations", "remarks",
-]
-
-COMMON_RESPONSIBLE_PARTY_KEYS = [
-    "role-id", "party-uuids", "props", "links", "remarks",
-]
-
-COMMON_PROP_KEYS = ["name", "uuid", "ns", "value", "class", "group", "remarks"]
-
-COMMON_LINK_KEYS = ["href", "rel", "media-type", "resource-fragment", "text"]
-
-COMMON_HASH_KEYS = ["algorithm", "value"]
-
-COMMON_DOCUMENT_ID_KEYS = ["scheme", "identifier"]
-
-COMMON_EXTERNAL_ID_KEYS = ["scheme", "id"]
-
-COMMON_TELEPHONE_KEYS = ["type", "number"]
-
-# ── Catalog ─────────────────────────────────────────────────────────────────
-
-CATALOG_ROOT_KEYS = [
-    "uuid", "metadata", "params", "controls", "groups", "back-matter",
-]
-
-CATALOG_GROUP_KEYS = [
-    "id", "class", "title", "params", "props", "links", "parts", "groups",
-    "controls",
-]
-
-CATALOG_CONTROL_KEYS = [
-    "id", "class", "title", "params", "props", "links", "parts",
-    "controls",
-]
-
-CATALOG_PARAM_KEYS = [
-    "id", "class", "depends-on", "props", "links", "label", "usage",
-    "constraints", "guidelines", "values", "select", "remarks",
-]
-
-CATALOG_PART_KEYS = [
-    "id", "name", "ns", "class", "title", "props", "prose", "parts", "links",
-]
-
-CATALOG_CONSTRAINT_KEYS = ["description", "tests"]
-
-CATALOG_CONSTRAINT_TEST_KEYS = ["expression", "remarks"]
-
-CATALOG_GUIDELINE_KEYS = ["prose"]
-
-CATALOG_SELECT_KEYS = ["how-many", "choice"]
-
-# ── Profile ──────────────────────────────────────────────────────────────────
-
-PROFILE_ROOT_KEYS = [
-    "uuid", "metadata", "imports", "merge", "modify", "back-matter",
-]
-
-PROFILE_IMPORT_KEYS = [
-    "href", "include-all", "include-controls", "exclude-controls",
-]
-
-PROFILE_MERGE_KEYS = ["combine", "flat", "as-is", "custom"]
-
-PROFILE_COMBINE_KEYS = ["method"]
-
-PROFILE_CUSTOM_KEYS = ["groups", "insert-controls"]
-
-PROFILE_CUSTOM_GROUP_KEYS = [
-    "id", "class", "title", "params", "props", "links", "parts", "groups",
-    "insert-controls",
-]
-
-PROFILE_INSERT_CONTROLS_KEYS = [
-    "order", "include-all", "include-controls", "exclude-controls",
-]
-
-PROFILE_MODIFY_KEYS = ["set-parameters", "alters"]
-
-PROFILE_SET_PARAM_KEYS = [
-    "param-id", "class", "depends-on", "props", "links", "label", "usage",
-    "constraints", "guidelines", "values", "select", "remarks",
-]
-
-PROFILE_ALTER_KEYS = [
-    "control-id", "removes", "adds",
-]
-
-PROFILE_REMOVE_KEYS = [
-    "by-name", "by-class", "by-id", "by-item-name", "by-ns",
-]
-
-PROFILE_ADD_KEYS = [
-    "position", "by-id", "title", "params", "props", "links", "parts",
-]
-
-PROFILE_INCLUDE_CONTROLS_KEYS = [
-    "with-ids", "matching",
-]
-
-PROFILE_MATCHING_KEYS = ["pattern"]
-
-# ── Component Definition ─────────────────────────────────────────────────────
-
-COMPONENT_DEF_ROOT_KEYS = [
-    "uuid", "metadata", "import-component-definitions", "components",
-    "capabilities", "back-matter",
-]
-
-COMPONENT_DEF_IMPORT_KEYS = ["href"]
-
-COMPONENT_DEF_COMPONENT_KEYS = [
-    "uuid", "type", "title", "description", "purpose", "props", "links",
-    "responsible-roles", "protocols", "control-implementations", "remarks",
-]
-
-COMPONENT_DEF_CAPABILITY_KEYS = [
-    "uuid", "name", "description", "props", "links",
-    "incorporates-components", "control-implementations", "remarks",
-]
-
-COMPONENT_DEF_INCORPORATES_KEYS = [
-    "component-uuid", "description",
-]
-
-COMPONENT_DEF_CONTROL_IMPL_KEYS = [
-    "uuid", "source", "description", "props", "links", "set-parameters",
-    "implemented-requirements",
-]
-
-COMPONENT_DEF_IMPL_REQ_KEYS = [
-    "uuid", "control-id", "description", "props", "links", "set-parameters",
-    "responsible-roles", "statements", "remarks",
-]
-
-COMPONENT_DEF_STATEMENT_KEYS = [
-    "statement-id", "uuid", "description", "props", "links",
-    "responsible-roles", "remarks",
-]
-
-COMPONENT_DEF_PROTOCOL_KEYS = [
-    "uuid", "name", "title", "port-ranges",
-]
-
-COMPONENT_DEF_PORT_RANGE_KEYS = [
-    "start", "end", "transport",
-]
-
-COMPONENT_DEF_RESPONSIBLE_ROLE_KEYS = [
-    "role-id", "props", "links", "party-uuids", "remarks",
-]
-
-COMPONENT_DEF_SET_PARAM_KEYS = [
-    "param-id", "values", "remarks",
-]
-
-# ── System Security Plan (SSP) ───────────────────────────────────────────────
-
-SSP_ROOT_KEYS = [
-    "uuid", "metadata", "import-profile", "system-characteristics",
-    "system-implementation", "control-implementation", "back-matter",
-]
-
-SSP_IMPORT_PROFILE_KEYS = ["href", "remarks"]
-
-SSP_SYSTEM_CHARACTERISTICS_KEYS = [
-    "system-ids", "system-name", "system-name-short", "description",
-    "props", "links", "date-authorized", "security-sensitivity-level",
-    "system-information", "security-impact-level", "status",
-    "authorization-boundary", "network-architecture", "data-flow", "remarks",
-]
-
-SSP_SYSTEM_ID_KEYS = ["identifier-type", "id"]
-
-SSP_SYSTEM_INFO_KEYS = [
-    "props", "links", "information-types",
-]
-
-SSP_INFO_TYPE_KEYS = [
-    "uuid", "title", "description", "categorizations", "props", "links",
-    "confidentiality-impact", "integrity-impact", "availability-impact",
-]
-
-SSP_CATEGORIZATION_KEYS = ["system", "information-type-ids"]
-
-SSP_IMPACT_KEYS = [
-    "props", "links", "base", "selected", "adjustment-justification",
-]
-
-SSP_SECURITY_IMPACT_LEVEL_KEYS = [
-    "security-objective-confidentiality",
-    "security-objective-integrity",
-    "security-objective-availability",
-]
-
-SSP_STATUS_KEYS = ["state", "remarks"]
-
-SSP_AUTH_BOUNDARY_KEYS = [
-    "description", "props", "links", "diagrams", "remarks",
-]
-
-SSP_DIAGRAM_KEYS = [
-    "uuid", "description", "props", "links", "caption", "remarks",
-]
-
-SSP_NETWORK_ARCH_KEYS = [
-    "description", "props", "links", "diagrams", "remarks",
-]
-
-SSP_DATA_FLOW_KEYS = [
-    "description", "props", "links", "diagrams", "remarks",
-]
-
-SSP_SYSTEM_IMPL_KEYS = [
-    "props", "links", "leveraged-authorizations", "users", "components",
-    "inventory-items", "remarks",
-]
-
-SSP_LEVERAGED_AUTH_KEYS = [
-    "uuid", "title", "props", "links", "party-uuid", "date-authorized",
-    "remarks",
-]
-
-SSP_USER_KEYS = [
-    "uuid", "title", "short-name", "description", "props", "links",
-    "role-ids", "authorized-privileges", "remarks",
-]
-
-SSP_PRIVILEGE_KEYS = [
-    "title", "description", "functions-performed",
-]
-
-SSP_COMPONENT_KEYS = [
-    "uuid", "type", "title", "description", "purpose", "props", "links",
-    "status", "responsible-roles", "protocols", "remarks",
-]
-
-SSP_INVENTORY_ITEM_KEYS = [
-    "uuid", "description", "props", "links", "responsible-parties",
-    "implemented-components", "remarks",
-]
-
-SSP_IMPL_COMPONENT_KEYS = [
-    "component-uuid", "props", "links", "responsible-parties", "remarks",
-]
-
-SSP_CONTROL_IMPL_KEYS = [
-    "description", "set-parameters", "implemented-requirements",
-]
-
-SSP_IMPL_REQ_KEYS = [
-    "uuid", "control-id", "props", "links", "set-parameters",
-    "responsible-roles", "statements", "by-components", "remarks",
-]
-
-SSP_STATEMENT_KEYS = [
-    "statement-id", "uuid", "props", "links", "responsible-roles",
-    "by-components", "remarks",
-]
-
-SSP_BY_COMPONENT_KEYS = [
-    "component-uuid", "uuid", "description", "props", "links",
-    "set-parameters", "implementation-status", "export", "inherited",
-    "satisfied", "responsible-roles", "remarks",
-]
-
-SSP_IMPL_STATUS_KEYS = ["state", "remarks"]
-
-SSP_EXPORT_KEYS = [
-    "description", "props", "links", "provided", "responsibilities", "remarks",
-]
-
-SSP_PROVIDED_KEYS = [
-    "uuid", "description", "props", "links", "responsible-roles", "remarks",
-]
-
-SSP_RESPONSIBILITY_KEYS = [
-    "uuid", "provided-uuid", "description", "props", "links",
-    "responsible-roles", "remarks",
-]
-
-SSP_INHERITED_KEYS = [
-    "uuid", "provided-uuid", "description", "props", "links",
-    "responsible-roles",
-]
-
-SSP_SATISFIED_KEYS = [
-    "uuid", "responsibility-uuid", "description", "props", "links",
-    "responsible-roles", "remarks",
-]
-
-# ── Assessment Plan (SAP) ────────────────────────────────────────────────────
-
-SAP_ROOT_KEYS = [
-    "uuid", "metadata", "import-ssp", "local-definitions",
-    "terms-and-conditions", "reviewed-controls", "assessment-subjects",
-    "assessment-assets", "tasks", "back-matter",
-]
-
-SAP_IMPORT_SSP_KEYS = ["href", "remarks"]
-
-SAP_LOCAL_DEFS_KEYS = [
-    "objectives-and-methods", "activities", "remarks",
-]
-
-SAP_OBJ_METHOD_KEYS = [
-    "uuid", "control-id", "description", "props", "links", "parts", "remarks",
-]
-
-SAP_ACTIVITY_KEYS = [
-    "uuid", "title", "description", "props", "links", "steps",
-    "related-controls", "responsible-roles", "remarks",
-]
-
-SAP_STEP_KEYS = [
-    "uuid", "title", "description", "props", "links", "reviewed-controls",
-    "responsible-roles", "remarks",
-]
-
-SAP_TERMS_CONDS_KEYS = ["parts"]
-
-SAP_REVIEWED_CONTROLS_KEYS = [
-    "description", "props", "links", "control-objective-selections",
-    "control-selections", "remarks",
-]
-
-SAP_CONTROL_SELECTION_KEYS = [
-    "description", "props", "links", "include-all", "include-controls",
-    "exclude-controls", "remarks",
-]
-
-SAP_CONTROL_OBJECTIVE_SELECTION_KEYS = [
-    "description", "props", "links", "include-all", "include-objectives",
-    "exclude-objectives", "remarks",
-]
-
-SAP_INCLUDE_CONTROL_KEYS = ["control-id", "statement-ids"]
-
-SAP_INCLUDE_OBJECTIVE_KEYS = ["control-id"]
-
-SAP_ASSESSMENT_SUBJECT_KEYS = [
-    "type", "description", "props", "links", "include-all",
-    "include-subjects", "exclude-subjects", "remarks",
-]
-
-SAP_SUBJECT_REFERENCE_KEYS = [
-    "subject-uuid", "type", "title", "props", "links", "remarks",
-]
-
-SAP_ASSESSMENT_ASSETS_KEYS = [
-    "components", "assessment-platforms",
-]
-
-SAP_ASSESSMENT_PLATFORM_KEYS = [
-    "uuid", "title", "props", "links", "uses-components", "remarks",
-]
-
-SAP_USES_COMPONENT_KEYS = [
-    "component-uuid", "props", "links", "remarks",
-]
-
-SAP_TASK_KEYS = [
-    "uuid", "type", "title", "description", "props", "links", "timing",
-    "dependencies", "tasks", "responsible-roles", "subjects",
-    "associated-activities", "remarks",
-]
-
-SAP_TIMING_KEYS = [
-    "on-date", "within-date-range", "at-frequency",
-]
-
-SAP_ON_DATE_KEYS = ["date"]
-
-SAP_DATE_RANGE_KEYS = ["start", "end"]
-
-SAP_AT_FREQUENCY_KEYS = ["period", "unit"]
-
-SAP_DEPENDENCY_KEYS = ["task-uuid", "remarks"]
-
-SAP_ASSOCIATED_ACTIVITY_KEYS = [
-    "activity-uuid", "props", "links", "responsible-roles", "subjects",
-    "remarks",
-]
-
-# ── Assessment Results (SAR) ─────────────────────────────────────────────────
-
-SAR_ROOT_KEYS = [
-    "uuid", "metadata", "import-ap", "local-definitions", "results",
-    "back-matter",
-]
-
-SAR_IMPORT_AP_KEYS = ["href", "remarks"]
-
-SAR_LOCAL_DEFS_KEYS = [
-    "objectives-and-methods", "activities", "remarks",
-]
-
-SAR_RESULT_KEYS = [
-    "uuid", "title", "description", "start", "end", "props", "links",
-    "local-definitions", "reviewed-controls", "attestations",
-    "assessment-log", "observations", "risks", "findings", "remarks",
-]
-
-SAR_RESULT_LOCAL_DEFS_KEYS = [
-    "objectives-and-methods", "components", "inventory-items", "users",
-    "assessment-assets", "tasks", "remarks",
-]
-
-SAR_ATTESTATION_KEYS = [
-    "responsible-parties", "parts",
-]
-
-SAR_ASSESSMENT_LOG_KEYS = ["entries"]
-
-SAR_LOG_ENTRY_KEYS = [
-    "uuid", "title", "description", "start", "end", "props", "links",
-    "logged-by", "related-tasks", "remarks",
-]
-
-SAR_LOGGED_BY_KEYS = ["party-uuid", "role-id"]
-
-SAR_RELATED_TASK_KEYS = [
-    "task-uuid", "props", "links", "responsible-parties",
-    "subjects", "identified-subject", "remarks",
-]
-
-SAR_IDENTIFIED_SUBJECT_KEYS = [
-    "subject-placeholder-uuid", "subjects",
-]
-
-SAR_OBSERVATION_KEYS = [
-    "uuid", "title", "description", "props", "links", "methods", "types",
-    "origins", "subjects", "relevant-evidence", "collected", "expires",
-    "remarks",
-]
-
-SAR_ORIGIN_KEYS = ["actors", "related-tasks"]
-
-SAR_ORIGIN_ACTOR_KEYS = [
-    "type", "actor-uuid", "role-id", "props", "links",
-]
-
-SAR_RELEVANT_EVIDENCE_KEYS = [
-    "href", "description", "props", "links", "remarks",
-]
-
-SAR_RISK_KEYS = [
-    "uuid", "title", "description", "statement", "props", "links",
-    "status", "origins", "threat-ids", "characterizations",
-    "mitigating-factors", "deadline", "remediations", "risk-log",
-    "related-observations", "remarks",
-]
-
-SAR_THREAT_ID_KEYS = ["system", "href", "id"]
-
-SAR_CHARACTERIZATION_KEYS = ["props", "links", "origin", "facets"]
-
-SAR_FACET_KEYS = [
-    "name", "system", "value", "props", "links", "remarks",
-]
-
-SAR_MITIGATING_FACTOR_KEYS = [
-    "uuid", "implementation-uuid", "description", "props", "links",
-    "subjects",
-]
-
-SAR_REMEDIATION_KEYS = [
-    "uuid", "lifecycle", "title", "description", "props", "links", "origins",
-    "required-assets", "tasks", "remarks",
-]
-
-SAR_REQUIRED_ASSET_KEYS = [
-    "uuid", "subjects", "title", "description", "props", "links", "remarks",
-]
-
-SAR_RISK_LOG_KEYS = ["entries"]
-
-SAR_RISK_LOG_ENTRY_KEYS = [
-    "uuid", "title", "description", "start", "end", "props", "links",
-    "logged-by", "status-change", "related-responses", "remarks",
-]
-
-SAR_RELATED_RESPONSE_KEYS = [
-    "response-uuid", "props", "links", "related-tasks", "remarks",
-]
-
-SAR_FINDING_KEYS = [
-    "uuid", "title", "description", "props", "links", "origins", "target",
-    "implementation-statement-uuid", "related-observations", "related-risks",
-    "remarks",
-]
-
-SAR_FINDING_TARGET_KEYS = [
-    "type", "target-id", "title", "description", "props", "links", "status",
-    "implementation-status", "remarks",
-]
-
-SAR_FINDING_TARGET_STATUS_KEYS = ["state", "reason", "remarks"]
-
-SAR_RELATED_OBS_KEYS = ["observation-uuid"]
-
-SAR_RELATED_RISK_KEYS = ["risk-uuid"]
-
-# ── POA&M ────────────────────────────────────────────────────────────────────
-
-POAM_ROOT_KEYS = [
-    "uuid", "metadata", "import-ssp", "system-id", "local-definitions",
-    "observations", "risks", "findings", "poam-items", "back-matter",
-]
-
-POAM_LOCAL_DEFS_KEYS = [
-    "components", "inventory-items", "remarks",
-]
-
-POAM_ITEM_KEYS = [
-    "uuid", "title", "description", "props", "links", "origins",
-    "related-findings", "related-observations", "related-risks", "remarks",
-]
-
-POAM_RELATED_FINDING_KEYS = ["finding-uuid"]
-
-# ── Mapping Collection ───────────────────────────────────────────────────────
-
-MAPPING_COLLECTION_ROOT_KEYS = [
-    "uuid", "metadata", "provenance", "mappings", "back-matter",
-]
-
-MAPPING_PROVENANCE_KEYS = [
-    "method", "matching-rationale", "status", "confidence-score",
-    "coverage", "mapping-description", "responsible-parties", "props",
-    "links", "remarks",
-]
-
-MAPPING_KEYS = [
-    "uuid", "method", "matching-rationale", "status", "source-resource",
-    "target-resource", "maps", "props", "links", "remarks",
-    "mapping-description", "source-gap-summary", "target-gap-summary",
-    "confidence-score", "coverage",
-]
-
-MAPPING_MAP_ENTRY_KEYS = [
-    "uuid", "ns", "matching-rationale", "relationship", "sources",
-    "targets", "qualifiers", "confidence-score", "coverage", "props",
-    "links", "remarks",
-]
-
-MAPPING_ITEM_KEYS = [
-    "type", "id-ref", "props", "links", "remarks",
-]
-
-MAPPING_RESOURCE_REFERENCE_KEYS = [
-    "ns", "type", "href", "props", "links", "remarks",
-]
-
-MAPPING_QUALIFIER_KEYS = [
-    "subject", "predicate", "category", "description", "remarks",
-]
-
-MAPPING_GAP_SUMMARY_KEYS = [
-    "uuid", "unmapped-controls",
-]
-
-MAPPING_CONFIDENCE_SCORE_KEYS = ["category", "percentage"]
-
-MAPPING_COVERAGE_KEYS = ["generation-method", "target-coverage"]
-
-MAPPING_SELECT_CONTROL_KEYS = [
-    "with-child-controls", "with-ids", "matching",
-]
-
-# ── Master dispatch table ────────────────────────────────────────────────────
-# Maps (context_path_tuple, key_name) → ordered_key_list.
-# A context path of ("*",) acts as a wildcard for objects matched anywhere
-# under that parent key name, and ("**",) matches the key regardless of depth.
-#
-# For simplicity we use a flat name-based dispatch: when ordering an object
-# whose parent key is <parent>, look up ORDERING_BY_PARENT[parent].
-
-ORDERING_BY_PARENT: dict[str, list[str]] = {
-    # ── Root model objects ──────────────────────────────────────────────────
-    "catalog":                      CATALOG_ROOT_KEYS,
-    "profile":                      PROFILE_ROOT_KEYS,
-    "mapping":                      MAPPING_COLLECTION_ROOT_KEYS,
-    "mapping-collection":           MAPPING_COLLECTION_ROOT_KEYS,
-    "component-definition":         COMPONENT_DEF_ROOT_KEYS,
-    "system-security-plan":         SSP_ROOT_KEYS,
-    "assessment-plan":              SAP_ROOT_KEYS,
-    "assessment-results":           SAR_ROOT_KEYS,
-    "plan-of-action-and-milestones": POAM_ROOT_KEYS,
-
-    # ── Common / shared ─────────────────────────────────────────────────────
-    "metadata":                     COMMON_METADATA_KEYS,
-    "back-matter":                  COMMON_BACK_MATTER_KEYS,
-    "resources":                    COMMON_RESOURCE_KEYS,
-    "citation":                     COMMON_CITATION_KEYS,
-    "rlinks":                       COMMON_RLINK_KEYS,
-    "base64":                       COMMON_BASE64_KEYS,
-    "revisions":                    COMMON_REVISION_KEYS,
-    "roles":                        COMMON_ROLE_KEYS,
-    "locations":                    COMMON_LOCATION_KEYS,
-    "address":                      COMMON_ADDRESS_KEYS,
-    "parties":                      COMMON_PARTY_KEYS,
-    "responsible-parties":          COMMON_RESPONSIBLE_PARTY_KEYS,
-    "responsible-party":            COMMON_RESPONSIBLE_PARTY_KEYS,
-    "props":                        COMMON_PROP_KEYS,
-    "links":                        COMMON_LINK_KEYS,
-    "hashes":                       COMMON_HASH_KEYS,
-    "document-ids":                 COMMON_DOCUMENT_ID_KEYS,
-    "external-ids":                 COMMON_EXTERNAL_ID_KEYS,
-    "telephone-numbers":            COMMON_TELEPHONE_KEYS,
-
-    # ── Catalog ─────────────────────────────────────────────────────────────
-    "groups":                       CATALOG_GROUP_KEYS,
-    "controls":                     CATALOG_CONTROL_KEYS,
-    "params":                       CATALOG_PARAM_KEYS,
-    "parts":                        CATALOG_PART_KEYS,
-    "constraints":                  CATALOG_CONSTRAINT_KEYS,
-    "tests":                        CATALOG_CONSTRAINT_TEST_KEYS,
-    "guidelines":                   CATALOG_GUIDELINE_KEYS,
-    "select":                       CATALOG_SELECT_KEYS,
-
-    # ── Profile ─────────────────────────────────────────────────────────────
-    "imports":                      PROFILE_IMPORT_KEYS,
-    "merge":                        PROFILE_MERGE_KEYS,
-    "combine":                      PROFILE_COMBINE_KEYS,
-    "custom":                       PROFILE_CUSTOM_KEYS,
-    "insert-controls":              PROFILE_INSERT_CONTROLS_KEYS,
-    "modify":                       PROFILE_MODIFY_KEYS,
-    "set-parameters":               PROFILE_SET_PARAM_KEYS,
-    "alters":                       PROFILE_ALTER_KEYS,
-    "removes":                      PROFILE_REMOVE_KEYS,
-    "adds":                         PROFILE_ADD_KEYS,
-    "include-controls":             PROFILE_INCLUDE_CONTROLS_KEYS,
-    "matching":                     PROFILE_MATCHING_KEYS,
-
-    # ── Component Definition ─────────────────────────────────────────────────
-    "import-component-definitions": COMPONENT_DEF_IMPORT_KEYS,
-    "components":                   COMPONENT_DEF_COMPONENT_KEYS,
-    "capabilities":                 COMPONENT_DEF_CAPABILITY_KEYS,
-    "incorporates-components":      COMPONENT_DEF_INCORPORATES_KEYS,
-    "control-implementations":      COMPONENT_DEF_CONTROL_IMPL_KEYS,
-    "implemented-requirements":     COMPONENT_DEF_IMPL_REQ_KEYS,
-    "statements":                   COMPONENT_DEF_STATEMENT_KEYS,
-    "protocols":                    COMPONENT_DEF_PROTOCOL_KEYS,
-    "port-ranges":                  COMPONENT_DEF_PORT_RANGE_KEYS,
-    "responsible-roles":            COMPONENT_DEF_RESPONSIBLE_ROLE_KEYS,
-    "responsible-role":             COMPONENT_DEF_RESPONSIBLE_ROLE_KEYS,
-
-    # ── SSP ─────────────────────────────────────────────────────────────────
-    "import-profile":               SSP_IMPORT_PROFILE_KEYS,
-    "system-characteristics":       SSP_SYSTEM_CHARACTERISTICS_KEYS,
-    "system-ids":                   SSP_SYSTEM_ID_KEYS,
-    "system-information":           SSP_SYSTEM_INFO_KEYS,
-    "information-types":            SSP_INFO_TYPE_KEYS,
-    "categorizations":              SSP_CATEGORIZATION_KEYS,
-    "confidentiality-impact":       SSP_IMPACT_KEYS,
-    "integrity-impact":             SSP_IMPACT_KEYS,
-    "availability-impact":          SSP_IMPACT_KEYS,
-    "security-impact-level":        SSP_SECURITY_IMPACT_LEVEL_KEYS,
-    "status":                       SSP_STATUS_KEYS,
-    "authorization-boundary":       SSP_AUTH_BOUNDARY_KEYS,
-    "diagrams":                     SSP_DIAGRAM_KEYS,
-    "network-architecture":         SSP_NETWORK_ARCH_KEYS,
-    "data-flow":                    SSP_DATA_FLOW_KEYS,
-    "system-implementation":        SSP_SYSTEM_IMPL_KEYS,
-    "leveraged-authorizations":     SSP_LEVERAGED_AUTH_KEYS,
-    "users":                        SSP_USER_KEYS,
-    "authorized-privileges":        SSP_PRIVILEGE_KEYS,
-    "inventory-items":              SSP_INVENTORY_ITEM_KEYS,
-    "implemented-components":       SSP_IMPL_COMPONENT_KEYS,
-    "control-implementation":       SSP_CONTROL_IMPL_KEYS,
-    "by-components":                SSP_BY_COMPONENT_KEYS,
-    "implementation-status":        SSP_IMPL_STATUS_KEYS,
-    "export":                       SSP_EXPORT_KEYS,
-    "provided":                     SSP_PROVIDED_KEYS,
-    "responsibilities":             SSP_RESPONSIBILITY_KEYS,
-    "inherited":                    SSP_INHERITED_KEYS,
-    "satisfied":                    SSP_SATISFIED_KEYS,
-
-    # ── SAP ─────────────────────────────────────────────────────────────────
-    "import-ssp":                   SAP_IMPORT_SSP_KEYS,
-    "local-definitions":            SAP_LOCAL_DEFS_KEYS,   # overridden in SAR
-    "objectives-and-methods":       SAP_OBJ_METHOD_KEYS,
-    "activities":                   SAP_ACTIVITY_KEYS,
-    "steps":                        SAP_STEP_KEYS,
-    "terms-and-conditions":         SAP_TERMS_CONDS_KEYS,
-    "reviewed-controls":            SAP_REVIEWED_CONTROLS_KEYS,
-    "control-selections":           SAP_CONTROL_SELECTION_KEYS,
-    "control-objective-selections": SAP_CONTROL_OBJECTIVE_SELECTION_KEYS,
-    "include-objectives":           SAP_INCLUDE_OBJECTIVE_KEYS,
-    "assessment-subjects":          SAP_ASSESSMENT_SUBJECT_KEYS,
-    "include-subjects":             SAP_SUBJECT_REFERENCE_KEYS,
-    "exclude-subjects":             SAP_SUBJECT_REFERENCE_KEYS,
-    "assessment-assets":            SAP_ASSESSMENT_ASSETS_KEYS,
-    "assessment-platforms":         SAP_ASSESSMENT_PLATFORM_KEYS,
-    "uses-components":              SAP_USES_COMPONENT_KEYS,
-    "tasks":                        SAP_TASK_KEYS,
-    "timing":                       SAP_TIMING_KEYS,
-    "on-date":                      SAP_ON_DATE_KEYS,
-    "within-date-range":            SAP_DATE_RANGE_KEYS,
-    "at-frequency":                 SAP_AT_FREQUENCY_KEYS,
-    "dependencies":                 SAP_DEPENDENCY_KEYS,
-    "associated-activities":        SAP_ASSOCIATED_ACTIVITY_KEYS,
-
-    # ── SAR ─────────────────────────────────────────────────────────────────
-    "import-ap":                    SAR_IMPORT_AP_KEYS,
-    "results":                      SAR_RESULT_KEYS,
-    "attestations":                 SAR_ATTESTATION_KEYS,
-    "assessment-log":               SAR_ASSESSMENT_LOG_KEYS,
-    "entries":                      SAR_LOG_ENTRY_KEYS,
-    "logged-by":                    SAR_LOGGED_BY_KEYS,
-    "related-tasks":                SAR_RELATED_TASK_KEYS,
-    "identified-subject":           SAR_IDENTIFIED_SUBJECT_KEYS,
-    "observations":                 SAR_OBSERVATION_KEYS,
-    "origins":                      SAR_ORIGIN_KEYS,
-    "actors":                       SAR_ORIGIN_ACTOR_KEYS,
-    "relevant-evidence":            SAR_RELEVANT_EVIDENCE_KEYS,
-    "risks":                        SAR_RISK_KEYS,
-    "threat-ids":                   SAR_THREAT_ID_KEYS,
-    "characterizations":            SAR_CHARACTERIZATION_KEYS,
-    "facets":                       SAR_FACET_KEYS,
-    "mitigating-factors":           SAR_MITIGATING_FACTOR_KEYS,
-    "remediations":                 SAR_REMEDIATION_KEYS,
-    "required-assets":              SAR_REQUIRED_ASSET_KEYS,
-    "risk-log":                     SAR_RISK_LOG_KEYS,
-    "related-responses":            SAR_RELATED_RESPONSE_KEYS,
-    "findings":                     SAR_FINDING_KEYS,
-    "target":                       SAR_FINDING_TARGET_KEYS,
-    "related-observations":         SAR_RELATED_OBS_KEYS,
-    "related-risks":                SAR_RELATED_RISK_KEYS,
-
-    # ── POA&M ────────────────────────────────────────────────────────────────
-    "plan-of-action-and-milestones.local-definitions": POAM_LOCAL_DEFS_KEYS,
-    "poam-items":                   POAM_ITEM_KEYS,
-    "related-findings":             POAM_RELATED_FINDING_KEYS,
-
-    # ── Mapping Collection ─────────────────────────────────────────────────
-    "provenance":                   MAPPING_PROVENANCE_KEYS,
-    "mappings":                     MAPPING_KEYS,
-    "maps":                         MAPPING_MAP_ENTRY_KEYS,
-    "source-resource":              MAPPING_RESOURCE_REFERENCE_KEYS,
-    "target-resource":              MAPPING_RESOURCE_REFERENCE_KEYS,
-    "sources":                      MAPPING_ITEM_KEYS,
-    "targets":                      MAPPING_ITEM_KEYS,
-    "qualifiers":                   MAPPING_QUALIFIER_KEYS,
-    "source-gap-summary":           MAPPING_GAP_SUMMARY_KEYS,
-    "target-gap-summary":           MAPPING_GAP_SUMMARY_KEYS,
-    "confidence-score":             MAPPING_CONFIDENCE_SCORE_KEYS,
-    "coverage":                     MAPPING_COVERAGE_KEYS,
-    "unmapped-controls":            MAPPING_SELECT_CONTROL_KEYS,
-}
-
-
-def _canonical_key_order(parent_key: Optional[str], model_root_key: Optional[str]) -> Optional[List[str]]:
-    """
-    Return the canonical key list for an object whose parent field name is
-    *parent_key* within the given *model_root_key* (e.g. "system-security-plan").
-
-    Returns None when no ordering rule is known (object is left as-is).
-    """
-    if parent_key is None:
-        return None
-
-    # Check for model-qualified override first (e.g. POA&M local-definitions)
-    if model_root_key:
-        qualified = f"{model_root_key}.{parent_key}"
-        if qualified in ORDERING_BY_PARENT:
-            return ORDERING_BY_PARENT[qualified]
-
-    return ORDERING_BY_PARENT.get(parent_key)
+_KNOWN_ROOTS = [
+    "catalog",
+    "profile",
+    "mapping",
+    "mapping-collection",
+    "component-definition",
+    "system-security-plan",
+    "assessment-plan",
+    "assessment-results",
+    "plan-of-action-and-milestones",
+]
+
+
+def _detect_model_root_key(data: dict) -> Optional[str]:
+    """Identify which OSCAL model root key is present in the document."""
+    for root in _KNOWN_ROOTS:
+        if root in data:
+            return root
+    return None
+
+
+def _normalize_version(version: Optional[str]) -> str:
+    """Return a ``v``-prefixed OSCAL version string (or "" when unset)."""
+    version = (version or "").strip()
+    if not version:
+        return ""
+    return version if version.startswith("v") else f"v{version}"
 
 
 def _reorder_dict(d: dict, ordered_keys: List[str]) -> dict:
     """
     Return a new dict with keys from *ordered_keys* first (in that order),
     followed by any remaining keys not in *ordered_keys* (preserving their
-    original relative order).
+    original relative order). Keys in *ordered_keys* not present in *d* are
+    skipped; keys in *d* not covered by *ordered_keys* (extensions, ``$schema``,
+    ``_unmodeled``, …) are appended last, unchanged.
     """
     result: dict = {}
     for k in ordered_keys:
@@ -900,86 +129,232 @@ def _reorder_dict(d: dict, ordered_keys: List[str]) -> dict:
     return result
 
 
-def _resequence_value(value, parent_key: Optional[str], model_root_key: Optional[str]):
+# ---------------------------------------------------------------------------
+# Metaschema-driven ordering engine
+# ---------------------------------------------------------------------------
+
+class _MetaschemaOrderer:
+    """Reorders an OSCAL JSON object tree to canonical metaschema key order.
+
+    Built from a processed metaschema index (``support.get_metaschema_index``).
+    Mirrors the converter's definition-resolution so recursive references
+    (e.g. nested ``control`` / ``part``) resolve to their defining node.
     """
-    Recursively resequence *value*. Returns the resequenced value.
-    """
-    if isinstance(value, dict):
-        # Determine if this dict itself should be reordered based on parent_key
-        ordered_keys = _canonical_key_order(parent_key, model_root_key)
-        if ordered_keys:
-            value = _reorder_dict(value, ordered_keys)
 
-        # Now recurse into each child value
-        return {
-            k: _resequence_value(v, parent_key=k, model_root_key=model_root_key)
-            for k, v in value.items()
-        }
+    def __init__(self, model_index: dict) -> None:
+        self.root_node: dict = model_index.get("nodes") or {}
+        self._defs: dict[str, dict] = {}
+        self._index_defs(self.root_node)
 
-    elif isinstance(value, list):
-        return [
-            _resequence_value(item, parent_key=parent_key, model_root_key=model_root_key)
-            for item in value
-        ]
+    @classmethod
+    def from_support(cls, model: str, version: str,
+                     support=None) -> "Optional[_MetaschemaOrderer]":
+        """Build an orderer for *model* at *version* from the support database.
 
-    else:
-        # Scalar — nothing to reorder
+        Falls back to ``METASCHEMA_MIN_VERSION`` for versions older than the
+        first NIST resolved metaschema, and to the latest supported version when
+        the requested version's index is missing. Returns None when no usable
+        index is available.
+        """
+        if support is None:
+            support = get_support()
+
+        latest = _normalize_version(support.get_latest_version())
+        index_version = _normalize_version(version) or latest
+
+        if index_version and compare_semver(index_version, METASCHEMA_MIN_VERSION) < 0:
+            logger.warning(
+                f"No metaschema index for {index_version} (resolved metaschema not "
+                f"published before {METASCHEMA_MIN_VERSION}); using {METASCHEMA_MIN_VERSION}."
+            )
+            index_version = METASCHEMA_MIN_VERSION
+
+        model_index = support.get_metaschema_index(index_version, model)
+        if model_index is None and index_version != latest and latest:
+            logger.warning(
+                f"No metaschema index for {model}/{index_version}; falling back to {latest}."
+            )
+            model_index = support.get_metaschema_index(latest, model)
+        if model_index is None:
+            return None
+        return cls(model_index)
+
+    # -- definition resolution (recursive stubs) ---------------------------
+    def _index_defs(self, node: Optional[dict]) -> None:
+        """Record the first occurrence of each named assembly/field/flag def."""
+        if not node or node.get("structure-type") == "recursive":
+            return
+        name = node.get("name", "")
+        stype = node.get("structure-type", "")
+        if name and stype in ("assembly", "field") and name not in self._defs:
+            self._defs[name] = node
+        for child in node.get("children") or []:
+            if child and child.get("structure-type") == "flag":
+                fn = child.get("name", "")
+                if fn and fn not in self._defs:
+                    self._defs[fn] = child
+            else:
+                self._index_defs(child)
+
+    def _resolve(self, node: dict) -> dict:
+        """Return the full definition node for a recursive stub."""
+        if node.get("structure-type") == "recursive":
+            return self._defs.get(node.get("name", ""), node)
+        return node
+
+    @staticmethod
+    def _json_key(child: dict) -> str:
+        """The JSON property name for a child node: group-as (collection) or use-name."""
+        return child.get("group-as") or child.get("use-name") or ""
+
+    # -- ordering ----------------------------------------------------------
+    def _ordered_child_keys(self, node: dict) -> List[str]:
+        """Canonical JSON key order for *node*: flags, then field value, then children."""
+        node = self._resolve(node)
+        children = node.get("children") or []
+        keys: List[str] = []
+
+        # 1. Flags, in metaschema order.
+        for c in children:
+            if c and c.get("structure-type") == "flag":
+                un = c.get("use-name", "")
+                if un:
+                    keys.append(un)
+
+        # 2. Field value key (a value-bearing field that also carries flags).
+        if node.get("structure-type") == "field":
+            jvk = node.get("json-value-key")
+            if jvk:
+                keys.append(jvk)
+
+        # 3. Child fields/assemblies, in metaschema order (choices flattened).
+        for c in children:
+            if not c:
+                continue
+            stype = c.get("structure-type", "")
+            if stype in ("flag", "any"):
+                continue
+            if stype == "choice":
+                for alt in c.get("children") or []:
+                    if alt:
+                        k = self._json_key(alt)
+                        if k:
+                            keys.append(k)
+            else:
+                k = self._json_key(c)
+                if k:
+                    keys.append(k)
+        return keys
+
+    def _child_node_for_key(self, node: dict, key: str) -> Optional[dict]:
+        """Return the child index node whose JSON key is *key* (choices flattened).
+
+        Flags and ``any`` wildcards are skipped — their JSON values are scalars
+        or opaque and are never recursed into.
+        """
+        node = self._resolve(node)
+        for c in node.get("children") or []:
+            if not c:
+                continue
+            stype = c.get("structure-type", "")
+            if stype in ("flag", "any"):
+                continue
+            if stype == "choice":
+                for alt in c.get("children") or []:
+                    if alt and self._json_key(alt) == key:
+                        return alt
+            elif self._json_key(c) == key:
+                return c
+        return None
+
+    def resequence_object(self, obj: dict, node: dict) -> dict:
+        """Return *obj* with its keys reordered to *node*'s canonical order, recursively."""
+        node = self._resolve(node)
+        ordered = _reorder_dict(obj, self._ordered_child_keys(node))
+        out: dict = {}
+        for k, v in ordered.items():
+            out[k] = self._resequence_child(v, self._child_node_for_key(node, k))
+        return out
+
+    def _resequence_child(self, value, child: Optional[dict]):
+        """Recurse into a child value using its index node (handling arrays / BY_KEY maps)."""
+        if child is None:
+            # Unknown key: a flag scalar, extension, $schema, _unmodeled, … — leave as-is.
+            return value
+        group_in_json = child.get("group-as-in-json")   # read cardinality from the (stub) reference
+        if isinstance(value, list):
+            return [self._resequence_item(item, child) for item in value]
+        if group_in_json == "BY_KEY" and isinstance(value, dict):
+            # A JSON object keyed by a flag value: reorder each instance, keep map order.
+            return {mk: self._resequence_item(mv, child) for mk, mv in value.items()}
+        return self._resequence_item(value, child)
+
+    def _resequence_item(self, value, child: dict):
+        if isinstance(value, dict):
+            return self.resequence_object(value, child)
+        if isinstance(value, list):
+            return [self._resequence_item(item, child) for item in value]
         return value
 
 
-def _detect_model_root_key(data: dict) -> Optional[str]:
-    """Identify which OSCAL model root key is present in the document."""
-    known_roots = [
-        "catalog",
-        "profile",
-        "mapping",
-        "mapping-collection",
-        "component-definition",
-        "system-security-plan",
-        "assessment-plan",
-        "assessment-results",
-        "plan-of-action-and-milestones",
-    ]
-    for root in known_roots:
-        if root in data:
-            return root
-    return None
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-
-def resequence_oscal(data: dict) -> dict:
+def resequence_oscal(data: dict, version: Optional[str] = None) -> dict:
     """
-    Resequence all keys in an OSCAL document dict to match NIST 1.2.0
-    canonical ordering.  The document root itself is also reordered so that
-    the single model root key comes first.
+    Resequence all keys in an OSCAL document dict to canonical metaschema order.
+
+    The single model root key is placed first (after a leading ``$schema`` if
+    present); its object and the whole subtree are reordered per the metaschema
+    index for the document's model and version.
 
     Args:
         data: Parsed OSCAL document as a Python dict.
+        version: OSCAL version to order against (e.g. "v1.2.0" or "1.2.0"). When
+            omitted, the document's ``metadata/oscal-version`` is used, falling
+            back to the latest supported version.
 
     Returns:
-        New dict with keys in canonical order (same data, new ordering).
+        A new dict with keys in canonical order (same data, new ordering). The
+        input is returned unchanged when the model can't be identified or no
+        metaschema index is available.
     """
-    model_root_key = _detect_model_root_key(data)
+    model = _detect_model_root_key(data)
+    if not model:
+        logger.warning("resequence: no OSCAL model root key found; returning data unchanged.")
+        return data
 
-    # Resequence from the top level; pass parent_key=None for the outermost
-    # wrapper (the file may have a single root key like "catalog": {...})
-    result: dict = {}
-    if model_root_key and model_root_key in data:
-        # Put the known root key first, then any unknowns (e.g. "$schema")
-        for k, v in data.items():
-            if k != model_root_key:
-                result[k] = _resequence_value(v, parent_key=k, model_root_key=model_root_key)
-        # Now place the root model object, fully resequenced
-        root_obj = data[model_root_key]
-        root_obj = _resequence_value(root_obj, parent_key=model_root_key, model_root_key=model_root_key)
-        final: dict = {model_root_key: root_obj}
-        final.update(result)   # any extra top-level keys after
-        return final
-    else:
-        # Unknown or no root key — still recurse to resequence what we can
-        return {
-            k: _resequence_value(v, parent_key=k, model_root_key=model_root_key)
-            for k, v in data.items()
-        }
+    root_obj = data.get(model)
+
+    doc_version = ""
+    if isinstance(root_obj, dict):
+        metadata = root_obj.get("metadata")
+        if isinstance(metadata, dict):
+            doc_version = metadata.get("oscal-version", "") or ""
+
+    orderer = _MetaschemaOrderer.from_support(model, version or doc_version)
+    if orderer is None:
+        logger.warning(
+            f"resequence: no metaschema index for model '{model}' "
+            f"(version '{version or doc_version or 'latest'}'); returning data unchanged."
+        )
+        return data
+
+    ordered_root = (
+        orderer.resequence_object(root_obj, orderer.root_node)
+        if isinstance(root_obj, dict) else root_obj
+    )
+
+    # Emit $schema (if any) first, then the model root, then any other extras.
+    out: dict = {}
+    if "$schema" in data:
+        out["$schema"] = data["$schema"]
+    out[model] = ordered_root
+    for k, v in data.items():
+        if k != model and k != "$schema":
+            out[k] = v
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1028,7 +403,7 @@ def _dump_file(data: dict, path: Path, fmt: str) -> None:
             data,
             default_flow_style=False,
             allow_unicode=True,
-            sort_keys=False,    # preserve our manually-imposed ordering
+            sort_keys=False,    # preserve our metaschema-imposed ordering
             indent=2,
             width=120,
         )
@@ -1038,15 +413,18 @@ def _dump_file(data: dict, path: Path, fmt: str) -> None:
 def resequence_oscal_file(
     input_path: Union[str, Path],
     output_path: Union[str, Path, None] = None,
+    version: Optional[str] = None,
 ) -> Path:
     """
-    Load an OSCAL JSON or YAML file, resequence all keys to match the NIST
-    OSCAL 1.2.0 canonical ordering, and write the result.
+    Load an OSCAL JSON or YAML file, resequence all keys to canonical metaschema
+    order, and write the result.
 
     Args:
         input_path:  Path to the source OSCAL file.
         output_path: Destination path.  If None, the input file is overwritten
                      in-place.
+        version:     OSCAL version to order against; defaults to the document's
+                     ``metadata/oscal-version`` (then the latest supported).
 
     Returns:
         The Path object of the written output file.
@@ -1058,7 +436,7 @@ def resequence_oscal_file(
 
     fmt = _detect_format(input_path)
     data = _load_file(input_path, fmt)
-    ordered = resequence_oscal(data)
+    ordered = resequence_oscal(data, version=version)
 
     # Use the output file's extension to determine output format (allows
     # implicit JSON→YAML or YAML→JSON conversion if extensions differ).

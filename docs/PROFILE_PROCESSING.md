@@ -40,6 +40,10 @@ specification.
 | `get_group_by_id(id, depth=None)` | group `dict` \| `None` | No — materialized just-in-time |
 | `get_control_list()` | `list[dict]` | No — materialized just-in-time |
 | `get_parameter_by_id(id)` | param `dict` \| `None` | No — materialized just-in-time |
+| `get_import_selection(href)` | selection `dict` \| `None` | No — reads the import statement |
+| `set_import_selection(href, ...)` | rewritten import `dict` \| `None` | No — edits scope |
+| `get_directives()` | `{"combine","hierarchy"[,"custom"]}` | No — reads the merge directives |
+| `set_directives(combine=, hierarchy=, custom=)` | `bool` | No — edits organization |
 | `resolve()` | `ResolutionStatus` | — builds `profile.catalog` |
 | `catalog` (attribute) | `Catalog` \| `None` | `None` until `resolve()` |
 | `dumps_catalog(format, pretty_print)` | `str` | Yes |
@@ -223,9 +227,10 @@ profile.set_metadata({"title": "My Baseline"})
 # Add imports (each backed by a back-matter resource)
 profile.add_import("nist-800-53.json", include_all=True)
 
-# Choose how imported controls are organized:
-profile.set_merge(as_is=True, combine="use-first")   # preserve source grouping
-# profile.set_merge(flat=True)                        # flatten (no groups)
+# Choose how imported controls are organized (combine + hierarchy, set independently):
+profile.set_directives(hierarchy="as-is", combine="use-first")  # preserve source grouping
+# profile.set_directives(hierarchy="flat")                      # flatten (no groups)
+# profile.set_directives(combine="keep")                        # change only combine
 
 controls = profile.get_control_list()   # reflects the new scope immediately (JIT)
 profile.resolve()                       # (re)build profile.catalog
@@ -234,12 +239,64 @@ profile.resolve()                       # (re)build profile.catalog
 Directive summary:
 
 - **`import` / `include-controls` / `exclude-controls`** — which controls are in scope
-  (`with-ids`, `matching` glob patterns, `with-child-controls`).
-- **`merge`** — organization: `as-is` (preserve grouping) or `flat` (no groups).
-  `custom` grouping is not yet implemented and falls back to `as-is`.
-- **`combine`** — duplicate handling: `use-first` or `keep` (default).
+  (`with-ids`, `matching` glob patterns, `with-child-controls`). Read/replace the
+  selection for one import with `get_import_selection(href)` /
+  `set_import_selection(href, ...)` (see below).
+- **`merge`** — organization. Read and write the directives with `get_directives()` /
+  `set_directives(combine=, hierarchy=, custom=)`:
+  - `hierarchy` — `flat` (no groups), `as-is` (preserve grouping), or `custom`. `custom`
+    grouping is not yet applied during resolution and falls back to `as-is`, but the
+    directive is stored and validated.
+  - `combine` — duplicate handling: `use-first` or `keep`.
+
+  `get_directives()` returns a normalized `{"combine", "hierarchy"[, "custom"]}` dict;
+  `set_directives()` edits each independently, validates `custom` through the metaschema
+  staging gate, and commits only a valid result (rolls back otherwise). The hierarchy in
+  force is also mirrored on the `profile.merge_directive` attribute. The older
+  `set_merge()` / `set_merge_directive()` pass-throughs are **deprecated** in favor of
+  `set_directives()`.
 - **`modify`** — per-control tailoring: `alters` (removes → adds) and `set-parameters`,
   applied during resolution and JIT reads alike.
+
+### Editing one import's control selection
+
+`get_import_selection(href)` returns a safe copy of just the `include-all` /
+`include-controls` / `exclude-controls` structures of a single import; only keys actually
+present are returned (`None` if no import matches). The `href` may be any form tracked for
+the import — the authored `href`, a resolved location, or a back-matter `#uuid` fragment.
+
+`set_import_selection(href, include_all=..., include_controls=..., exclude_controls=...)`
+replaces those structures wholesale. An argument left as `None` is omitted from the
+rewritten import; pass an empty list to keep a key present but empty. The replacement is
+validated against the metaschema before it is written — `include-all` and
+`include-controls` are mutually exclusive and exactly one must be present — and on success
+the `controls_tree` is rebuilt and any resolved catalog is dropped, since scope changed.
+
+```python
+# Narrow an import to two controls, excluding one enhancement:
+profile.set_import_selection(
+    "nist-800-53.json",
+    include_controls=[{"with-ids": ["ac-1", "ac-2"]}],
+    exclude_controls=[{"with-ids": ["ac-2.1"]}],
+)
+sel = profile.get_import_selection("nist-800-53.json")
+# {"include-controls": [{"with-ids": ["ac-1", "ac-2"]}],
+#  "exclude-controls": [{"with-ids": ["ac-2.1"]}]}
+```
+
+### `merge_directive` vs `MergeStrategy` (as-is only)
+
+Do not confuse the OSCAL **merge directive** with the library's `MergeStrategy`:
+
+- `profile.merge_directive` — the OSCAL directive authored on the profile
+  (`"as-is"` / `"flat"` / `"custom"`); it *is* serialized content.
+- `profile.merge_strategy` (a `MergeStrategy`) — a library-only, non-serialized option
+  that refines **how `as-is` reconstructs control hierarchy** (`REFERENTIAL`, the default,
+  vs `POSITIONAL`). It **applies only when `merge_directive == "as-is"`**; under `flat`
+  (no nesting) or `custom` (own structure) it is inert. `REFERENTIAL` reconstructs
+  control→control containment from source provenance (so a selected enhancement nests
+  under its selected parent even across import branches); `POSITIONAL` keeps each import's
+  presented structure. See the `MergeStrategy` docstring for details.
 
 ---
 

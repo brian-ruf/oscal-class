@@ -23,8 +23,13 @@ def _catalog_file(tmp_path):
         "metadata": {"title": "Src", "last-modified": "2026-01-01T00:00:00Z",
                      "version": "1", "oscal-version": "1.1.3",
                      "roles": [{"id": "sysowner", "title": "System Owner"}],
+                     "locations": [{"uuid": "dddddddd-4444-4444-8444-444444444444",
+                                    "title": "HQ"}],
                      "parties": [{"uuid": "aaaaaaaa-1111-4111-8111-111111111111",
-                                  "type": "organization", "name": "Acme"}]},
+                                  "type": "organization", "name": "Acme"}],
+                     "responsible-parties": [
+                         {"role-id": "sysowner",
+                          "party-uuids": ["aaaaaaaa-1111-4111-8111-111111111111"]}]},
         "groups": [{"id": "ac", "title": "AC", "controls": [
             {"id": "ac-1", "title": "Policy",
              "params": [{"id": "ac-1_prm_1", "label": "x"}],
@@ -89,6 +94,117 @@ class TestReachableIds:
                 "bbbbbbbb-2222-4222-8222-222222222222"} <= ids
 
 
+class TestGetResourceByUuid:
+    _RES = "bbbbbbbb-2222-4222-8222-222222222222"
+
+    def test_local_hit(self, tmp_path):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        res = cat.get_resource_by_uuid(self._RES)
+        assert res is not None and res["title"] == "Cited"
+
+    def test_cascades_into_imported_document(self, profile_over_catalog):
+        # The resource lives in the imported catalog, not the profile's own back-matter.
+        res = profile_over_catalog.get_resource_by_uuid(self._RES)
+        assert res is not None and res["uuid"] == self._RES
+
+    def test_not_found_returns_none(self, profile_over_catalog):
+        assert profile_over_catalog.get_resource_by_uuid("cccccccc-3333-4333-8333-333333333333") is None
+
+    def test_returns_safe_copy(self, tmp_path):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        res = cat.get_resource_by_uuid(self._RES)
+        res["title"] = "MUTATED"
+        assert cat.get_resource_by_uuid(self._RES)["title"] == "Cited"
+
+    def test_with_source_returns_locator(self, profile_over_catalog):
+        loc = profile_over_catalog.get_resource_by_uuid(self._RES, with_source=True)
+        assert loc["element"]["uuid"] == self._RES
+        assert loc["kind"] == "resource"
+        # owning document is the imported catalog, reached via cascade
+        assert loc["object_uuid"] == "11111111-1111-4111-8111-111111111111"
+        assert loc["href"].endswith("cat.json")
+
+    def test_local_only_does_not_cascade(self, tmp_path, profile_over_catalog):
+        # The resource lives in the imported catalog, not the profile itself.
+        assert profile_over_catalog.get_resource_by_uuid(self._RES, local_only=True) is None
+        # But the catalog itself finds its own resource under local_only.
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_resource_by_uuid(self._RES, local_only=True)["title"] == "Cited"
+
+
+# ===========================================================================
+# Metadata cross-reference getters (role / party / location / responsible-party)
+# ===========================================================================
+_ROLE   = "sysowner"
+_PARTY  = "aaaaaaaa-1111-4111-8111-111111111111"
+_LOC    = "dddddddd-4444-4444-8444-444444444444"
+
+
+class TestMetadataScopedGetters:
+    """All resolve locally on the catalog and via cascade from the importing profile."""
+
+    def test_role_local_and_cascade(self, tmp_path, profile_over_catalog):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_role_by_id(_ROLE)["title"] == "System Owner"
+        assert profile_over_catalog.get_role_by_id(_ROLE)["id"] == _ROLE   # cascade
+
+    def test_party_local_and_cascade(self, tmp_path, profile_over_catalog):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_party_by_uuid(_PARTY)["name"] == "Acme"
+        assert profile_over_catalog.get_party_by_uuid(_PARTY)["uuid"] == _PARTY   # cascade
+
+    def test_location_local_and_cascade(self, tmp_path, profile_over_catalog):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_location_by_uuid(_LOC)["title"] == "HQ"
+        assert profile_over_catalog.get_location_by_uuid(_LOC)["uuid"] == _LOC   # cascade
+
+    def test_responsible_party_by_role_id(self, tmp_path, profile_over_catalog):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        rp = cat.get_responsible_party_by_id(_ROLE)
+        assert rp is not None and rp["role-id"] == _ROLE and _PARTY in rp["party-uuids"]
+        assert profile_over_catalog.get_responsible_party_by_id(_ROLE)["role-id"] == _ROLE  # cascade
+
+    def test_not_found_returns_none(self, profile_over_catalog):
+        assert profile_over_catalog.get_role_by_id("nope") is None
+        assert profile_over_catalog.get_party_by_uuid("00000000-0000-4000-8000-000000000000") is None
+        assert profile_over_catalog.get_location_by_uuid("00000000-0000-4000-8000-000000000000") is None
+        assert profile_over_catalog.get_responsible_party_by_id("nope") is None
+
+    def test_kind_isolation(self, profile_over_catalog):
+        # a role id must not resolve as a party/location, and vice versa
+        assert profile_over_catalog.get_party_by_uuid(_ROLE) is None
+        assert profile_over_catalog.get_location_by_uuid(_PARTY) is None
+
+    def test_with_source_locator(self, profile_over_catalog):
+        loc = profile_over_catalog.get_role_by_id(_ROLE, with_source=True)
+        assert loc["kind"] == "role"
+        assert loc["object_uuid"] == "11111111-1111-4111-8111-111111111111"
+        assert loc["href"].endswith("cat.json")
+
+    def test_returns_safe_copy(self, tmp_path):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        cat.get_role_by_id(_ROLE)["title"] = "MUTATED"
+        assert cat.get_role_by_id(_ROLE)["title"] == "System Owner"
+
+    def test_local_only_does_not_cascade(self, tmp_path, profile_over_catalog):
+        # These metadata items live in the imported catalog, not the profile.
+        assert profile_over_catalog.get_role_by_id(_ROLE, local_only=True) is None
+        assert profile_over_catalog.get_party_by_uuid(_PARTY, local_only=True) is None
+        assert profile_over_catalog.get_location_by_uuid(_LOC, local_only=True) is None
+        assert profile_over_catalog.get_responsible_party_by_id(_ROLE, local_only=True) is None
+        # The catalog itself still resolves its own metadata under local_only.
+        cat = Catalog.load(_catalog_file(tmp_path))
+        assert cat.get_role_by_id(_ROLE, local_only=True)["id"] == _ROLE
+        assert cat.get_party_by_uuid(_PARTY, local_only=True)["uuid"] == _PARTY
+        assert cat.get_location_by_uuid(_LOC, local_only=True)["uuid"] == _LOC
+        assert cat.get_responsible_party_by_id(_ROLE, local_only=True)["role-id"] == _ROLE
+
+    def test_local_only_with_source_points_at_self(self, tmp_path):
+        cat = Catalog.load(_catalog_file(tmp_path))
+        loc = cat.get_role_by_id(_ROLE, with_source=True, local_only=True)
+        assert loc["kind"] == "role" and loc["object_uuid"] == "11111111-1111-4111-8111-111111111111"
+
+
 # ===========================================================================
 # find_in_import_tree — FedRAMP (real chain: baseline -> tailoring profile -> 800-53)
 # ===========================================================================
@@ -121,11 +237,11 @@ class TestFindInImportTreeFedramp:
 # ===========================================================================
 class TestOutOfScopeRewrite:
 
-    def test_out_of_scope_related_link_rewritten(self, resolved_low):
+    def test_out_of_scope_related_link_removed(self, resolved_low):
         ac1 = resolved_low.get_control_by_id("ac-1", depth=0)
-        related = {ln["href"] for ln in ac1.get("links", []) if ln.get("rel") == "related"}
-        # pm-9 is not in LOW -> rewritten to a source URI ending in #pm-9
-        assert any(h.startswith("file:") and h.endswith("#pm-9") for h in related)
+        hrefs = {ln.get("href") for ln in ac1.get("links", [])}
+        # pm-9 is not in LOW -> the dangling related link is removed (not rewritten)
+        assert not any(h and h.endswith("#pm-9") for h in hrefs)
 
     def test_in_scope_related_link_kept(self, resolved_low):
         ac1 = resolved_low.get_control_by_id("ac-1", depth=0)

@@ -11,7 +11,7 @@ import pytest
 # Import directly from the module file to avoid triggering oscal/__init__.py,
 # which requires ruf_common (a heavy dependency not needed for these tests).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "oscal"))
-from oscal_datatypes import OSCAL_DATATYPES, oscal_date_time_with_timezone
+from oscal_datatypes import OSCAL_DATATYPES, oscal_date_time_with_timezone, normalize_uri_reference
 
 
 EXPECTED_TYPES = [
@@ -135,6 +135,112 @@ class TestOscalDatatypesDict:
         pattern = OSCAL_DATATYPES["integer"]["json-pattern"]
         for value in ["0", "42", "-7", "+100"]:
             assert re.match(pattern, value), f"Integer pattern should match '{value}'"
+
+
+# A Windows path with backslashes used as a link href — not valid URI syntax.
+_BAD_URI = r"R:\rr\class\tests\test-data\private\ed\ed-high-baseline-profile.json#ps-8"
+
+
+class TestUriPatterns:
+    """The uri / uri-reference json-patterns enforce the RFC 3986 character set,
+    rejecting backslashes and whitespace while accepting valid references."""
+
+    def test_original_preserved(self):
+        for t in ("uri", "uri-reference"):
+            assert OSCAL_DATATYPES[t]["original"] == r"^[\S]+$"
+
+    def test_uri_reference_rejects_backslash_path(self):
+        pat = OSCAL_DATATYPES["uri-reference"]["json-pattern"]
+        assert re.fullmatch(pat, _BAD_URI) is None
+
+    def test_uri_reference_rejects_whitespace(self):
+        pat = OSCAL_DATATYPES["uri-reference"]["json-pattern"]
+        assert re.fullmatch(pat, "has space.json") is None
+
+    @pytest.mark.parametrize("val", [
+        # fragment-only references (accept ONLY a URI fragment)
+        "#ps-8",
+        "#a_b-c.1",
+        "#",
+        # relative references, with and without a fragment
+        "catalog.json",
+        "catalogs/nist-800-53.json#ac-1",
+        "../rev5/catalog.json",
+        # absolute URIs, with and without a fragment
+        "https://example.com/a?b=c#d",
+        "http://csrc.nist.gov/ns/oscal",
+        "urn:uuid:11111111-2222-4333-8444-555555555555",
+        "mailto:a@b.com",
+        "//example.com/path#frag",                     # network-path reference
+        # cross-platform file URIs (RFC 3986 uses forward slashes on every platform)
+        "file:///R:/rr/class/x.json#ps-8",             # Windows drive (valid form of the bad value)
+        "file:///home/user/catalog.json",              # Unix absolute path
+        "file://server/share/catalog.json#ac-1",       # UNC / network share
+    ])
+    def test_uri_reference_accepts_valid(self, val):
+        pat = OSCAL_DATATYPES["uri-reference"]["json-pattern"]
+        assert re.fullmatch(pat, val) is not None
+
+    def test_uri_requires_scheme(self):
+        pat = OSCAL_DATATYPES["uri"]["json-pattern"]
+        assert re.fullmatch(pat, "http://csrc.nist.gov/ns/oscal") is not None
+        assert re.fullmatch(pat, "#no-scheme") is None      # uri (absolute) needs a scheme
+        assert re.fullmatch(pat, r"R:\rr\x.json") is None   # backslashes rejected
+
+    def test_enforced_via_check_datatype(self):
+        # Exercise the actual validation entry point, not just the raw regex.
+        from oscal.oscal_content import _check_datatype
+        assert _check_datatype(_BAD_URI, "uri-reference", "loc", "href") is not None
+        assert _check_datatype("#ps-8", "uri-reference", "loc", "href") is None
+
+
+class TestNormalizeUriReference:
+    """normalize_uri_reference repairs non-encoded URI values into valid form."""
+
+    _URI_REF = OSCAL_DATATYPES["uri-reference"]["json-pattern"]
+
+    @pytest.mark.parametrize("raw,expected", [
+        (r"R:\rr\class\x.json#ps-8", "R:/rr/class/x.json#ps-8"),   # backslashes -> slashes
+        (r"C:\Users\a b\doc.json", "C:/Users/a%20b/doc.json"),     # backslashes + space
+        ("has space.json", "has%20space.json"),                    # raw space -> %20
+        ("café.json", "caf%C3%A9.json"),                      # non-ASCII -> UTF-8 %XX
+        ('a"b.json', "a%22b.json"),                                # quote -> %22
+    ])
+    def test_converts_non_encoded(self, raw, expected):
+        out = normalize_uri_reference(raw)
+        assert out == expected
+        assert re.fullmatch(self._URI_REF, out) is not None       # result is a valid URI-reference
+
+    @pytest.mark.parametrize("val", [
+        "#ps-8", "catalog.json#ac-1", "https://ex.com/a?b=c#d",
+        "file:///C:/x/doc.json#f", "already%20encoded.json",       # %XX preserved (no double-encode)
+    ])
+    def test_valid_values_unchanged(self, val):
+        assert normalize_uri_reference(val) == val
+
+    def test_non_string_and_empty_unchanged(self):
+        assert normalize_uri_reference("") == ""
+        assert normalize_uri_reference(None) is None
+
+    def test_load_repairs_backslash_href(self):
+        # End-to-end: a link href with backslashes is normalized in place on validation,
+        # so the loaded content is valid and dumps as a valid URI.
+        from oscal import OSCAL
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<catalog xmlns="http://csrc.nist.gov/ns/oscal/1.0" '
+            'uuid="aabbccdd-0000-4000-a000-000000000001">'
+            '<metadata><title>N</title><last-modified>2026-06-06T00:00:00Z</last-modified>'
+            '<version>1.0</version><oscal-version>1.2.3</oscal-version></metadata>'
+            '<control id="ac-1"><title>AC-1</title>'
+            '<link href="R:\\rr\\other-catalog.json#ac-2" rel="reference"/>'
+            '</control></catalog>'
+        )
+        doc = OSCAL.loads(xml)
+        href = doc._dict["catalog"]["controls"][0]["links"][0]["href"]
+        assert href == "R:/rr/other-catalog.json#ac-2"
+        assert doc.validation_status.get("data-types") is True
+        assert doc.is_valid
 
 
 class TestOscalDateTimeWithTimezone:

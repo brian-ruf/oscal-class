@@ -7,7 +7,7 @@
 
 # OSCAL Python Library
 
-A Python library for working with [Open Security Controls Assessment Language (OSCAL)](https://pages.nist.gov/OSCAL) content. The library provides classes to load, validate, convert, and manipulate OSCAL XML, JSON, and YAML documents for all published OSCAL versions and models.
+A Python library for working with [Open Security Controls Assessment Language (OSCAL)](https://pages.nist.gov/OSCAL) content. The library provides classes to load, validate, convert, query and manipulate OSCAL XML, JSON, and YAML documents for all published OSCAL versions and models.
 
 ---
 

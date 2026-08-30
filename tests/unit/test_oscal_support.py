@@ -10,6 +10,15 @@ import time
 
 import oscal.oscal_support as support_mod
 from oscal.oscal_support import OSCALSupport, OSCAL_support
+from oscal.oscal_datatypes import OSCAL_DATATYPES
+from oscal.metaschema_parser import (
+    _annotate_ns_conditions,
+    _collect_unresolved_targets,
+    _compute_json_paths,
+    _extract_oscal_namespace_condition,
+    _parse_child_predicates,
+    _reroute_unresolved_constraints,
+)
 
 
 class _FakeDB:
@@ -464,7 +473,7 @@ class TestGetMetaschemaIndex:
         obj.get_metaschema_index("v1.2.0", "catalog")
         after = time.time()
 
-        entry = support_mod._metaschema_index_cache[("v1.2.0", "catalog")]
+        entry = support_mod._metaschema_index_cache[("v1.2.0", "catalog", obj.active_index_version)]
         assert entry["version"] == "v1.2.0"
         assert entry["model"] == "catalog"
         assert before <= entry["last_retrieved"] <= after
@@ -481,7 +490,7 @@ class TestGetMetaschemaIndex:
 
         # Populate cache with a timestamp old enough to be stale.
         stale_time = time.time() - support_mod.INDEX_REFRESH - 1
-        support_mod._metaschema_index_cache[("v1.2.0", "catalog")] = {
+        support_mod._metaschema_index_cache[("v1.2.0", "catalog", obj.active_index_version)] = {
             "version": "v1.2.0",
             "model": "catalog",
             "last_retrieved": stale_time,
@@ -503,7 +512,7 @@ class TestGetMetaschemaIndex:
         obj = _make_support(fake_get_asset)
 
         # Populate cache with a very recent timestamp.
-        support_mod._metaschema_index_cache[("v1.2.0", "catalog")] = {
+        support_mod._metaschema_index_cache[("v1.2.0", "catalog", obj.active_index_version)] = {
             "version": "v1.2.0",
             "model": "catalog",
             "last_retrieved": time.time(),
@@ -555,7 +564,7 @@ class TestGetMetaschemaIndex:
         obj = _make_support(lambda *_: None)
         result = obj.get_metaschema_index("v1.2.0", "catalog")
         assert result is None
-        assert ("v1.2.0", "catalog") not in support_mod._metaschema_index_cache
+        assert ("v1.2.0", "catalog", obj.active_index_version) not in support_mod._metaschema_index_cache
 
     def test_returns_none_when_asset_is_invalid_json(self):
         obj = _make_support(lambda *_: "not valid json {{{")
@@ -606,15 +615,6 @@ class TestGetMetaschemaIndex:
 # ===========================================================================
 # Cycle detection in _annotate_ns_conditions and _compute_json_paths
 # ===========================================================================
-
-from oscal.metaschema_parser import (
-    _annotate_ns_conditions,
-    _collect_unresolved_targets,
-    _compute_json_paths,
-    _extract_oscal_namespace_condition,
-    _parse_child_predicates,
-    _reroute_unresolved_constraints,
-)
 
 
 def _make_node(path, use_name, structure_type="assembly", group_as=None, children=None, flags=None, constraints=None):
@@ -914,3 +914,44 @@ class TestTwoLevelRouting:
             "values": [{"value": "marking"}],
         }])
         assert _collect_unresolved_targets(node) == []
+
+
+# ---------------------------------------------------------------------------
+# OSCAL data type exposure (datatypes attribute + get_datatype accessor)
+# ---------------------------------------------------------------------------
+class TestDatatypes:
+    """OSCALSupport exposes the OSCAL Metaschema datatype table for field-level
+    input validation (e.g. handing a datatype's regex to a UI)."""
+
+    def test_datatypes_attribute_is_canonical_table(self):
+        s = support_mod.get_support()
+        assert s.datatypes is OSCAL_DATATYPES
+        # A few representative OSCAL primitive types are present.
+        for name in ("uuid", "token", "date-time-with-timezone", "integer"):
+            assert name in s.datatypes
+
+    def test_get_datatype_returns_definition_with_patterns(self):
+        s = support_mod.get_support()
+        dt = s.get_datatype("uuid")
+        assert dt is not None
+        assert dt["base-type"] == "string"
+        # The regexes a UI would use for validation are present.
+        assert dt["json-pattern"] and dt["xml-pattern"] and dt["recommended-pattern"]
+
+    def test_get_datatype_returns_safe_copy(self):
+        """Mutating the returned dict must not corrupt the shared datatype table."""
+        s = support_mod.get_support()
+        dt = s.get_datatype("uuid")
+        dt["json-pattern"] = "MUTATED"
+        assert s.datatypes["uuid"]["json-pattern"] != "MUTATED"
+        assert s.get_datatype("uuid")["json-pattern"] != "MUTATED"
+
+    def test_get_datatype_unknown_returns_none(self):
+        s = support_mod.get_support()
+        assert s.get_datatype("not-a-datatype") is None
+        assert s.get_datatype("") is None
+
+    def test_get_datatype_resolves_every_known_type(self):
+        s = support_mod.get_support()
+        for name in OSCAL_DATATYPES:
+            assert s.get_datatype(name) is not None, name

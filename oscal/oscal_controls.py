@@ -5,85 +5,28 @@ Provides the editable model classes for the OSCAL control models: ``Catalog``
 (defines controls), ``Profile`` (selects and tailors controls into baselines),
 and ``Mapping`` (relates controls across frameworks). Each class subclasses
 ``OSCAL`` from ``oscal_content`` and adds model-specific navigation and
-mutation helpers. ``ImportResult`` is the structured return value of
-``Profile.add_import``.
-
-Module constants:
-    MEDIA_TYPES (dict): Maps a lower-case file extension (``.xml``, ``.json``,
-        ``.yaml``, ``.yml``) to its OSCAL media type (``application/xml``,
-        ``application/json``, ``application/yaml``). Used to infer an ``rlink``
-        media type from a referenced file's href.
+mutation helpers. ``ImportResult`` (the structured return value of
+:meth:`OSCAL.add_import`) and the ``MEDIA_TYPES`` / ``_infer_media_type`` media-type
+helpers are defined in ``oscal_content`` / ``oscal_helpers`` and re-exported here for
+backward compatibility.
 """
-import os
 import re
 import copy
 import fnmatch
-from urllib.parse import urlparse
-from dataclasses import dataclass
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional, cast
 from enum import Enum
 
-from .oscal_content import (
+from .oscal_content import (  # noqa: F401  (ImportResult/MEDIA_TYPES/_infer_media_type re-exported)
     OSCAL, requires, if_update_successful, append_props, append_links, new_uuid,
     register_model, get_props, prune_tree_copy, ImportState, _collect_ids, _OSCAL_NS,
+    ImportResult, MEDIA_TYPES, _infer_media_type,
+    _find_import_candidates, _pick_import_target,
 )
 from .oscal_datatypes import oscal_date_time_with_timezone
 
 logger = logging.getLogger(__name__)
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Best-effort OSCAL media types by file extension (mirrors oscal.fix_references).
-MEDIA_TYPES = {
-    ".xml":  "application/xml",
-    ".json": "application/json",
-    ".yaml": "application/yaml",
-    ".yml":  "application/yaml",
-}
-
-
-def _infer_media_type(href: str) -> str:
-    """Best-effort OSCAL media type from an href's file extension.
-
-    Args:
-        href (str, required): The reference href (path or URL).
-
-    Returns:
-        str: The matching OSCAL media type, or "" when the extension is unknown.
-    """
-    ext = os.path.splitext(urlparse(href).path)[1].lower()
-    return MEDIA_TYPES.get(ext, "")
-
-
-@dataclass
-class ImportResult:
-    """Outcome of a :meth:`Profile.add_import` call.
-
-    Attributes:
-        status (str): One of "added", "replaced", "duplicate", or "error". A
-            "duplicate" is a blocking condition (``ok`` is False) — the href already
-            appears among this document's own imports.
-        entry (dict | None): The import entry — the newly added/replaced entry for
-            "added"/"replaced", or the conflicting existing import for "duplicate".
-        resource (dict | None): The back-matter resource created for the import
-            (None for "duplicate"/"error").
-        message (str): Human-readable detail, primarily for "duplicate"/"error".
-    """
-    status: str
-    entry: Optional[dict] = None
-    resource: Optional[dict] = None
-    message: str = ""
-
-    @property
-    def ok(self) -> bool:
-        """bool: True when an import was actually added or replaced."""
-        return self.status in ("added", "replaced")
-
-    @property
-    def is_duplicate(self) -> bool:
-        """bool: True when the href already matched one of this document's imports."""
-        return self.status == "duplicate"
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Dict navigation helpers
@@ -362,6 +305,50 @@ def _all_tree_control_nodes(nodes: list) -> list:
     return out
 
 
+# Sentinel: an id was not found in a given catalog (distinct from "found, no parent").
+_MISSING = object()
+
+
+def _build_catalog_parent_map(tree: list) -> dict:
+    """Map every control id to its enclosing CONTROL id within a source tree.
+
+    Used by REFERENTIAL merge to recover control→control containment from a source
+    catalog. A control sitting directly under a group (or at the root) maps to
+    ``None`` (it has no *control* parent); a nested enhancement maps to the id of
+    the control that contains it.
+
+    Args:
+        tree (list, required): A source object's ``controls_tree`` node list.
+
+    Returns:
+        dict: ``{control_id: parent_control_id | None}`` for every control node.
+    """
+    pmap: dict[str, Optional[str]] = {}
+
+    def walk(nodes: list, parent_ctrl: Optional[str]) -> None:
+        for n in nodes:
+            if n.get("group"):
+                walk(n.get("children", []), None)   # a group resets control ancestry
+            else:
+                pmap[n.get("id", "")] = parent_ctrl
+                walk(n.get("children", []), n.get("id"))
+
+    walk(tree, None)
+    return pmap
+
+
+def _dotted_parent(cid: str) -> Optional[str]:
+    """Return the OSCAL dotted-notation parent id, or None.
+
+    NIST-style enhancement ids nest by a trailing ``.N`` (``ac-3.14`` under
+    ``ac-3``, ``ac-3.14.2`` under ``ac-3.14``). The family dash (``ac-3``) is not a
+    nesting separator, so a base control id yields ``None``.
+    """
+    if cid and "." in cid:
+        return cid.rsplit(".", 1)[0]
+    return None
+
+
 def _node_source_id(node: dict) -> Optional[str]:
     """Return a node's id in its immediate import source (for matching alter control-ids)."""
     return (node.get("origin") or {}).get("source_id")
@@ -601,6 +588,74 @@ def _dedup_exact(items: list) -> list:
     return out
 
 
+def _merge_metadata_by_key(metas: list, field: str, key: str) -> list:
+    """Collect ``field`` items across ordered metadata dicts, use-first on ``key``.
+
+    Used to carry ``roles`` (by ``id``), ``parties`` and ``locations`` (by ``uuid``)
+    from the profile and its imports into the resolved catalog. On a key collision the
+    first-seen item wins (earlier sources take precedence); keyless items are skipped.
+
+    Args:
+        metas (list, required): Metadata dicts in precedence order (profile first).
+        field (str, required): The metadata array to merge (e.g. ``"roles"``).
+        key (str, required): The identity key within each item (``"id"``/``"uuid"``).
+
+    Returns:
+        list: Deep copies of the merged items, in first-seen order.
+    """
+    seen: set = set()
+    out: list = []
+    for meta in metas:
+        for item in meta.get(field, []) or []:
+            if not isinstance(item, dict):
+                continue
+            k = item.get(key)
+            if k is None or k in seen:
+                continue
+            seen.add(k)
+            out.append(copy.deepcopy(item))
+    return out
+
+
+def _merge_responsible_parties(metas: list) -> list:
+    """Merge ``responsible-parties`` across ordered metadata dicts, accumulating parties.
+
+    Grouped by ``role-id``: the first occurrence seeds the entry (its non-party fields
+    win), and every later occurrence's ``party-uuids`` are unioned in (order-preserving,
+    de-duplicated). This lets, e.g., a ``creator`` role-id present in two imports end up
+    as a single entry whose ``party-uuids`` gather both sources' parties.
+
+    Args:
+        metas (list, required): Metadata dicts in precedence order (profile first).
+
+    Returns:
+        list: Deep copies of the merged responsible-party entries, in first-seen order.
+    """
+    order: list = []
+    by_role: dict = {}
+    for meta in metas:
+        for rp in meta.get("responsible-parties", []) or []:
+            if not isinstance(rp, dict):
+                continue
+            rid = rp.get("role-id")
+            if rid is None:
+                continue
+            incoming = rp.get("party-uuids") or []
+            if rid not in by_role:
+                entry = copy.deepcopy(rp)
+                entry["party-uuids"] = list(dict.fromkeys(incoming))  # dedup, keep order
+                by_role[rid] = entry
+                order.append(rid)
+            else:
+                existing = by_role[rid].setdefault("party-uuids", [])
+                have = set(existing)
+                for pu in incoming:
+                    if pu not in have:
+                        existing.append(pu)
+                        have.add(pu)
+    return [by_role[rid] for rid in order]
+
+
 def _newest_timestamp(values: list) -> Optional[str]:
     """Return the chronologically latest RFC-3339 timestamp string from ``values``.
 
@@ -785,9 +840,13 @@ def _cited_param_ids(content: dict) -> set:
 # Profile resolution — out-of-scope cross-reference rewriting
 #
 # After resolution, a control may still reference (by ``#id``) a control/part that was
-# not selected into the baseline. Matching the official resolver, such out-of-scope
-# references are rewritten to absolute URIs pointing at the import that still resolves
-# them, both in ``href`` values and in prose markdown links.
+# not selected into the baseline. A structured ``link`` element to such an out-of-scope id
+# is REMOVED. This is a deliberate, correctness-driven departure from the official (still
+# "draft" after years) profile-resolution behavior, which rewrites the href to an absolute
+# source URI: OSCAL requires a ``related`` link's href to be a catalog-local fragment, so an
+# external ``file:...#id`` value is schema-invalid — deletion is the only valid outcome.
+# A prose markdown link (inline text, not a schema-constrained href) is instead rewritten to
+# an absolute URI pointing at the import that still resolves it, rather than mangling prose.
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # A markdown link into a document fragment, e.g. "[AC-1](#ac-1)".
@@ -839,6 +898,46 @@ def _apply_ref_rewrite(node, base_for: dict) -> None:
     elif isinstance(node, list):
         for item in node:
             _apply_ref_rewrite(item, base_for)
+
+
+def _remove_out_of_scope_links(node, in_scope: set) -> int:
+    """Remove ``links`` entries whose ``#fragment`` href targets an out-of-scope id.
+
+    A structured ``link`` pointing at a control/part that was dropped from the baseline
+    (its id is not in the resolved catalog) is a dangling reference; rather than rewrite it
+    to an external source URI, it is removed entirely. In-scope fragments — including carried
+    back-matter resources, whose ``uuid`` values are collected into *in_scope* — are kept, as
+    are non-fragment hrefs. Prose markdown links are left untouched here (the rewrite pass
+    handles those).
+
+    Args:
+        node: The catalog subtree (dict/list) to prune, in place.
+        in_scope (set, required): ids/uuids present in the resolved catalog.
+
+    Returns:
+        int: The number of link entries removed.
+    """
+    removed = 0
+    if isinstance(node, dict):
+        links = node.get("links")
+        if isinstance(links, list):
+            kept = [ln for ln in links
+                    if not (isinstance(ln, dict)
+                            and isinstance(ln.get("href"), str)
+                            and ln["href"].startswith("#")
+                            and ln["href"][1:] not in in_scope)]
+            removed += len(links) - len(kept)
+            if kept:
+                node["links"] = kept
+            else:
+                node.pop("links", None)
+        for key, val in node.items():
+            if key != "links":
+                removed += _remove_out_of_scope_links(val, in_scope)
+    elif isinstance(node, list):
+        for item in node:
+            removed += _remove_out_of_scope_links(item, in_scope)
+    return removed
 
 
 def _apply_one_set_parameter(param: dict, setp: dict) -> list:
@@ -1957,6 +2056,16 @@ class Profile(OSCAL):
         self.resolution_status = ResolutionStatus.UNRESOLVED
         self.resolved_datetime = datetime.now(timezone.utc)
         self.resolution_ttl = 0
+        # as-is hierarchy-reconstruction strategy (library option, not OSCAL content).
+        # Applies ONLY when the profile's merge directive is ``as-is``: REFERENTIAL
+        # (primary) reconstructs source hierarchy, POSITIONAL is legacy. It has no
+        # effect under a ``flat`` or ``custom`` merge directive. See ``merge_directive``
+        # for the OSCAL directive itself (as-is / flat / custom).
+        self._merge_strategy = MergeStrategy.REFERENTIAL
+        # OSCAL merge *directive* actually authored on the profile: "as-is", "flat", or
+        # "custom" (unlike ``_merge_strategy``, this IS serialized content). Kept in sync
+        # with the profile's ``merge`` element; refreshed on load and after any merge edit.
+        self.merge_directive: str = "as-is"
         # controls_tree is the source of truth for control/group scope & organization.
         # Each node is {id, label, title, group, origin, children}; ``origin`` links the
         # node to its immediate import source: {object_uuid, source_id, import_index}.
@@ -1976,6 +2085,28 @@ class Profile(OSCAL):
             self._ensure_controls_tree()
         except Exception as error:  # pragma: no cover - defensive
             logger.debug(f"Profile._init_common: deferred controls_tree build ({error}).")
+        # Reflect the authored merge directive on the instance (as-is / flat / custom).
+        self._refresh_merge_directive()
+
+    # -------------------------------------------------------------------------
+    def _refresh_merge_directive(self) -> str:
+        """Sync :attr:`merge_directive` with the profile's authored ``merge`` directive.
+
+        Reads the directive currently present in content via :meth:`_merge_mode` — one
+        of ``"as-is"``, ``"flat"``, or ``"custom"`` (an absent ``merge`` defaults to
+        ``"as-is"``; a legacy ``as-is: false`` is reported as ``"flat"``, matching how it
+        is processed). Called on load and after every merge edit. Best-effort: any failure
+        leaves the attribute at the OSCAL default (``"as-is"``).
+
+        Returns:
+            str: The refreshed :attr:`merge_directive` value.
+        """
+        try:
+            self.merge_directive = self._merge_mode()[0]
+        except Exception as error:  # pragma: no cover - defensive
+            logger.debug(f"_refresh_merge_directive: defaulting to 'as-is' ({error}).")
+            self.merge_directive = "as-is"
+        return self.merge_directive
 
     # -------------------------------------------------------------------------
     def _ensure_controls_tree(self) -> None:
@@ -2010,6 +2141,26 @@ class Profile(OSCAL):
             self.resolution_state = "unresolved"
 
     # -------------------------------------------------------------------------
+    @property
+    def merge_strategy(self) -> "MergeStrategy":
+        """The control-tree assembly strategy (:class:`MergeStrategy`).
+
+        Defaults to ``REFERENTIAL`` (reconstruct source hierarchy). Assigning a new
+        value marks the controls_tree stale, drops any resolved catalog, and rebuilds
+        the tree so subsequent reads reflect the chosen strategy.
+        """
+        return self._merge_strategy
+
+    @merge_strategy.setter
+    def merge_strategy(self, value) -> None:
+        value = MergeStrategy(value)
+        if value != self._merge_strategy:
+            self._merge_strategy = value
+            self._tree_dirty = True
+            self._invalidate_resolution()
+            self._ensure_controls_tree()
+
+    # -------------------------------------------------------------------------
     def validate(self, format: str = "") -> bool:
         """Validate the profile, then (re)build ``controls_tree`` on success.
 
@@ -2033,6 +2184,7 @@ class Profile(OSCAL):
         else:
             self.controls_tree = []
             self._tree_dirty = True
+        self._refresh_merge_directive()
         return result
 
     # -------------------------------------------------------------------------
@@ -2097,11 +2249,233 @@ class Profile(OSCAL):
             self._place_tree_import(result, src_tree, selected, source_obj.uuid,
                                     mode, combine, idx, ctrl_nodes, group_nodes)
 
+        # REFERENTIAL (primary): reconstruct control→control containment from source
+        # provenance so an enhancement nests under its parent even when an intermediate
+        # profile dropped the parent. POSITIONAL (legacy) skips this and keeps the
+        # immediate-import structure. Only meaningful for as-is (flat has no nesting).
+        if self._merge_strategy == MergeStrategy.REFERENTIAL and mode == "as-is":
+            result = self._renest_by_hierarchy(result)
+
         result = _prune_empty_group_nodes(result)
         if wrap_root:
             result = self._wrap_root_controls(result)
         self.controls_tree = result
         self._tree_dirty = False
+
+    # -------------------------------------------------------------------------
+    def _canonical_url_of(self, cat) -> Optional[str]:
+        """Return a catalog's canonical URL, or None.
+
+        Reads ``metadata.link`` with ``rel="canonical"``: the href value directly, or,
+        when it is a ``#uuid`` fragment, the first ``rlink.href`` of the referenced
+        back-matter resource. This is the location-independent identity used to match a
+        source against ``OSCALSupport.known_catalogs`` (see [[oscal_support_db_bundling]]).
+        """
+        root = cat._dict.get("catalog", {}) if isinstance(getattr(cat, "_dict", None), dict) else {}
+        md = root.get("metadata", {}) or {}
+        resources = {r.get("uuid"): r
+                     for r in root.get("back-matter", {}).get("resources", [])
+                     if isinstance(r, dict)}
+        for link in md.get("links", []) or []:
+            if link.get("rel") != "canonical":
+                continue
+            href = str(link.get("href", "")).strip()
+            if href.startswith("#"):
+                res = resources.get(href[1:])
+                for rl in (res or {}).get("rlinks", []):
+                    if rl.get("href"):
+                        return rl["href"]
+            elif href:
+                return href
+        return None
+
+    # -------------------------------------------------------------------------
+    def _catalog_uses_dotted(self, cat) -> bool:
+        """Whether dotted-notation may supply hierarchy for this catalog.
+
+        True only when the catalog is a *known* catalog (matched by canonical URL against
+        ``OSCALSupport.known_catalogs``) whose entry sets ``doted-notation: true``. The
+        catalog's own asserted structure is always honored regardless; dotted notation is
+        a fallback for catalogs that are flat but follow the NIST enhancement id convention.
+        """
+        url = self._canonical_url_of(cat)
+        if not url:
+            return False
+        try:
+            from .oscal_support import get_support
+            known = getattr(get_support(), "known_catalogs", {}) or {}
+        except Exception as error:  # pragma: no cover - support DB optional
+            logger.debug(f"_catalog_uses_dotted: support unavailable ({error}).")
+            return False
+        for entry in known.values():
+            if entry.get("canonical") == url:
+                return bool(entry.get("doted-notation"))
+        return False
+
+    # -------------------------------------------------------------------------
+    def _renest_by_hierarchy(self, result: list) -> list:
+        """Reconstruct control→control containment on a placed as-is tree (REFERENTIAL).
+
+        Takes the positionally-placed ``result`` (controls sitting under their group
+        ancestry, duplicates already combined) and re-parents each control under its
+        source-defined control parent when that parent is present in the result. Parent
+        selection is a hybrid, per the ``ed`` overlay-chain case:
+
+          1. **use-ancestor** — trace the control's ``origin`` chain to its terminal
+             source catalog and adopt the parent that catalog asserts (or, for a known
+             ``doted-notation`` catalog, the dotted parent when the catalog is flat).
+          2. **use-first** — if provenance yields nothing, consult the reachable terminal
+             catalogs in import order and take the first that defines the control.
+          3. **climb** — if the chosen parent is not present, walk up the ancestor chain
+             to the nearest present control; failing that, the control stays under its
+             group (or root, later wrapped by :meth:`_wrap_root_controls`).
+
+        A catalog-asserted relationship is always honored; the dotted convention is used
+        only for known catalogs flagged for it. Returns the re-nested node list.
+        """
+        # --- index the placed tree ------------------------------------------------
+        node_by_id: dict[str, dict] = {}
+        group_by_id: dict[str, dict] = {}
+        phase1_group: dict[str, Optional[str]] = {}   # cid -> nearest enclosing group id
+        order: list[str] = []                          # controls in placement order
+
+        def scan(nodes: list, cur_group: Optional[str]) -> None:
+            for n in nodes:
+                if n.get("group"):
+                    group_by_id[n.get("id", "")] = n
+                    scan(n.get("children", []), n.get("id"))
+                else:
+                    cid = n.get("id", "")
+                    node_by_id[cid] = n
+                    phase1_group[cid] = cur_group
+                    order.append(cid)
+                    scan(n.get("children", []), cur_group)
+
+        scan(result, None)
+        if not node_by_id:
+            return result
+
+        # --- collect reachable terminal catalogs in import order ------------------
+        catalogs: list = []
+        seen_uuid: set = set()
+
+        def collect(prof) -> None:
+            try:
+                srcs, _ = prof._resolution_sources()
+            except Exception:
+                return
+            for _imp, obj in srcs:
+                u = getattr(obj, "uuid", None)
+                if u in seen_uuid:
+                    continue
+                seen_uuid.add(u)
+                if getattr(obj, "model", None) == "catalog":
+                    catalogs.append(obj)
+                elif hasattr(obj, "_resolution_sources"):
+                    collect(obj)
+
+        collect(self)
+
+        # --- memoized catalog lookups --------------------------------------------
+        pmap_cache: dict[str, dict] = {}
+        doted_cache: dict[str, bool] = {}
+        idx_cache: dict[str, dict] = {}
+
+        def cat_pmap(cat) -> dict:
+            u = cat.uuid
+            if u not in pmap_cache:
+                pmap_cache[u] = _build_catalog_parent_map(getattr(cat, "controls_tree", []) or [])
+            return pmap_cache[u]
+
+        def cat_doted(cat) -> bool:
+            u = cat.uuid
+            if u not in doted_cache:
+                doted_cache[u] = self._catalog_uses_dotted(cat)
+            return doted_cache[u]
+
+        def obj_ctrl_index(obj) -> dict:
+            u = obj.uuid
+            if u not in idx_cache:
+                idx_cache[u] = _index_tree_controls(getattr(obj, "controls_tree", []) or [])
+            return idx_cache[u]
+
+        def parent_in_catalog(cat, cid: str):
+            pmap = cat_pmap(cat)
+            if cid not in pmap:
+                return _MISSING
+            p = pmap[cid]
+            if p is not None:
+                return p                      # catalog-asserted parent — always honored
+            if cat_doted(cat):
+                return _dotted_parent(cid)    # flat known catalog: fall back to dotted
+            return None
+
+        def provenance_parent(origin):
+            """use-ancestor: follow the origin chain to its terminal catalog."""
+            seen: set = set()
+            uuid = (origin or {}).get("object_uuid")
+            sid = (origin or {}).get("source_id")
+            while uuid and uuid not in seen:
+                seen.add(uuid)
+                obj = self.get_oscal_object(uuid)
+                if obj is None:
+                    return _MISSING
+                if getattr(obj, "model", None) == "catalog":
+                    return parent_in_catalog(obj, sid)
+                nn = obj_ctrl_index(obj).get(sid)
+                if nn is None or not nn.get("origin"):
+                    return _MISSING
+                uuid = nn["origin"].get("object_uuid")
+                sid = nn["origin"].get("source_id")
+            return _MISSING
+
+        def use_first_parent(cid: str):
+            for cat in catalogs:
+                r = parent_in_catalog(cat, cid)
+                if r is not _MISSING:
+                    return r
+            return _MISSING
+
+        def canonical_parent(cid: str, node: dict) -> Optional[str]:
+            r = provenance_parent(node.get("origin"))
+            if r is _MISSING:
+                r = use_first_parent(cid)
+            return None if (r is _MISSING or r is None) else r
+
+        def present_parent(cid: str, node: dict) -> Optional[str]:
+            """The nearest present control ancestor of cid, or None."""
+            target = canonical_parent(cid, node)
+            guard: set = {cid}
+            while target is not None and target not in guard:
+                guard.add(target)
+                if target in node_by_id:
+                    return target
+                nxt = use_first_parent(target)           # climb an absent ancestor
+                target = None if (nxt is _MISSING or nxt is None) else nxt
+            return None
+
+        # --- rebuild: strip controls, re-attach under computed parents ------------
+        for g in group_by_id.values():
+            g["children"] = [c for c in g["children"] if c.get("group")]
+        for n in node_by_id.values():
+            n["children"] = []
+
+        new_root_groups = [n for n in result if n.get("group")]
+        root_controls: list = []
+
+        for cid in order:
+            node = node_by_id[cid]
+            pp = present_parent(cid, node)
+            if pp is not None and pp != cid:
+                node_by_id[pp]["children"].append(node)
+                continue
+            gid = phase1_group.get(cid)
+            if gid is not None and gid in group_by_id:
+                group_by_id[gid]["children"].append(node)
+            else:
+                root_controls.append(node)
+
+        return new_root_groups + root_controls
 
     # -------------------------------------------------------------------------
     def _wrap_root_controls(self, tree: list) -> list:
@@ -2175,145 +2549,30 @@ class Profile(OSCAL):
         self.controls_tree = state.get("controls_tree", self.controls_tree)
 
     # -------------------------------------------------------------------------
-    def _find_duplicate_import(self, href: str) -> Optional[dict]:
-        """Return this profile's own import entry that already targets ``href``.
+    def _new_import_body(self, include_all: bool = False) -> dict:
+        """Seed a new profile import with a control selection.
 
-        Only this document's direct imports are considered — duplicate imports
-        farther down the import tree are out of scope and intentionally ignored.
-        Each existing import is compared by its resolved target: fragment imports
-        (``href="#uuid"``) are followed through back-matter to their ``rlink``
-        target(s); direct imports are compared by their resolved href.
-
-        Args:
-            href (str, required): The candidate import target (a file href, not a
-                ``#uuid`` fragment).
-
-        Returns:
-            Optional[dict]: The conflicting existing import entry, or None.
+        By default supplies ``include-controls`` with an empty ``with-ids`` array —
+        the minimum valid selection structure, selecting nothing until the caller
+        narrows it. When ``include_all`` is True the import selects all controls via
+        ``include-all`` instead. See base :meth:`OSCAL.add_import`.
         """
-        resolved_new = self._resolve_import_href(href)
-        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
-        resources = root.get("back-matter", {}).get("resources", [])
-        res_by_uuid = {r.get("uuid"): r for r in resources if isinstance(r, dict)}
-
-        for imp in root.get("imports", []):
-            if not isinstance(imp, dict):
-                continue
-            imp_href = str(imp.get("href", "")).strip()
-            targets: list[str] = []
-            if imp_href.startswith("#"):
-                res = res_by_uuid.get(imp_href[1:])
-                if res:
-                    for rlink in res.get("rlinks", []):
-                        rl_href = rlink.get("href", "")
-                        if rl_href:
-                            targets.append(self._resolve_import_href(rl_href))
-            elif imp_href:
-                targets.append(self._resolve_import_href(imp_href))
-
-            if resolved_new in targets:
-                return imp
-        return None
+        if include_all:
+            return {"include-all": {}}
+        return {"include-controls": [{"with-ids": []}]}
 
     # -------------------------------------------------------------------------
-    def add_import(self, href: str, title: str = "", description: str = "", remarks: str = "", include_all: bool = False) -> ImportResult:
+    def _after_imports_changed(self) -> None:
+        """Refresh profile-derived state after an import was added or removed.
+
+        Extends the base refresh (re-resolve imports, recompute content_state, and
+        drop any stale resolved catalog via :meth:`_on_content_mutated`) by marking the
+        controls_tree stale and rebuilding it, so the profile's scope/organization
+        reflects the changed import set.
         """
-        Add an import to the profile, backed by a new back-matter resource.
-
-        Steps:
-            1. If ``href`` already appears among this profile's own imports, block it
-               and report a "duplicate" (an error condition). Duplicate imports
-               farther down the import tree are acceptable and out of scope.
-            2. Create a back-matter ``resource`` (with an ``rlink`` to ``href`` and a
-               best-effort ``media-type`` inferred from the href's file extension).
-            3. Add an ``imports`` entry that references the resource by UUID fragment
-               (``href="#<resource-uuid>"``). An existing empty placeholder import
-               (href ``""`` or ``"#"``) is replaced in place; otherwise the entry is
-               appended.
-            4. Refresh the import tree (:meth:`resolve_imports`). The natural import
-               process loads the referenced content and reports success or failure;
-               an unreachable or invalid href simply resolves to ``INVALID`` in the
-               tree, and the caller decides whether that is acceptable.
-
-        Args:
-            href (str, required): Reference to the imported OSCAL file (XML, JSON, or
-                YAML). Used as the resource ``rlink`` href.
-            title (str, optional): Title for the created back-matter resource.
-            description (str, optional): Description for the created resource.
-            remarks (str, optional): Remarks (markdown) for the created resource.
-            include_all (bool, optional): When True, the import selects all controls
-                via ``include-all``. Defaults to False.
-
-        Returns:
-            ImportResult: The outcome — ``status`` of "added", "replaced",
-                "duplicate", or "error", with the relevant ``entry`` and ``resource``.
-        """
-        if not href:
-            logger.error("add_import: 'href' is required.")
-            return ImportResult("error", message="'href' is required.")
-
-        if not self._can_mutate("add_import"):
-            return ImportResult("error", message="content is read-only or unavailable.")
-
-        # 1. Block duplicates among this profile's own imports.
-        existing = self._find_duplicate_import(href)
-        if existing is not None:
-            logger.error(f"add_import: '{href}' is already imported by this profile.")
-            return ImportResult("duplicate", entry=existing, message=f"'{href}' is already imported.")
-
-        # 2. Create the back-matter resource.
-        resource_uuid = new_uuid()
-        rlink: dict[str, Any] = {"href": href}
-        media_type = _infer_media_type(href)
-        if media_type:
-            rlink["media-type"] = media_type
-        else:
-            logger.debug(f"add_import: could not infer media-type for '{href}'.")
-
-        resource: dict[str, Any] = {"uuid": resource_uuid}
-        if title:
-            resource["title"] = title
-        if description:
-            resource["description"] = description
-        resource["rlinks"] = [rlink]
-        if remarks:
-            resource["remarks"] = remarks
-
-        if not self.put("back-matter/resources", resource, mode="insert"):
-            logger.error(f"add_import: failed to add back-matter resource for '{href}'.")
-            return ImportResult("error", message="failed to add back-matter resource.")
-
-        # 3. Build the import entry; replace an empty placeholder if one exists.
-        import_entry: dict[str, Any] = {"href": f"#{resource_uuid}"}
-        if include_all:
-            import_entry["include-all"] = {}
-
-        imports = self._dict.get(self.model, {}).get("imports", [])
-        placeholder_idx = next(
-            (i for i, imp in enumerate(imports)
-             if isinstance(imp, dict) and str(imp.get("href", "")).strip() in ("", "#")),
-            None,
-        )
-        if placeholder_idx is not None:
-            if not self.put(f"imports/{placeholder_idx}", import_entry, mode="replace"):
-                logger.error(f"add_import: failed to replace placeholder import for '{href}'.")
-                return ImportResult("error", message="failed to replace placeholder import.")
-            status = "replaced"
-        else:
-            if not self.put("imports", import_entry, mode="insert"):
-                logger.error(f"add_import: failed to add import entry for '{href}'.")
-                return ImportResult("error", message="failed to add import entry.")
-            status = "added"
-
-        # 4. Refresh the import tree; the natural load reports success/failure.
-        self.resolve_imports()
-
-        # 5. Imports changed — the controls_tree (scope/organization) is now stale.
+        super()._after_imports_changed()
         self._tree_dirty = True
         self._ensure_controls_tree()
-
-        logger.info(f"add_import: {status} import '{href}' as resource {resource_uuid}.")
-        return ImportResult(status, entry=import_entry, resource=resource)
 
     # -------------------------------------------------------------------------
     def control(self, control_id: str, with_history: bool = False,
@@ -2401,6 +2660,13 @@ class Profile(OSCAL):
     def set_merge(self, flat: bool = False, as_is: Optional[bool] = None,
                   custom: Optional[dict] = None, combine: Optional[str] = None) -> Optional[dict]:
         """Set the profile's ``merge`` directives (``combine`` plus flat/as-is/custom).
+
+        .. deprecated::
+            Prefer :meth:`set_directives` (paired with :meth:`get_directives`), which
+            edits ``combine`` and the hierarchy directive independently and validates
+            ``custom`` through the shared metaschema staging gate. This method writes the
+            whole ``merge`` element as a direct pass-through and is retained for
+            compatibility.
 
         The ``merge`` assembly instructs how imported controls are organized after
         profile resolution. Exactly one of ``flat``, ``as_is``, or ``custom`` must be
@@ -2494,8 +2760,570 @@ class Profile(OSCAL):
         # Merge directive changed — the controls_tree (organization) is now stale.
         self._tree_dirty = True
         self._ensure_controls_tree()
+        self._refresh_merge_directive()
         # Return a safe copy — the live merge node stays in _dict; edits go through methods.
         return copy.deepcopy(merge)
+
+    # -------------------------------------------------------------------------
+    def set_merge_directive(self, directive: str, custom: Optional[dict] = None,
+                            combine: Optional[str] = None) -> Optional[dict]:
+        """Change just the profile's merge *directive* (``as-is`` / ``flat`` / ``custom``).
+
+        .. deprecated::
+            Prefer :meth:`set_directives`, which changes the hierarchy directive (and/or
+            ``combine``) independently and validates ``custom`` through the shared
+            metaschema staging gate. Retained for compatibility.
+
+        A focused convenience wrapper over :meth:`set_merge` for the common case of
+        switching the organization directive without restating the other arguments. The
+        existing ``combine`` method is preserved unless a new one is supplied, and when
+        switching to ``custom`` the profile's existing ``custom`` object is reused unless
+        one is provided. On success :attr:`merge_directive` and the ``controls_tree`` are
+        refreshed (both handled by :meth:`set_merge`).
+
+        Args:
+            directive (str, required): One of ``"as-is"``, ``"flat"``, or ``"custom"``.
+            custom (dict, optional): The ``custom`` object to use when
+                ``directive == "custom"``. Defaults to the profile's current ``custom``
+                object; required (here or already present) for a custom directive.
+            combine (str, optional): A ``combine`` method to set. Defaults to the
+                profile's current ``combine`` method (preserved).
+
+        Returns:
+            Optional[dict]: The ``merge`` dict written (a safe copy), or None on failure —
+                an unknown ``directive``, a ``custom`` directive with no object available,
+                or any failure surfaced by :meth:`set_merge`.
+        """
+        if directive not in ("as-is", "flat", "custom"):
+            logger.error("set_merge_directive: 'directive' must be one of "
+                         f"'as-is', 'flat', 'custom'; got {directive!r}.")
+            return None
+
+        # Preserve the current combine / custom unless the caller overrides them.
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        current_merge = root.get("merge") or {}
+        if combine is None:
+            combine = (current_merge.get("combine") or {}).get("method")
+
+        if directive == "flat":
+            return self.set_merge(flat=True, combine=combine)
+        if directive == "as-is":
+            return self.set_merge(as_is=True, combine=combine)
+        # custom
+        if custom is None:
+            custom = current_merge.get("custom")
+        if not isinstance(custom, dict):
+            logger.error("set_merge_directive: switching to 'custom' needs a 'custom' "
+                         "object (none supplied and none present on the profile).")
+            return None
+        return self.set_merge(custom=custom, combine=combine)
+
+    # -------------------------------------------------------------------------
+    def get_directives(self) -> dict:
+        """Return the profile's merge directives as a simple, normalized dict.
+
+        A library-level view of the ``merge`` element that does not pass the raw OSCAL
+        through. Always includes:
+
+        * ``combine`` — ``"use-first"`` when that method is set; ``"keep"`` when ``keep``
+          is set *or* no ``combine`` is present (the effective default); ``"invalid"`` for
+          any other stored method (e.g. the OSCAL ``merge`` method, which this library does
+          not model).
+        * ``hierarchy`` — ``"flat"`` / ``"as-is"`` / ``"custom"`` from whichever directive
+          is present (an ``as-is`` directive maps to ``"as-is"`` regardless of its boolean
+          value). Defaults to ``"as-is"`` — OSCAL's default organization — when no
+          directive (or no ``merge``) is present.
+
+        And, only when ``hierarchy == "custom"``:
+
+        * ``custom`` — a safe copy of the ``custom`` object (with its ``groups`` /
+          ``insert-controls`` children).
+
+        Returns:
+            dict: ``{"combine": ..., "hierarchy": ...[, "custom": {...}]}``.
+        """
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        merge = root.get("merge") or {}
+
+        combine_obj = merge.get("combine")
+        if not isinstance(combine_obj, dict):
+            combine = "keep"                         # no combine present -> effective keep
+        else:
+            method = combine_obj.get("method")
+            combine = method if method in ("use-first", "keep") else "invalid"
+
+        if "flat" in merge:
+            hierarchy = "flat"
+        elif "as-is" in merge:
+            hierarchy = "as-is"
+        elif "custom" in merge:
+            hierarchy = "custom"
+        else:
+            hierarchy = "as-is"                      # OSCAL default organization
+
+        directives: dict[str, Any] = {"combine": combine, "hierarchy": hierarchy}
+        if hierarchy == "custom":
+            directives["custom"] = copy.deepcopy(merge.get("custom"))
+        return directives
+
+    # -------------------------------------------------------------------------
+    def set_directives(self, combine: Optional[str] = None,
+                       hierarchy: Optional[str] = None,
+                       custom: Optional[dict] = None) -> bool:
+        """Set the profile's merge directives without raw pass-through to OSCAL.
+
+        Edits ``combine`` and/or the hierarchy directive independently; at least one of
+        ``combine`` / ``hierarchy`` must be given. Changes are assembled in a **staging**
+        copy and committed only when the whole result is valid — a rejected call changes
+        nothing (roll back). The counterpart reader is :meth:`get_directives`.
+
+        Args:
+            combine (str, optional): ``"use-first"`` or ``"keep"``. Replaces
+                ``merge.combine.method`` with that value. Any other value is rejected.
+            hierarchy (str, optional): ``"flat"``, ``"as-is"``, or ``"custom"``.
+
+                * ``"flat"`` — remove any ``as-is`` / ``custom``; add ``flat`` if absent.
+                * ``"as-is"`` — remove any ``flat`` / ``custom``; set ``as-is`` to ``true``.
+                * ``"custom"`` — requires the ``custom`` argument (below); remove any
+                  ``as-is`` / ``flat``; set ``custom`` to the provided object.
+            custom (dict, optional): Required when ``hierarchy == "custom"`` (ignored
+                otherwise). Must be a dict following the OSCAL ``merge.custom`` syntax; it
+                is pruned/validated through the shared metaschema staging gate
+                (:meth:`_stage_against_index`). If it is not valid the hierarchy is left
+                unchanged and the method returns ``False``.
+
+        Returns:
+            bool: ``True`` on success; ``False`` on any failure (read-only content, no
+                directive supplied, an invalid ``combine``/``hierarchy`` value, a missing
+                or invalid ``custom``, or a result with no hierarchy directive).
+        """
+        if not self._can_mutate("set_directives"):
+            return False
+        if combine is None and hierarchy is None:
+            logger.error("set_directives: provide at least one of 'combine' or 'hierarchy'.")
+            return False
+        if combine is not None and combine not in ("use-first", "keep"):
+            logger.error("set_directives: 'combine' must be 'use-first' or 'keep'; "
+                         f"got {combine!r}.")
+            return False
+        if hierarchy is not None and hierarchy not in ("flat", "as-is", "custom"):
+            logger.error("set_directives: 'hierarchy' must be 'flat', 'as-is', or "
+                         f"'custom'; got {hierarchy!r}.")
+            return False
+
+        # Validate/prune custom up front through the shared gate, so an invalid custom
+        # aborts before any change is made to the live content.
+        clean_custom = None
+        if hierarchy == "custom":
+            if not isinstance(custom, dict):
+                logger.error("set_directives: 'custom' (a dict) is required when "
+                             "hierarchy='custom'.")
+                return False
+            custom_node = self._merge_index_nodes()[1]
+            if custom_node is not None:
+                clean_custom, dropped, errors = self._stage_against_index(
+                    custom, custom_node, "/profile/merge/custom")
+                if errors:
+                    logger.error("set_directives: 'custom' is not valid OSCAL: "
+                                 f"{self._format_index_errors(errors)}")
+                    return False
+                if dropped:
+                    logger.warning("set_directives: dropped keys not permitted in "
+                                   f"'custom': {dropped}")
+            else:
+                clean_custom = copy.deepcopy(custom)  # index unavailable — degrade
+
+        # STAGE a candidate merge from the current content.
+        root = self._dict.setdefault(self.model, {}) if isinstance(self._dict, dict) else {}
+        candidate = copy.deepcopy(root.get("merge") or {})
+
+        if combine is not None:
+            candidate["combine"] = {"method": combine}
+
+        if hierarchy == "flat":
+            candidate.pop("as-is", None)
+            candidate.pop("custom", None)
+            candidate.setdefault("flat", {})
+        elif hierarchy == "as-is":
+            candidate.pop("flat", None)
+            candidate.pop("custom", None)
+            candidate["as-is"] = True
+        elif hierarchy == "custom":
+            candidate.pop("as-is", None)
+            candidate.pop("flat", None)
+            candidate["custom"] = clean_custom
+
+        # A merge must carry exactly one hierarchy directive (the OSCAL choice). Guard the
+        # case of setting only combine on a profile that has no directive yet.
+        if not any(k in candidate for k in ("flat", "as-is", "custom")):
+            logger.error("set_directives: the profile has no merge hierarchy to keep; "
+                         "pass 'hierarchy' (flat/as-is/custom) together with 'combine'.")
+            return False
+
+        # Canonical order: combine first, then the single directive.
+        ordered: dict[str, Any] = {}
+        if "combine" in candidate:
+            ordered["combine"] = candidate["combine"]
+        for key in ("flat", "as-is", "custom"):
+            if key in candidate:
+                ordered[key] = candidate[key]
+
+        # COMMIT.
+        root["merge"] = ordered
+        self._tree_dirty = True
+        self._ensure_controls_tree()
+        self._refresh_merge_directive()
+        self.is_unsaved = True
+        self.last_modified = oscal_date_time_with_timezone()
+        self._on_content_mutated()
+        return True
+
+    # -------------------------------------------------------------------------
+    def _import_index_node(self) -> Optional[dict]:
+        """Return the profile ``import`` assembly node from the metaschema index, or None.
+
+        Used to validate a replacement selection against the standard (the
+        ``include-all`` / ``include-controls`` choice, ``exclude-controls``, and the
+        required ``href``). Returns None when the index is unavailable, so callers
+        degrade to editing without metaschema validation (mirrors :meth:`set_merge`).
+        """
+        index = self._support.get_metaschema_index(self.oscal_version, self.model)
+        if not index:
+            return None
+        root = index.get("nodes")
+        if not isinstance(root, dict):
+            return None
+        return self._find_child_node(root, "import")
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _index_node_is_object(node: dict) -> bool:
+        """Whether a metaschema index node maps to a JSON object (vs a scalar leaf).
+
+        Assemblies and any field carrying flags, sub-fields, or a JSON value key are
+        objects; a bare field (e.g. ``with-id``, a token) is a scalar.
+        """
+        if node.get("structure-type") == "assembly":
+            return True
+        return bool(node.get("children")) or bool(node.get("json-value-key"))
+
+    def _prune_instance_to_index(self, value: Any, node: dict, location: str,
+                                 dropped: list, errors: list) -> Any:
+        """Return *value* reduced to only the keys and hierarchy *node* permits.
+
+        Metaschema-driven whitelist: at each object level only keys named by the index
+        node (its flags, sub-fields/assemblies — choices flattened — and any JSON value
+        key) are kept; unrecognized keys are dropped and reported in *dropped*. Array vs.
+        scalar shape is enforced from each child's ``max-occurs`` (a mismatch is a hard
+        error appended to *errors*, not a silent coercion). Nodes with an ``any`` wildcard
+        keep unknown keys; ``recursive``/``any`` child values pass through unpruned. This
+        guarantees a structurally valid subtree; datatype/allowed-value/required/choice
+        checks remain the job of :meth:`_walk_instance`.
+        """
+        if not isinstance(value, dict):
+            errors.append({"error-type": "invalid-type", "location": location,
+                           "field": "", "value": type(value).__name__,
+                           "expected": {"json": "object"}})
+            return value
+
+        allowed: dict[str, tuple] = {}   # json key -> (kind, child_node)
+        has_any = False
+        for child in node.get("children", []):
+            stype = child.get("structure-type")
+            if stype == "flag":
+                key = child.get("use-name") or child.get("name")
+                if key:
+                    allowed[key] = ("scalar", child)
+            elif stype == "choice":
+                for alt in child.get("children", []):
+                    key = alt.get("group-as") or alt.get("use-name") or alt.get("name")
+                    if key:
+                        allowed[key] = ("node", alt)
+            elif stype == "any":
+                has_any = True
+            elif stype == "recursive":
+                key = child.get("group-as") or child.get("use-name") or child.get("name")
+                if key:
+                    allowed[key] = ("passthrough", child)
+            else:
+                key = child.get("group-as") or child.get("use-name") or child.get("name")
+                if key:
+                    allowed[key] = ("node", child)
+        value_key = node.get("json-value-key")
+        if value_key:
+            allowed[value_key] = ("scalar", None)
+
+        out: dict[str, Any] = {}
+        for key, val in value.items():
+            info = allowed.get(key)
+            if info is None:
+                if has_any:
+                    out[key] = val
+                else:
+                    dropped.append(f"{location}/{key}")
+                continue
+            kind, child = info
+            if kind in ("scalar", "passthrough"):
+                out[key] = val
+                continue
+            child_loc = f"{location}/{key}"
+            is_array = str(child.get("max-occurs", "1")) not in ("0", "1")
+            if is_array:
+                if not isinstance(val, list):
+                    errors.append({"error-type": "invalid-type", "location": child_loc,
+                                   "field": key, "value": type(val).__name__,
+                                   "expected": {"json": "array"}})
+                    continue
+                out[key] = [self._prune_child_item(item, child, f"{child_loc}[{i}]",
+                                                   dropped, errors)
+                            for i, item in enumerate(val)]
+            else:
+                out[key] = self._prune_child_item(val, child, child_loc, dropped, errors)
+        return out
+
+    def _prune_child_item(self, item: Any, child: dict, location: str,
+                          dropped: list, errors: list) -> Any:
+        """Prune one array element / single child value against its index node."""
+        if self._index_node_is_object(child):
+            return self._prune_instance_to_index(item, child, location, dropped, errors)
+        if isinstance(item, (dict, list)):
+            errors.append({"error-type": "invalid-type", "location": location,
+                           "field": "", "value": type(item).__name__,
+                           "expected": {"json": "scalar"}})
+        return item
+
+    # -------------------------------------------------------------------------
+    def _stage_against_index(self, value: Any, node: dict,
+                             location: str = "/") -> tuple[Any, list, list]:
+        """Stage *value* against a metaschema *node* and return a clean, validated copy.
+
+        A single general-purpose gate for admitting caller-supplied content into a
+        document, modelled on a database staging area: it never mutates *value* or any
+        live content — it works on a deep copy — and returns ``(clean, dropped, errors)``
+        so the caller can **commit only when ``errors`` is empty** (roll back, i.e. change
+        nothing, otherwise). Two phases:
+
+          1. **Prune** the copy to exactly the keys and hierarchy *node* permits — unknown
+             keys are dropped (recorded in ``dropped``) and a wrong array/scalar shape is a
+             hard error. See :meth:`_prune_instance_to_index`.
+          2. **Validate** the pruned copy against *node* for *required* content and
+             correctness: required flags/fields, choice minimums (e.g. an either/or where a
+             branch must be chosen), datatypes, allowed values, and array cardinality. See
+             :meth:`_validate_against_index`.
+
+        Validation runs only when pruning left the structure sound, so a caller sees the
+        structural error first rather than a cascade.
+
+        Args:
+            value: The caller-supplied content to admit (any JSON value).
+            node (dict, required): The metaschema index node it must conform to.
+            location (str, optional): JSON path for error/drop reporting.
+
+        Returns:
+            tuple: ``(clean_copy, dropped_keys, errors)``.
+        """
+        dropped: list[str] = []
+        errors: list[dict] = []
+        clean = self._prune_instance_to_index(copy.deepcopy(value), node,
+                                              location, dropped, errors)
+        if not errors:
+            self._validate_against_index(clean, node, errors, location)
+        return clean, dropped, errors
+
+    def _validate_against_index(self, instance: Any, node: dict,
+                                errors: list, location: str) -> None:
+        """Validate *instance* against *node*, including the *present* choice branch.
+
+        Wraps :meth:`_walk_instance` (required content, datatypes, allowed values,
+        cardinality, and choice presence/exclusivity) and additionally recurses into the
+        contents of whichever choice member is present — which :meth:`_walk_instance`
+        deliberately skips (it validates a choice's *presence*, not its members' innards).
+        This makes required-content and value checks reach into an either/or branch such as
+        the import ``include-all`` / ``include-controls`` choice.
+        """
+        if not isinstance(instance, dict):
+            return
+        self._walk_instance(instance, node, errors, location)
+        for child in node.get("children", []):
+            if child.get("structure-type") == "choice":
+                self._validate_choice_members(instance, child, errors, location)
+
+    def _validate_choice_members(self, instance: dict, choice_node: dict,
+                                 errors: list, location: str) -> None:
+        """Deep-validate the present member(s) of a choice (nested choices flattened)."""
+        for member in choice_node.get("children", []):
+            if member.get("structure-type") == "choice":
+                self._validate_choice_members(instance, member, errors, location)
+                continue
+            key = (member.get("group-as") or member.get("use-name")
+                   or member.get("name"))
+            if not key or key not in instance:
+                continue
+            value = instance[key]
+            items = value if isinstance(value, list) else [value]
+            for i, item in enumerate(items):
+                if isinstance(item, dict):
+                    self._validate_against_index(item, member, errors,
+                                                 f"{location}/{key}[{i}]")
+
+    # -------------------------------------------------------------------------
+    def _locate_import_statement(self, href: str) -> Optional[dict]:
+        """Return the live ``imports`` entry identified by *href*, or None.
+
+        Accepts *any* href form tracked for the import: the authored ``href``, a resolved
+        ``href_valid``, a failed ``failure.uri``, or an ``href_list`` item — resolved
+        through the same :func:`_find_import_candidates` / :func:`_pick_import_target`
+        machinery used by :meth:`remove_import`/:meth:`ignore_import`. ``import_list[i]``
+        is positionally aligned with ``imports[i]``, so a matched entry maps back to its
+        live statement by index. When imports are not resolved (empty ``import_list``),
+        falls back to matching the authored ``href`` literally.
+
+        Returns the live dict (a mutation handle, not a copy); callers that only read must
+        copy before returning it.
+        """
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        imports = root.get("imports")
+        if not isinstance(imports, list):
+            return None
+
+        target = _pick_import_target(_find_import_candidates(self.import_list, href))
+        if target is not None:
+            try:
+                idx = self.import_list.index(target)
+            except ValueError:
+                idx = None
+            if idx is not None and idx < len(imports) and isinstance(imports[idx], dict):
+                return imports[idx]
+
+        # Fallback (pre-resolution): literal authored-href match.
+        for imp in imports:
+            if isinstance(imp, dict) and imp.get("href") == href:
+                return imp
+        return None
+
+    # -------------------------------------------------------------------------
+    def get_import_selection(self, href: str) -> Optional[dict]:
+        """Return an import statement's control-selection structures as a safe copy.
+
+        Fetches the ``include-all``, ``include-controls``, and ``exclude-controls``
+        structures for the import identified by *href* (any tracked href form — see
+        :meth:`_locate_import_statement`). Only the keys actually present are returned, so
+        an import that selects via ``include-controls`` yields no ``include-all`` key.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+
+        Returns:
+            Optional[dict]: A deep-copied dict containing whichever of ``include-all`` /
+                ``include-controls`` / ``exclude-controls`` are present (``{}`` when the
+                import carries none), or None when no import matches *href*.
+        """
+        imp = self._locate_import_statement(href)
+        if imp is None:
+            logger.warning(f"get_import_selection: no import matches href '{href}'.")
+            return None
+        selection: dict[str, Any] = {}
+        for key in ("include-all", "include-controls", "exclude-controls"):
+            if key in imp:
+                selection[key] = copy.deepcopy(imp[key])
+        return selection
+
+    # -------------------------------------------------------------------------
+    @requires(is_read_only=False)
+    @if_update_successful
+    def set_import_selection(self, href: str, include_all: Optional[dict] = None,
+                             include_controls: Optional[list] = None,
+                             exclude_controls: Optional[list] = None) -> Optional[dict]:
+        """Replace an import statement's control-selection structures.
+
+        Wholesale-replaces the ``include-all`` / ``include-controls`` / ``exclude-controls``
+        of the import identified by *href* (any tracked href form). The resulting selection
+        is exactly what is supplied: an argument left as ``None`` is *omitted* from the
+        rewritten import (pass ``exclude_controls=[]`` to clear an exclusion while keeping
+        it present as an empty array). ``href`` and any other schema-valid keys on the
+        statement are carried through unchanged.
+
+        Supplied structures are not stored blindly. The whole candidate import is assembled
+        and checked in a **staging** copy via :meth:`_stage_against_index`, and the live
+        import is only overwritten once every check passes — a rejected replacement **rolls
+        back** to the prior content, changing nothing. The candidate is *pruned* to exactly
+        the keys and nesting the OSCAL ``import`` schema permits (the metaschema represents
+        OSCAL syntax in full and is authoritative, so anything it does not permit — at any
+        depth — is dropped with a warning; a wrong array/scalar shape is rejected) and
+        validated for *required* content and correctness: exactly one of ``include-all`` /
+        ``include-controls`` must be present (the mutually-exclusive OSCAL choice —
+        supplying neither fails), and datatypes, allowed values, required fields, and
+        cardinality are enforced. On success the ``controls_tree`` is rebuilt and any
+        resolved catalog is dropped, since scope has changed.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            include_all (dict, optional): The ``include-all`` object (typically ``{}``).
+                Mutually exclusive with ``include_controls``.
+            include_controls (list, optional): A list of ``select-control-by-id`` dicts
+                (e.g. ``[{"with-ids": ["ac-1"]}]``). Mutually exclusive with
+                ``include_all``.
+            exclude_controls (list, optional): A list of ``select-control-by-id`` dicts to
+                exclude.
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import statement, or None on
+                failure — no matching import, a wrong argument type, or a replacement that
+                fails metaschema validation (including supplying both/neither include form).
+        """
+        imp = self._locate_import_statement(href)
+        if imp is None:
+            logger.warning(f"set_import_selection: no import matches href '{href}'.")
+            return None
+
+        if include_all is not None and not isinstance(include_all, dict):
+            logger.error("set_import_selection: 'include_all' must be a dict.")
+            return None
+        if include_controls is not None and not isinstance(include_controls, list):
+            logger.error("set_import_selection: 'include_controls' must be a list.")
+            return None
+        if exclude_controls is not None and not isinstance(exclude_controls, list):
+            logger.error("set_import_selection: 'exclude_controls' must be a list.")
+            return None
+
+        selection_keys = ("include-all", "include-controls", "exclude-controls")
+        # STAGING: assemble the full candidate import off to the side — the existing
+        # non-selection keys (href, …) plus the supplied structures — then prune + validate
+        # the whole statement through the shared gate. The metaschema represents OSCAL
+        # syntax in full and is the source of truth, so the entire import is checked (not
+        # just the replaced pieces) and anything it does not permit is dropped. The live
+        # statement is untouched until every check passes, so a rejection rolls back to the
+        # prior content exactly.
+        candidate: dict[str, Any] = {k: copy.deepcopy(v) for k, v in imp.items()
+                                     if k not in selection_keys}
+        if include_all is not None:
+            candidate["include-all"] = copy.deepcopy(include_all)
+        if include_controls is not None:
+            candidate["include-controls"] = copy.deepcopy(include_controls)
+        if exclude_controls is not None:
+            candidate["exclude-controls"] = copy.deepcopy(exclude_controls)
+
+        import_node = self._import_index_node()
+        if import_node is not None:
+            candidate, dropped, errors = self._stage_against_index(
+                candidate, import_node, "/profile/imports/import")
+            if dropped:
+                logger.warning("set_import_selection: dropped keys not permitted by the "
+                               f"OSCAL import schema: {dropped}")
+            if errors:
+                logger.error("set_import_selection: replacement rejected — content is not "
+                             f"valid OSCAL: {self._format_index_errors(errors)}")
+                return None
+        # else: metaschema index unavailable — degrade to committing as-is (like set_merge).
+
+        # COMMIT: only reached when the staged candidate is fully valid. Update in place so
+        # import_list / controls_tree index alignment is preserved.
+        imp.clear()
+        imp.update(candidate)
+        # Scope changed — the controls_tree is stale; resolved catalog drops via the hook.
+        self._tree_dirty = True
+        self._ensure_controls_tree()
+        return copy.deepcopy(candidate)
 
     # =========================================================================
     # controls_tree construction (placement) — builds the profile's own tree
@@ -3146,6 +3974,24 @@ class Profile(OSCAL):
         if props:
             meta_obj["props"] = props
 
+        # Carry roles/parties/locations/responsible-parties from the profile and its
+        # (transitive) imports. roles/parties/locations use-first on their identity key;
+        # responsible-parties accumulate party-uuids per role-id. Profile metadata takes
+        # precedence (listed first).
+        ordered_metas = [prof_meta, *all_metas]
+        roles = _merge_metadata_by_key(ordered_metas, "roles", "id")
+        locations = _merge_metadata_by_key(ordered_metas, "locations", "uuid")
+        parties = _merge_metadata_by_key(ordered_metas, "parties", "uuid")
+        resp_parties = _merge_responsible_parties(ordered_metas)
+        if roles:
+            meta_obj["roles"] = roles
+        if locations:
+            meta_obj["locations"] = locations
+        if parties:
+            meta_obj["parties"] = parties
+        if resp_parties:
+            meta_obj["responsible-parties"] = resp_parties
+
     # -------------------------------------------------------------------------
     def _carry_backmatter(self, target: "Catalog") -> None:
         """Copy back-matter resources referenced by the resolved catalog, preserving uuids.
@@ -3195,17 +4041,30 @@ class Profile(OSCAL):
 
     # -------------------------------------------------------------------------
     def _rewrite_out_of_scope_refs(self, target: "Catalog") -> None:
-        """Rewrite references to out-of-scope ids to absolute source URIs.
+        """Resolve references to ids dropped from the baseline.
 
-        Any ``#id`` reference in the resolved catalog (an ``href`` value or a prose
-        markdown link) whose id is not present in the resolved catalog is rewritten to
-        ``<source-uri>#id``, where the source is the import that still resolves it — the
-        behavior of the official resolver for controls dropped from the baseline. In-scope
-        references (including carried back-matter resources) are left untouched.
+        For a ``#id`` reference whose id is not present in the resolved catalog:
+
+        * a structured ``link`` element is **removed**. OSCAL requires a ``related`` link's
+          href to be a catalog-local fragment, so the official resolver's rewrite to an
+          external ``file:...#id`` URI yields schema-invalid content — deletion is the only
+          valid resolution. (The Profile Resolution spec has been "draft" for years; this is
+          a blind spot in it.)
+        * a prose markdown link — inline text, not a schema-constrained href — is instead
+          rewritten to ``<source-uri>#id``, where the source is the import that still
+          resolves it, rather than mangling the prose.
+
+        In-scope references (including carried back-matter resources, matched by ``uuid``)
+        are left untouched.
         """
         cat_root = target._dict.get("catalog", {})
         in_scope: set[str] = set()
         _collect_ids(cat_root, in_scope)
+
+        # Drop dangling structured links to out-of-scope controls/parts.
+        removed = _remove_out_of_scope_links(cat_root, in_scope)
+        if removed:
+            logger.info(f"resolve: removed {removed} out-of-scope control link(s).")
 
         refs: set[str] = set()
         _collect_fragment_refs(cat_root, refs)
@@ -3575,6 +4434,32 @@ class ResolutionStatus(str, Enum):
     RESOLVED     = "resolved"
     BLOCKED      = "blocked"
     EXPIRED      = "expired"
+
+
+class MergeStrategy(str, Enum):
+    """How a Profile reconstructs control hierarchy under an ``as-is`` merge directive.
+
+    This is **not** the OSCAL merge directive. The directive itself — ``as-is``,
+    ``flat``, or ``custom`` — is authored on the profile's ``merge`` element and is
+    surfaced by :attr:`Profile.merge_directive`. ``MergeStrategy`` is a separate,
+    library-only processing option (not serialized) that refines a *single* aspect of
+    resolution and **applies only when that directive is ``as-is``**. Under a ``flat``
+    or ``custom`` directive it is inert — flat has no nesting to reconstruct, and custom
+    defines its own structure — so setting it then has no effect.
+
+    Members:
+        REFERENTIAL (str): "referential" — the primary/default logic. Reconstructs
+            control containment from source provenance so a selected enhancement
+            nests under its selected parent (e.g. ``ac-3.14`` under ``ac-3``) even
+            when an intermediate profile selected the child without its parent. The
+            NIST profile-resolution spec is silent on this; REFERENTIAL honors the
+            hierarchy defined at the end of each import branch (the source catalog).
+        POSITIONAL (str): "positional" — the secondary/legacy logic. Preserves each
+            immediate import's presented structure; a child selected without its
+            parent is promoted to its group and remains a peer of its parent.
+    """
+    REFERENTIAL = "referential"
+    POSITIONAL  = "positional"
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Register model classes so OSCAL factory methods return typed instances.

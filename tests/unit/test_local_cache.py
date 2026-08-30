@@ -100,7 +100,7 @@ class TestLocalCache:
 class TestLoadSourceIntegration:
 
     def test_second_load_served_from_cache(self, tmp_path, monkeypatch):
-        import oscal.oscal_content as oc
+        import oscal.oscal_source as oc  # load_source resolves download_file/get_local_cache here
         from oscal.oscal_content import OscalRef, classify_source, load_source
 
         calls = {"n": 0}
@@ -179,7 +179,7 @@ class TestCacheDirectives:
 class TestDirectiveIntegration:
 
     def _setup(self, tmp_path, monkeypatch):
-        import oscal.oscal_content as oc
+        import oscal.oscal_source as oc  # load_source resolves download_file/get_local_cache here
         from oscal.oscal_content import OscalRef, classify_source
 
         calls = {"n": 0}
