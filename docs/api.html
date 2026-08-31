@@ -110,10 +110,8 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 <details open><summary><a href="#oscal.oscal_implementation">oscal.oscal_implementation</a></summary><ul>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition">class ComponentDefinition</a></li>
 <li><a href="#oscal.oscal_implementation.SSP">class SSP</a></li>
-<li class="fn"><a href="#oscal.oscal_implementation.append_by_component">append_by_component()</a></li>
 <li class="fn"><a href="#oscal.oscal_implementation.append_component">append_component()</a></li>
 <li class="fn"><a href="#oscal.oscal_implementation.append_impl_requirement">append_impl_requirement()</a></li>
-<li class="fn"><a href="#oscal.oscal_implementation.append_responsible_role">append_responsible_role()</a></li>
 </ul></details>
 <details open><summary><a href="#oscal.oscal_assessment">oscal.oscal_assessment</a></summary><ul>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan">class AssessmentPlan</a></li>
@@ -143,7 +141,7 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 <main>
 <div class="page-header">
 <h1>oscal — API reference</h1>
-<div class="muted">Version 3.2.0 · Generated 2026-08-30T19:32:49Z · 12 modules · 30 classes · 658 methods · 34 functions</div>
+<div class="muted">Version 3.2.0 · Generated 2026-08-31T18:37:45Z · 12 modules · 30 classes · 668 methods · 32 functions</div>
 </div>
 <section class="module" id="oscal.oscal_support">
 <h2 class="module-title">oscal.oscal_support<a class="anchor" href="#oscal.oscal_support" title="Link to this item">#</a></h2>
@@ -4957,6 +4955,61 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Profile.add_alter">
+<span class="badge method">method</span><code class="sig">def add_alter(self, control_id: str) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.add_alter" title="Link to this item">#</a>
+<pre class="doc">Ensure a ``modify.alters`` entry exists for *control_id* and return a safe copy.
+
+        Idempotent: creates the (initially empty) alter when absent, otherwise returns the
+        existing one unchanged. The document is only marked unsaved when an alter is
+        actually created. Used by :meth:`add_alter_adds` / :meth:`add_alter_removes`.
+
+        Args:
+            control_id (str, required): The control the alter targets.
+
+        Returns:
+            Optional[dict]: A safe copy of the alter, or None (read-only, or blank id).</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.add_alter_adds">
+<span class="badge method">method</span><code class="sig">def add_alter_adds(self, control_id: str, position: Optional[str] = None, by_id: Optional[str] = None, title: Optional[str] = None, params: Optional[list] = None, props: Optional[list] = None, links: Optional[list] = None, parts: Optional[list] = None) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.add_alter_adds" title="Link to this item">#</a>
+<pre class="doc">Add an ``adds`` (addition) to *control_id*&#x27;s alter, creating the alter if needed.
+
+        The addition is built from the supplied fields, pruned/validated through the
+        metaschema staging gate, then appended. At least one content field
+        (``title``/``params``/``props``/``links``/``parts``) must be supplied. The alter is
+        only created once the addition validates, so a rejected call leaves nothing behind.
+
+        Args:
+            control_id (str, required): The control the alter targets.
+            position (str, optional): ``before``/``after``/``starting``/``ending``.
+            by_id (str, optional): The id the addition is positioned relative to.
+            title (str, optional): A title to add.
+            params (list, optional): Parameter dicts to add.
+            props (list, optional): Property dicts to add.
+            links (list, optional): Link dicts to add.
+            parts (list, optional): Part dicts to add.
+
+        Returns:
+            Optional[dict]: A safe copy of the addition, or None on failure.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.add_alter_removes">
+<span class="badge method">method</span><code class="sig">def add_alter_removes(self, control_id: str, by_name: Optional[str] = None, by_class: Optional[str] = None, by_id: Optional[str] = None, by_item_name: Optional[str] = None, by_ns: Optional[str] = None) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.add_alter_removes" title="Link to this item">#</a>
+<pre class="doc">Add a ``removes`` (removal) to *control_id*&#x27;s alter, creating the alter if needed.
+
+        The removal is built from the supplied ``by-*`` selectors (at least one required),
+        validated through the metaschema staging gate, then appended. The alter is only
+        created once the removal validates, so a rejected call leaves nothing behind.
+
+        Args:
+            control_id (str, required): The control the alter targets.
+            by_name (str, optional): Match the named flag/field/part to remove.
+            by_class (str, optional): Match by ``class``.
+            by_id (str, optional): Match by ``id``.
+            by_item_name (str, optional): Match by item (element) name.
+            by_ns (str, optional): Match by namespace.
+
+        Returns:
+            Optional[dict]: A safe copy of the removal, or None on failure.</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Profile.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -5179,6 +5232,17 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Profile.get_alter">
+<span class="badge method">method</span><code class="sig">def get_alter(self, control_id: str) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.get_alter" title="Link to this item">#</a>
+<pre class="doc">Return a safe copy of the ``modify.alters`` entry for *control_id*.
+
+        Args:
+            control_id (str, required): The ``control-id`` of the alter to fetch.
+
+        Returns:
+            Optional[dict]: A deep copy of the alter (with its ``adds``/``removes``), or
+                None if no alter targets *control_id*.</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Profile.get_control_by_id">
 <span class="badge method">method</span><code class="sig">def get_control_by_id(self, control_id: str, depth: Optional[int] = None) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.get_control_by_id" title="Link to this item">#</a>
 <pre class="doc">Retrieve a control as a safe copy — from the resolved catalog if resolved,
@@ -5346,6 +5410,16 @@ backward compatibility.</pre>
         found or every branch is exhausted — so a ``role-id`` reference resolves even when
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.get_set_parameter">
+<span class="badge method">method</span><code class="sig">def get_set_parameter(self, param_id: str) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.get_set_parameter" title="Link to this item">#</a>
+<pre class="doc">Return a safe copy of the ``modify.set-parameters`` entry for *param_id*.
+
+        Args:
+            param_id (str, required): The ``param-id`` of the set-parameter to fetch.
+
+        Returns:
+            Optional[dict]: A deep copy of the set-parameter, or None if none matches.</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.ignore_import">
 <span class="badge method">method</span><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.ignore_import" title="Link to this item">#</a>
@@ -5687,6 +5761,43 @@ backward compatibility.</pre>
         Returns:
             dict: The freshly built root node of the recursive import tree.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Profile.remove_alter_adds">
+<span class="badge method">method</span><code class="sig">def remove_alter_adds(self, control_id: str, by_id: str, position: Optional[str] = None) -&gt; bool</code><a class="anchor" href="#oscal.oscal_controls.Profile.remove_alter_adds" title="Link to this item">#</a>
+<pre class="doc">Remove ``adds`` from *control_id*&#x27;s alter that match the given selectors.
+
+        Scope is the alter for *control_id*. ``by_id`` is required; ``position`` is
+        optional. Every addition whose supplied selectors **all** match is removed (so
+        ``by_id`` alone removes all additions with that ``by-id`` regardless of position;
+        adding ``position`` narrows it). An emptied ``adds`` array, an alter left with no
+        ``adds``/``removes``, an emptied ``alters`` array, and an emptied ``modify`` are all
+        pruned.
+
+        Args:
+            control_id (str, required): The control whose alter is edited.
+            by_id (str, required): Match additions with this ``by-id``.
+            position (str, optional): Also require this ``position``.
+
+        Returns:
+            bool: True if at least one addition was removed, else False.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.remove_alter_removes">
+<span class="badge method">method</span><code class="sig">def remove_alter_removes(self, control_id: str, by_name: Optional[str] = None, by_class: Optional[str] = None, by_id: Optional[str] = None, by_item_name: Optional[str] = None, by_ns: Optional[str] = None) -&gt; bool</code><a class="anchor" href="#oscal.oscal_controls.Profile.remove_alter_removes" title="Link to this item">#</a>
+<pre class="doc">Remove ``removes`` from *control_id*&#x27;s alter that match the given selectors.
+
+        Scope is the alter for *control_id*. Every removal whose **supplied** ``by-*``
+        selectors all match is deleted (unspecified selectors are ignored). With no
+        selector supplied, every removal for the control is deleted. An emptied ``removes``
+        array, an alter left with no ``adds``/``removes``, an emptied ``alters`` array, and
+        an emptied ``modify`` are all pruned.
+
+        Args:
+            control_id (str, required): The control whose alter is edited.
+            by_name, by_class, by_id, by_item_name, by_ns (str, optional): Selectors that
+                must match (all supplied ones) for a removal to be deleted.
+
+        Returns:
+            bool: True if at least one removal was removed, else False.</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Profile.remove_import">
 <span class="badge method">method</span><code class="sig">def remove_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.remove_import" title="Link to this item">#</a>
 <pre class="doc">Remove a first-level import statement from this document.
@@ -5715,6 +5826,19 @@ backward compatibility.</pre>
         Returns:
             True if an import was found and removed; False if not found, the
             cardinality forbids removal, or the content is read-only.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.remove_set_parameter">
+<span class="badge method">method</span><code class="sig">def remove_set_parameter(self, param_id: str) -&gt; bool</code><a class="anchor" href="#oscal.oscal_controls.Profile.remove_set_parameter" title="Link to this item">#</a>
+<pre class="doc">Remove the ``modify.set-parameters`` entry for *param_id*.
+
+        Prunes an emptied ``set-parameters`` array and an emptied ``modify`` object.
+
+        Args:
+            param_id (str, required): The ``param-id`` of the set-parameter to remove.
+
+        Returns:
+            bool: True if a set-parameter was removed, else False (no match, blank
+                ``param_id``, or read-only content).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.resolve">
 <span class="badge method">method</span><code class="sig">def resolve(self) -&gt; &#x27;ResolutionStatus&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.resolve" title="Link to this item">#</a>
@@ -6030,6 +6154,41 @@ backward compatibility.</pre>
 
         Returns:
             bool: True on success, or None when the content cannot be mutated.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.set_parameter">
+<span class="badge method">method</span><code class="sig">def set_parameter(self, param_id: str, class_: Optional[str] = None, props: Optional[list] = None, links: Optional[list] = None, label: Optional[str] = None, usage: Optional[str] = None, constraints: Optional[list] = None, guidelines: Optional[list] = None, values: Optional[list] = None, select_cardinality: Optional[str] = None, select_choices: Optional[list] = None) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.set_parameter" title="Link to this item">#</a>
+<pre class="doc">Create or update a ``modify.set-parameters`` entry (upsert, per-field merge).
+
+        When no ``set-parameter`` with *param_id* exists one is created from the supplied
+        fields. When one exists, each supplied field **overwrites** the corresponding
+        content; a field left as ``None`` leaves any existing content untouched. Most
+        commonly used to set a ``value`` or a ``constraint``.
+
+        ``values`` and the ``select`` form (``select_cardinality`` / ``select_choices``)
+        are the OSCAL mutually-exclusive choice: supplying both is rejected. Supplying
+        ``values`` clears any existing ``select`` (and vice versa). The assembled entry is
+        pruned/validated through the metaschema staging gate before it is committed, so an
+        invalid input leaves the profile unchanged.
+
+        Args:
+            param_id (str, required): The ``param-id`` this setting targets.
+            class_ (str, optional): The parameter ``class``.
+            props (list, optional): Property dicts.
+            links (list, optional): Link dicts.
+            label (str, optional): Parameter label (markup-line).
+            usage (str, optional): Usage prose (markup-multiline).
+            constraints (list, optional): Constraint dicts.
+            guidelines (list, optional): Guideline dicts.
+            values (list, optional): Parameter value strings. Mutually exclusive with the
+                ``select_*`` arguments.
+            select_cardinality (str, optional): ``select.how-many`` (e.g. &quot;one&quot;,
+                &quot;one-or-more&quot;).
+            select_choices (list, optional): ``select.choice`` value strings.
+
+        Returns:
+            Optional[dict]: A safe copy of the written ``set-parameter``, or None on
+                failure (missing/blank ``param_id``, both value and select supplied, a
+                wrong argument type, or a result that fails metaschema validation).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.supports">
 <span class="badge method">method</span><code class="sig">def supports(self, name: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.supports" title="Link to this item">#</a>
@@ -7203,6 +7362,32 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.SSP.add_by_component">
+<span class="badge method">method</span><code class="sig">def add_by_component(self, implemented_requirement_uuid: &#x27;str&#x27;, component_uuid: &#x27;str&#x27;, description: &#x27;str&#x27;, by_component_uuid: &#x27;str&#x27; = &#x27;&#x27;, implementation_status: &#x27;str&#x27; = &#x27;implemented&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.add_by_component" title="Link to this item">#</a>
+<pre class="doc">Add a by-component statement to one of the SSP&#x27;s implemented-requirements.
+
+        The by-component is **built from the supplied scalar fields** — no caller-provided
+        dict is stored verbatim — so it is schema-aligned by construction. It is appended
+        to the implemented-requirement identified by *implemented_requirement_uuid* and
+        returned as a safe copy (the live node stays in ``_dict``; further edits go through
+        methods). Through the method decorators this also enforces the read-only guard and
+        marks the document unsaved.
+
+        Args:
+            implemented_requirement_uuid (str, required): ``uuid`` of the target
+                implemented-requirement under ``control-implementation``.
+            component_uuid (str, required): UUID of the referenced system component.
+            description (str, required): How the component satisfies the requirement.
+            by_component_uuid (str, optional): UUID for the by-component; a new one is
+                generated when empty.
+            implementation_status (str, optional): ``implementation-status.state`` value.
+                Defaults to &quot;implemented&quot;.
+            remarks (str, optional): Remarks prose (markdown).
+
+        Returns:
+            Optional[dict]: A safe copy of the new by-component, or None when the SSP has
+                no implemented-requirement with that uuid.</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.SSP.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -8131,25 +8316,6 @@ Module constants:
 <pre class="doc">Return the content as a YAML string in canonical key order.</pre>
 </div>
 </section>
-<section class="class" id="oscal.oscal_implementation.append_by_component">
-<div class="member">
-<span class="badge function">function</span><code class="sig">def append_by_component(impl_req_obj: &#x27;dict&#x27;, component_uuid: &#x27;str&#x27;, description: &#x27;str&#x27;, by_component_uuid: &#x27;str&#x27; = &#x27;&#x27;, implementation_status: &#x27;str&#x27; = &#x27;implemented&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.append_by_component" title="Link to this item">#</a>
-<pre class="doc">Add a by-component statement to an implemented-requirement dict.
-
-    Args:
-        impl_req_obj (dict, required): The implemented-requirement dict to modify.
-        component_uuid (str, required): UUID of the referenced system component.
-        description (str, required): Description of how the component satisfies
-            the requirement.
-        by_component_uuid (str, optional): UUID for the by-component entry. A new
-            UUID is generated when empty.
-        implementation_status (str, optional): ``implementation-status.state`` value.
-            Defaults to &quot;implemented&quot;.
-        remarks (str, optional): Remarks prose (markdown).
-
-    Returns:
-        Optional[dict]: The newly created by-component dict, or None on failure.</pre>
-</div></section>
 <section class="class" id="oscal.oscal_implementation.append_component">
 <div class="member">
 <span class="badge function">function</span><code class="sig">def append_component(ssp_obj: &#x27;OSCAL&#x27;, component_type: &#x27;str&#x27;, component_title: &#x27;str&#x27;, component_description: &#x27;str&#x27;, op_status: &#x27;str&#x27; = &#x27;operational&#x27;, component_uuid: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], links: &#x27;list&#x27; = [], remarks: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.append_component" title="Link to this item">#</a>
@@ -8186,20 +8352,6 @@ Module constants:
     Returns:
         Optional[dict]: The newly created implemented-requirement dict (with a
             generated UUID), or None on failure.</pre>
-</div></section>
-<section class="class" id="oscal.oscal_implementation.append_responsible_role">
-<div class="member">
-<span class="badge function">function</span><code class="sig">def append_responsible_role(oscal_obj: &#x27;dict&#x27;, role_id: &#x27;str&#x27;, party_uuids: &#x27;list&#x27; = [], remarks: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;dict&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.append_responsible_role" title="Link to this item">#</a>
-<pre class="doc">Add a responsible-role entry to an OSCAL object dict.
-
-    Args:
-        oscal_obj (dict, required): The parent OSCAL dict to add the role to.
-        role_id (str, required): The ID of the role being assigned.
-        party_uuids (list, optional): UUIDs of the parties fulfilling the role.
-        remarks (str, optional): Remarks prose (markdown).
-
-    Returns:
-        dict: The newly created responsible-role dict.</pre>
 </div></section>
 </section>
 <section class="module" id="oscal.oscal_assessment">

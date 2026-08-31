@@ -3,12 +3,12 @@ Unit tests for SSP and implementation-specific methods:
     SSP class methods (require system-implementation / control-implementation sections):
     - SSP.append_component()
     - SSP.append_impl_requirement()
+    - SSP.add_by_component()   (converted from a module function)
 
-    Module-level functions (take raw dict or SSP object):
-    - append_component()      (oscal_implementation module fn)
-    - append_impl_requirement() (oscal_implementation module fn)
-    - append_by_component()
-    - append_responsible_role()
+    Module-level entry points:
+    - append_component()        (oscal_implementation module fn; delegates to the method)
+    - append_impl_requirement() (oscal_implementation module fn; delegates to the method)
+    - _append_responsible_role() (internal cross-model helper; returns a safe copy)
 
 Note: SSP.new() produces a minimal SSP template that does NOT contain
 system-implementation or control-implementation sections. Methods that
@@ -23,10 +23,9 @@ import pytest
 from oscal import OSCAL
 from oscal.oscal_implementation import (
     SSP,
-    append_by_component,
     append_component,
     append_impl_requirement,
-    append_responsible_role,
+    _append_responsible_role,
 )
 
 _HERE = os.path.dirname(__file__)
@@ -43,12 +42,14 @@ def fresh_ssp():
 
 
 @pytest.fixture
-def impl_req_dict():
-    """A bare implemented-requirement dict for use with append_by_component."""
-    return {
-        "uuid": "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff",
-        "control-id": "ac-1",
-    }
+def ssp_with_ir():
+    """A loaded SSP plus the uuid of a freshly added implemented-requirement.
+
+    Returns ``(ssp, impl_requirement_uuid)`` for exercising ``add_by_component``.
+    """
+    ssp = OSCAL.load(_SSP_FIXTURE)
+    ir = ssp.append_impl_requirement("ac-by-comp-test")
+    return ssp, ir["uuid"]
 
 
 # ===========================================================================
@@ -168,127 +169,123 @@ class TestModuleAppendImplRequirement:
 
 
 # ===========================================================================
-# append_by_component()
+# SSP.add_by_component() — instance method (converted from a module function)
 # ===========================================================================
-class TestAppendByComponent:
+class TestAddByComponent:
 
-    def test_returns_dict(self, impl_req_dict):
-        """append_by_component() returns a dict."""
-        comp_uuid = "aaaaaaaa-1111-4222-8333-444444444444"
-        result = append_by_component(impl_req_dict, comp_uuid, "Description text.")
-        assert result is not None
+    def test_returns_dict(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp-uuid", "Description text.")
         assert isinstance(result, dict)
 
-    def test_component_uuid_set(self, impl_req_dict):
-        """append_by_component() stores the component-uuid."""
-        comp_uuid = "bbbbbbbb-2222-4333-8444-555555555555"
-        result = append_by_component(impl_req_dict, comp_uuid, "Desc")
-        assert result.get("component-uuid") == comp_uuid
+    def test_component_uuid_set(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp-xyz", "Desc")
+        assert result.get("component-uuid") == "comp-xyz"
 
-    def test_uuid_set(self, impl_req_dict):
-        """append_by_component() sets a uuid on the result."""
-        result = append_by_component(impl_req_dict, "comp-uuid", "Desc")
+    def test_generated_uuid(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp", "Desc")
         assert result.get("uuid") not in (None, "")
 
-    def test_explicit_uuid_used(self, impl_req_dict):
-        """append_by_component() uses the provided by_component_uuid."""
-        explicit_uuid = "cccccccc-3333-4444-8555-666666666666"
-        result = append_by_component(impl_req_dict, "comp-uuid", "Desc",
-                                     by_component_uuid=explicit_uuid)
-        assert result.get("uuid") == explicit_uuid
+    def test_explicit_uuid_used(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        explicit = "cccccccc-3333-4444-8555-666666666666"
+        result = ssp.add_by_component(ir_uuid, "comp", "Desc", by_component_uuid=explicit)
+        assert result.get("uuid") == explicit
 
-    def test_has_description(self, impl_req_dict):
-        """append_by_component() stores the description string."""
-        result = append_by_component(impl_req_dict, "comp-uuid", "Description text.")
+    def test_has_description(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp", "Description text.")
         assert result.get("description") == "Description text."
 
-    def test_has_implementation_status(self, impl_req_dict):
-        """append_by_component() adds an implementation-status dict."""
-        result = append_by_component(impl_req_dict, "comp-uuid", "Desc")
-        assert "implementation-status" in result
-
-    def test_implementation_status_default_is_implemented(self, impl_req_dict):
-        """append_by_component() defaults implementation_status to 'implemented'."""
-        result = append_by_component(impl_req_dict, "comp-uuid", "Desc")
+    def test_default_status_is_implemented(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp", "Desc")
         assert result["implementation-status"]["state"] == "implemented"
 
-    def test_custom_implementation_status(self, impl_req_dict):
-        """append_by_component() sets a custom implementation_status."""
-        result = append_by_component(impl_req_dict, "comp-uuid", "Desc",
-                                     implementation_status="planned")
+    def test_custom_status(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp", "Desc", implementation_status="planned")
         assert result["implementation-status"]["state"] == "planned"
 
-    def test_remarks_added_when_provided(self, impl_req_dict):
-        """append_by_component() stores remarks when provided."""
-        result = append_by_component(impl_req_dict, "comp-uuid", "Desc",
-                                     remarks="These are remarks.")
+    def test_remarks(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        result = ssp.add_by_component(ir_uuid, "comp", "Desc", remarks="These are remarks.")
         assert result.get("remarks") == "These are remarks."
 
-    def test_appended_to_impl_req(self, impl_req_dict):
-        """append_by_component() appends itself to impl_req's by-components list."""
-        before = len(impl_req_dict.get("by-components", []))
-        append_by_component(impl_req_dict, "comp-uuid", "Desc")
-        after = len(impl_req_dict.get("by-components", []))
-        assert after == before + 1
+    def test_appended_to_impl_req(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        ssp.add_by_component(ir_uuid, "comp", "Desc")
+        irs = ssp._dict["system-security-plan"]["control-implementation"]["implemented-requirements"]
+        target = next(ir for ir in irs if ir["uuid"] == ir_uuid)
+        assert len(target.get("by-components", [])) == 1
+
+    def test_unknown_impl_req_returns_none(self, ssp_with_ir):
+        ssp, _ = ssp_with_ir
+        assert ssp.add_by_component("no-such-uuid", "comp", "Desc") is None
+
+    def test_returns_safe_copy(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        bc = ssp.add_by_component(ir_uuid, "comp", "Desc")
+        bc["description"] = "MUTATED"
+        irs = ssp._dict["system-security-plan"]["control-implementation"]["implemented-requirements"]
+        target = next(ir for ir in irs if ir["uuid"] == ir_uuid)
+        assert all(b.get("description") != "MUTATED" for b in target["by-components"])
+
+    def test_marks_unsaved(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        ssp.is_unsaved = False
+        ssp.add_by_component(ir_uuid, "comp", "Desc")
+        assert ssp.is_unsaved is True
+
+    def test_read_only_guard(self, ssp_with_ir):
+        ssp, ir_uuid = ssp_with_ir
+        ssp.is_read_only = True
+        assert ssp.add_by_component(ir_uuid, "comp", "Desc") is None
 
 
 # ===========================================================================
-# append_responsible_role()
+# _append_responsible_role() — internal cross-model helper
 # ===========================================================================
-class TestAppendResponsibleRole:
+class TestAppendResponsibleRoleHelper:
 
     def test_returns_dict(self):
-        """append_responsible_role() returns a dict."""
-        parent = {}
-        result = append_responsible_role(parent, "isso")
-        assert result is not None
-        assert isinstance(result, dict)
+        assert isinstance(_append_responsible_role({}, "isso"), dict)
 
     def test_role_id_stored(self):
-        """append_responsible_role() stores the role-id."""
-        parent = {}
-        result = append_responsible_role(parent, "system-owner")
-        assert result.get("role-id") == "system-owner"
+        assert _append_responsible_role({}, "system-owner")["role-id"] == "system-owner"
 
     def test_appended_to_parent(self):
-        """append_responsible_role() appends the role to parent's responsible-roles list."""
         parent = {}
-        before = len(parent.get("responsible-roles", []))
-        append_responsible_role(parent, "isso")
-        after = len(parent.get("responsible-roles", []))
-        assert after == before + 1
+        _append_responsible_role(parent, "isso")
+        assert len(parent.get("responsible-roles", [])) == 1
 
     def test_party_uuids_added(self):
-        """append_responsible_role() stores the party-uuids list."""
-        parent = {}
-        uuids = ["uuid-1111", "uuid-2222"]
-        result = append_responsible_role(parent, "isso", party_uuids=uuids)
+        result = _append_responsible_role({}, "isso", party_uuids=["uuid-1111", "uuid-2222"])
         assert result.get("party-uuids") == ["uuid-1111", "uuid-2222"]
 
     def test_no_party_uuids_by_default(self):
-        """append_responsible_role() with no party_uuids omits the key."""
-        parent = {}
-        result = append_responsible_role(parent, "isso")
-        assert "party-uuids" not in result
+        assert "party-uuids" not in _append_responsible_role({}, "isso")
 
     def test_remarks_added_when_provided(self):
-        """append_responsible_role() stores remarks when provided."""
-        parent = {}
-        result = append_responsible_role(parent, "isso", remarks="Role remarks here.")
-        assert result.get("remarks") == "Role remarks here."
+        assert _append_responsible_role({}, "isso", remarks="Role remarks here.")["remarks"] \
+            == "Role remarks here."
 
     def test_no_remarks_by_default(self):
-        """append_responsible_role() with no remarks omits the key."""
-        parent = {}
-        result = append_responsible_role(parent, "isso")
-        assert "remarks" not in result
+        assert "remarks" not in _append_responsible_role({}, "isso")
 
     def test_multiple_roles_on_same_parent(self):
-        """append_responsible_role() can be called multiple times on the same parent."""
         parent = {}
-        append_responsible_role(parent, "isso")
-        append_responsible_role(parent, "system-owner")
+        _append_responsible_role(parent, "isso")
+        _append_responsible_role(parent, "system-owner")
         assert len(parent.get("responsible-roles", [])) == 2
+
+    def test_returns_safe_copy(self):
+        parent = {}
+        rr = _append_responsible_role(parent, "isso", party_uuids=["u1"])
+        rr["party-uuids"].append("INJECT")
+        assert parent["responsible-roles"][0]["party-uuids"] == ["u1"]
 
 
 # ===========================================================================
@@ -319,3 +316,43 @@ class TestSSPMutatorReturnsCopy:
         stored = ssp._dict["system-security-plan"]["control-implementation"]["implemented-requirements"]
         assert any(r.get("control-id") == "copy-test-ctl" for r in stored)
         assert all(r.get("control-id") != "MUTATED" for r in stored)
+
+
+# ===========================================================================
+# Mutations mark the document unsaved (is_unsaved)
+# ===========================================================================
+class TestMutationMarksUnsaved:
+    """Every content mutation must set is_unsaved=True — including the module-level
+    append_* entry points, which previously mutated _dict without flagging it."""
+
+    @staticmethod
+    def _loaded_ssp():
+        ssp = OSCAL.load(_SSP_FIXTURE)
+        ssp.is_unsaved = False   # baseline: pretend it was just saved
+        return ssp
+
+    def test_method_append_component(self):
+        ssp = self._loaded_ssp()
+        ssp.append_component("software", "C", "D")
+        assert ssp.is_unsaved is True
+
+    def test_method_append_impl_requirement(self):
+        ssp = self._loaded_ssp()
+        ssp.append_impl_requirement("ac-1")
+        assert ssp.is_unsaved is True
+
+    def test_module_append_component(self):
+        ssp = self._loaded_ssp()
+        append_component(ssp, "software", "C", "D")
+        assert ssp.is_unsaved is True
+
+    def test_module_append_impl_requirement(self):
+        ssp = self._loaded_ssp()
+        append_impl_requirement(ssp, "ac-1")
+        assert ssp.is_unsaved is True
+
+    def test_module_append_component_respects_read_only(self):
+        ssp = self._loaded_ssp()
+        ssp.is_read_only = True
+        assert append_component(ssp, "software", "C", "D") is None
+        assert ssp.is_unsaved is False   # nothing mutated -> stays saved
