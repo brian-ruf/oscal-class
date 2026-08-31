@@ -236,6 +236,23 @@ class TestFlat:
         root_ids = {c["id"] for c in p.catalog._dict["catalog"].get("controls", [])}
         assert {"ac-1", "ac-2", "au-1", "au-2"} <= root_ids
 
+    def test_flat_tree_hoists_enhancements_to_root(self, src_path):
+        # ac-1.1 is a child control of ac-1 in the source; flat must place it at the root,
+        # not beneath ac-1, and leave no control with nested children.
+        p = _baseline(src_path, {"flat": True})
+        root_ids = {n["id"] for n in p.controls_tree}
+        assert {"ac-1", "ac-1.1", "ac-2", "au-1", "au-2"} <= root_ids
+        assert all(not n.get("children") for n in p.controls_tree)
+
+    def test_flat_resolved_enhancement_not_nested(self, src_path):
+        p = _baseline(src_path, {"flat": True})
+        p.resolve()
+        root = p.catalog._dict["catalog"]
+        assert "ac-1.1" in {c["id"] for c in root.get("controls", [])}
+        nested = [ch["id"] for c in root.get("controls", []) for ch in c.get("controls", [])]
+        assert nested == []          # no enhancement remains nested under a control
+        assert p.catalog.is_valid
+
 
 # ===========================================================================
 # selection via include/exclude
