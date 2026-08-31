@@ -3000,12 +3000,14 @@ class Profile(OSCAL):
     def _index_node_is_object(node: dict) -> bool:
         """Whether a metaschema index node maps to a JSON object (vs a scalar leaf).
 
-        Assemblies and any field carrying flags, sub-fields, or a JSON value key are
-        objects; a bare field (e.g. ``with-id``, a token) is a scalar.
+        Assemblies are objects, and so is a field that carries flags (its flag children).
+        A field with **no flags** serializes as a scalar even when it declares a
+        ``json-value-key`` — a flag-less ``markup-line``/``markup-multiline`` field such as
+        a ``select`` ``choice`` or a ``label`` is a plain string in JSON, not an object.
         """
         if node.get("structure-type") == "assembly":
             return True
-        return bool(node.get("children")) or bool(node.get("json-value-key"))
+        return any(c.get("structure-type") == "flag" for c in node.get("children", []))
 
     def _prune_instance_to_index(self, value: Any, node: dict, location: str,
                                  dropped: list, errors: list) -> Any:
@@ -3326,6 +3328,508 @@ class Profile(OSCAL):
         return copy.deepcopy(candidate)
 
     # =========================================================================
+    # modify directive authoring (set-parameters + alters/adds/removes)
+    # =========================================================================
+    def _modify_index_node(self, *names: str) -> Optional[dict]:
+        """Return a metaschema index node under ``profile/modify`` (or None).
+
+        ``_modify_index_node("set-parameter")`` → the parameter-setting node;
+        ``_modify_index_node("alter", "add")`` → the addition node, etc.
+        """
+        index = self._support.get_metaschema_index(self.oscal_version, self.model)
+        if not index:
+            return None
+        node = index.get("nodes")
+        if not isinstance(node, dict):
+            return None
+        node = self._find_child_node(node, "modify")
+        for name in names:
+            if node is None:
+                return None
+            node = self._find_child_node(node, name)
+        return node
+
+    def _find_alter_node(self, control_id: str) -> Optional[dict]:
+        """Return the live ``alters`` entry for *control_id*, or None."""
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        modify = root.get("modify") or {}
+        for alter in modify.get("alters", []):
+            if isinstance(alter, dict) and alter.get("control-id") == control_id:
+                return alter
+        return None
+
+    def _find_set_parameter_node(self, param_id: str) -> Optional[dict]:
+        """Return the live ``set-parameters`` entry for *param_id*, or None."""
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        modify = root.get("modify") or {}
+        for setp in modify.get("set-parameters", []):
+            if isinstance(setp, dict) and setp.get("param-id") == param_id:
+                return setp
+        return None
+
+    def _prune_empty_modify(self) -> None:
+        """Drop the ``modify`` object when it has no ``set-parameters`` or ``alters`` left."""
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        if not root.get("modify"):
+            root.pop("modify", None)
+
+    def _ensure_alter_node(self, control_id: str) -> tuple[dict, bool]:
+        """Return ``(live_alter, created)`` for *control_id*, creating the alter (and the
+        ``modify``/``alters`` containers) when absent. Callers own dirty-state bookkeeping."""
+        alter = self._find_alter_node(control_id)
+        if alter is not None:
+            return alter, False
+        alters = self._dict.setdefault(self.model, {}).setdefault("modify", {}).setdefault("alters", [])
+        alter = {"control-id": control_id}
+        alters.append(alter)
+        return alter, True
+
+    def _cleanup_alter(self, alter: dict) -> None:
+        """Drop *alter* if it has no ``adds``/``removes`` left, and prune emptied containers.
+
+        Leaves no empty ``adds``/``removes`` array, no ``alter`` holding only its
+        ``control-id``, no empty ``alters`` array, and no empty ``modify`` object.
+        """
+        if alter.get("adds") or alter.get("removes"):
+            return
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        modify = root.get("modify") or {}
+        alters = modify.get("alters", [])
+        try:
+            alters.remove(alter)
+        except ValueError:
+            pass
+        if not alters:
+            modify.pop("alters", None)
+        self._prune_empty_modify()
+
+    def _after_modify_changed(self) -> None:
+        """Invalidate the cached modify index after a ``modify`` edit (JIT reads rebuild)."""
+        self._modify_idx = None
+
+    # -------------------------------------------------------------------------
+    @requires(is_read_only=False)
+    @if_update_successful
+    def set_parameter(self, param_id: str, class_: Optional[str] = None,
+                      props: Optional[list] = None, links: Optional[list] = None,
+                      label: Optional[str] = None, usage: Optional[str] = None,
+                      constraints: Optional[list] = None, guidelines: Optional[list] = None,
+                      values: Optional[list] = None,
+                      select_cardinality: Optional[str] = None,
+                      select_choices: Optional[list] = None) -> Optional[dict]:
+        """Create or update a ``modify.set-parameters`` entry (upsert, per-field merge).
+
+        When no ``set-parameter`` with *param_id* exists one is created from the supplied
+        fields. When one exists, each supplied field **overwrites** the corresponding
+        content; a field left as ``None`` leaves any existing content untouched. Most
+        commonly used to set a ``value`` or a ``constraint``.
+
+        ``values`` and the ``select`` form (``select_cardinality`` / ``select_choices``)
+        are the OSCAL mutually-exclusive choice: supplying both is rejected. Supplying
+        ``values`` clears any existing ``select`` (and vice versa). The assembled entry is
+        pruned/validated through the metaschema staging gate before it is committed, so an
+        invalid input leaves the profile unchanged.
+
+        Args:
+            param_id (str, required): The ``param-id`` this setting targets.
+            class_ (str, optional): The parameter ``class``.
+            props (list, optional): Property dicts.
+            links (list, optional): Link dicts.
+            label (str, optional): Parameter label (markup-line).
+            usage (str, optional): Usage prose (markup-multiline).
+            constraints (list, optional): Constraint dicts.
+            guidelines (list, optional): Guideline dicts.
+            values (list, optional): Parameter value strings. Mutually exclusive with the
+                ``select_*`` arguments.
+            select_cardinality (str, optional): ``select.how-many`` (e.g. "one",
+                "one-or-more").
+            select_choices (list, optional): ``select.choice`` value strings.
+
+        Returns:
+            Optional[dict]: A safe copy of the written ``set-parameter``, or None on
+                failure (missing/blank ``param_id``, both value and select supplied, a
+                wrong argument type, or a result that fails metaschema validation).
+        """
+        if not isinstance(self._dict, dict):
+            logger.error("set_parameter: profile content is not available.")
+            return None
+        if not param_id or not isinstance(param_id, str):
+            logger.error("set_parameter: 'param_id' is required.")
+            return None
+        wants_values = values is not None
+        wants_select = select_cardinality is not None or select_choices is not None
+        if wants_values and wants_select:
+            logger.error("set_parameter: 'values' and 'select_*' are mutually exclusive.")
+            return None
+        for name, val in (("props", props), ("links", links), ("constraints", constraints),
+                          ("guidelines", guidelines), ("values", values),
+                          ("select_choices", select_choices)):
+            if val is not None and not isinstance(val, list):
+                logger.error(f"set_parameter: '{name}' must be a list.")
+                return None
+
+        # Find any existing entry (without creating containers yet — a rejected update
+        # must not leave an empty modify/set-parameters behind).
+        root = self._dict.get(self.model, {})
+        setps = (root.get("modify") or {}).get("set-parameters", []) if isinstance(root, dict) else []
+        existing = next((sp for sp in setps
+                         if isinstance(sp, dict) and sp.get("param-id") == param_id), None)
+
+        candidate: dict[str, Any] = copy.deepcopy(existing) if existing else {}
+        candidate["param-id"] = param_id
+        for key, val in (("class", class_), ("props", props), ("links", links),
+                         ("label", label), ("usage", usage), ("constraints", constraints),
+                         ("guidelines", guidelines)):
+            if val is not None:
+                candidate[key] = val
+        if wants_values:
+            candidate["values"] = values
+            candidate.pop("select", None)
+        elif wants_select:
+            select = copy.deepcopy(candidate.get("select")) if isinstance(candidate.get("select"), dict) else {}
+            if select_cardinality is not None:
+                select["how-many"] = select_cardinality
+            if select_choices is not None:
+                select["choice"] = select_choices
+            candidate["select"] = select
+            candidate.pop("values", None)
+
+        # Canonical field order for a clean, valid serialization.
+        order = ["param-id", "class", "depends-on", "props", "links", "label", "usage",
+                 "constraints", "guidelines", "values", "select"]
+        ordered = {k: candidate[k] for k in order if k in candidate}
+        for key, val in candidate.items():
+            ordered.setdefault(key, val)
+
+        node = self._modify_index_node("set-parameter")
+        if node is not None:
+            ordered, dropped, errors = self._stage_against_index(
+                ordered, node, "/profile/modify/set-parameters")
+            if dropped:
+                logger.warning(f"set_parameter: dropped keys not permitted by the schema: {dropped}")
+            if errors:
+                logger.error("set_parameter: result is not valid OSCAL: "
+                             f"{self._format_index_errors(errors)}")
+                return None
+
+        # COMMIT (containers created only now).
+        setps = self._dict.setdefault(self.model, {}).setdefault("modify", {}).setdefault("set-parameters", [])
+        if existing is not None and existing in setps:
+            setps[setps.index(existing)] = ordered
+        else:
+            setps.append(ordered)
+        self._after_modify_changed()
+        return copy.deepcopy(ordered)
+
+    # -------------------------------------------------------------------------
+    def add_alter(self, control_id: str) -> Optional[dict]:
+        """Ensure a ``modify.alters`` entry exists for *control_id* and return a safe copy.
+
+        Idempotent: creates the (initially empty) alter when absent, otherwise returns the
+        existing one unchanged. The document is only marked unsaved when an alter is
+        actually created. Used by :meth:`add_alter_adds` / :meth:`add_alter_removes`.
+
+        Args:
+            control_id (str, required): The control the alter targets.
+
+        Returns:
+            Optional[dict]: A safe copy of the alter, or None (read-only, or blank id).
+        """
+        if not self._can_mutate("add_alter"):
+            return None
+        if not control_id or not isinstance(control_id, str):
+            logger.error("add_alter: 'control_id' is required.")
+            return None
+        alter, created = self._ensure_alter_node(control_id)
+        if created:
+            self._after_modify_changed()
+            self.is_unsaved = True
+            self.last_modified = oscal_date_time_with_timezone()
+            self._on_content_mutated()
+        return copy.deepcopy(alter)
+
+    # -------------------------------------------------------------------------
+    @requires(is_read_only=False)
+    @if_update_successful
+    def add_alter_adds(self, control_id: str, position: Optional[str] = None,
+                       by_id: Optional[str] = None, title: Optional[str] = None,
+                       params: Optional[list] = None, props: Optional[list] = None,
+                       links: Optional[list] = None, parts: Optional[list] = None) -> Optional[dict]:
+        """Add an ``adds`` (addition) to *control_id*'s alter, creating the alter if needed.
+
+        The addition is built from the supplied fields, pruned/validated through the
+        metaschema staging gate, then appended. At least one content field
+        (``title``/``params``/``props``/``links``/``parts``) must be supplied. The alter is
+        only created once the addition validates, so a rejected call leaves nothing behind.
+
+        Args:
+            control_id (str, required): The control the alter targets.
+            position (str, optional): ``before``/``after``/``starting``/``ending``.
+            by_id (str, optional): The id the addition is positioned relative to.
+            title (str, optional): A title to add.
+            params (list, optional): Parameter dicts to add.
+            props (list, optional): Property dicts to add.
+            links (list, optional): Link dicts to add.
+            parts (list, optional): Part dicts to add.
+
+        Returns:
+            Optional[dict]: A safe copy of the addition, or None on failure.
+        """
+        if not isinstance(self._dict, dict):
+            logger.error("add_alter_adds: profile content is not available.")
+            return None
+        if not control_id or not isinstance(control_id, str):
+            logger.error("add_alter_adds: 'control_id' is required.")
+            return None
+        if all(x is None for x in (title, params, props, links, parts)):
+            logger.error("add_alter_adds: provide at least one of "
+                         "title/params/props/links/parts.")
+            return None
+        for name, val in (("params", params), ("props", props), ("links", links), ("parts", parts)):
+            if val is not None and not isinstance(val, list):
+                logger.error(f"add_alter_adds: '{name}' must be a list.")
+                return None
+
+        addition: dict[str, Any] = {}
+        for key, val in (("position", position), ("by-id", by_id), ("title", title),
+                         ("params", params), ("props", props), ("links", links), ("parts", parts)):
+            if val is not None:
+                addition[key] = val
+
+        node = self._modify_index_node("alter", "add")
+        if node is not None:
+            addition, dropped, errors = self._stage_against_index(
+                addition, node, "/profile/modify/alters/adds")
+            if dropped:
+                logger.warning(f"add_alter_adds: dropped keys not permitted by the schema: {dropped}")
+            if errors:
+                logger.error("add_alter_adds: addition is not valid OSCAL: "
+                             f"{self._format_index_errors(errors)}")
+                return None
+
+        alter, _ = self._ensure_alter_node(control_id)
+        alter.setdefault("adds", []).append(addition)
+        self._after_modify_changed()
+        return copy.deepcopy(addition)
+
+    # -------------------------------------------------------------------------
+    @requires(is_read_only=False)
+    @if_update_successful
+    def add_alter_removes(self, control_id: str, by_name: Optional[str] = None,
+                          by_class: Optional[str] = None, by_id: Optional[str] = None,
+                          by_item_name: Optional[str] = None,
+                          by_ns: Optional[str] = None) -> Optional[dict]:
+        """Add a ``removes`` (removal) to *control_id*'s alter, creating the alter if needed.
+
+        The removal is built from the supplied ``by-*`` selectors (at least one required),
+        validated through the metaschema staging gate, then appended. The alter is only
+        created once the removal validates, so a rejected call leaves nothing behind.
+
+        Args:
+            control_id (str, required): The control the alter targets.
+            by_name (str, optional): Match the named flag/field/part to remove.
+            by_class (str, optional): Match by ``class``.
+            by_id (str, optional): Match by ``id``.
+            by_item_name (str, optional): Match by item (element) name.
+            by_ns (str, optional): Match by namespace.
+
+        Returns:
+            Optional[dict]: A safe copy of the removal, or None on failure.
+        """
+        if not isinstance(self._dict, dict):
+            logger.error("add_alter_removes: profile content is not available.")
+            return None
+        if not control_id or not isinstance(control_id, str):
+            logger.error("add_alter_removes: 'control_id' is required.")
+            return None
+        if all(x is None for x in (by_name, by_class, by_id, by_item_name, by_ns)):
+            logger.error("add_alter_removes: provide at least one 'by-*' selector.")
+            return None
+
+        removal: dict[str, Any] = {}
+        for key, val in (("by-name", by_name), ("by-class", by_class), ("by-id", by_id),
+                         ("by-item-name", by_item_name), ("by-ns", by_ns)):
+            if val is not None:
+                removal[key] = val
+
+        node = self._modify_index_node("alter", "remove")
+        if node is not None:
+            removal, dropped, errors = self._stage_against_index(
+                removal, node, "/profile/modify/alters/removes")
+            if dropped:
+                logger.warning(f"add_alter_removes: dropped keys not permitted by the schema: {dropped}")
+            if errors:
+                logger.error("add_alter_removes: removal is not valid OSCAL: "
+                             f"{self._format_index_errors(errors)}")
+                return None
+
+        alter, _ = self._ensure_alter_node(control_id)
+        alter.setdefault("removes", []).append(removal)
+        self._after_modify_changed()
+        return copy.deepcopy(removal)
+
+    # -------------------------------------------------------------------------
+    def remove_alter_adds(self, control_id: str, by_id: str,
+                          position: Optional[str] = None) -> bool:
+        """Remove ``adds`` from *control_id*'s alter that match the given selectors.
+
+        Scope is the alter for *control_id*. ``by_id`` is required; ``position`` is
+        optional. Every addition whose supplied selectors **all** match is removed (so
+        ``by_id`` alone removes all additions with that ``by-id`` regardless of position;
+        adding ``position`` narrows it). An emptied ``adds`` array, an alter left with no
+        ``adds``/``removes``, an emptied ``alters`` array, and an emptied ``modify`` are all
+        pruned.
+
+        Args:
+            control_id (str, required): The control whose alter is edited.
+            by_id (str, required): Match additions with this ``by-id``.
+            position (str, optional): Also require this ``position``.
+
+        Returns:
+            bool: True if at least one addition was removed, else False.
+        """
+        if not self._can_mutate("remove_alter_adds"):
+            return False
+        if not control_id or not by_id:
+            logger.error("remove_alter_adds: 'control_id' and 'by_id' are required.")
+            return False
+        alter = self._find_alter_node(control_id)
+        if alter is None:
+            return False
+
+        adds = alter.get("adds", [])
+
+        def _matches(add: dict) -> bool:
+            if add.get("by-id") != by_id:
+                return False
+            if position is not None and add.get("position") != position:
+                return False
+            return True
+
+        kept = [a for a in adds if not (isinstance(a, dict) and _matches(a))]
+        if len(kept) == len(adds):
+            return False
+        if kept:
+            alter["adds"] = kept
+        else:
+            alter.pop("adds", None)
+        self._cleanup_alter(alter)
+        self._after_modify_changed()
+        self.is_unsaved = True
+        self.last_modified = oscal_date_time_with_timezone()
+        self._on_content_mutated()
+        return True
+
+    # -------------------------------------------------------------------------
+    def remove_alter_removes(self, control_id: str, by_name: Optional[str] = None,
+                             by_class: Optional[str] = None, by_id: Optional[str] = None,
+                             by_item_name: Optional[str] = None,
+                             by_ns: Optional[str] = None) -> bool:
+        """Remove ``removes`` from *control_id*'s alter that match the given selectors.
+
+        Scope is the alter for *control_id*. Every removal whose **supplied** ``by-*``
+        selectors all match is deleted (unspecified selectors are ignored). With no
+        selector supplied, every removal for the control is deleted. An emptied ``removes``
+        array, an alter left with no ``adds``/``removes``, an emptied ``alters`` array, and
+        an emptied ``modify`` are all pruned.
+
+        Args:
+            control_id (str, required): The control whose alter is edited.
+            by_name, by_class, by_id, by_item_name, by_ns (str, optional): Selectors that
+                must match (all supplied ones) for a removal to be deleted.
+
+        Returns:
+            bool: True if at least one removal was removed, else False.
+        """
+        if not self._can_mutate("remove_alter_removes"):
+            return False
+        if not control_id:
+            logger.error("remove_alter_removes: 'control_id' is required.")
+            return False
+        alter = self._find_alter_node(control_id)
+        if alter is None:
+            return False
+
+        passed = {k: v for k, v in (("by-name", by_name), ("by-class", by_class),
+                                    ("by-id", by_id), ("by-item-name", by_item_name),
+                                    ("by-ns", by_ns)) if v is not None}
+        removes = alter.get("removes", [])
+        kept = [r for r in removes
+                if not (isinstance(r, dict) and all(r.get(k) == v for k, v in passed.items()))]
+        if len(kept) == len(removes):
+            return False
+        if kept:
+            alter["removes"] = kept
+        else:
+            alter.pop("removes", None)
+        self._cleanup_alter(alter)
+        self._after_modify_changed()
+        self.is_unsaved = True
+        self.last_modified = oscal_date_time_with_timezone()
+        self._on_content_mutated()
+        return True
+
+    # -------------------------------------------------------------------------
+    def get_set_parameter(self, param_id: str) -> Optional[dict]:
+        """Return a safe copy of the ``modify.set-parameters`` entry for *param_id*.
+
+        Args:
+            param_id (str, required): The ``param-id`` of the set-parameter to fetch.
+
+        Returns:
+            Optional[dict]: A deep copy of the set-parameter, or None if none matches.
+        """
+        setp = self._find_set_parameter_node(param_id)
+        return copy.deepcopy(setp) if setp is not None else None
+
+    # -------------------------------------------------------------------------
+    def get_alter(self, control_id: str) -> Optional[dict]:
+        """Return a safe copy of the ``modify.alters`` entry for *control_id*.
+
+        Args:
+            control_id (str, required): The ``control-id`` of the alter to fetch.
+
+        Returns:
+            Optional[dict]: A deep copy of the alter (with its ``adds``/``removes``), or
+                None if no alter targets *control_id*.
+        """
+        alter = self._find_alter_node(control_id)
+        return copy.deepcopy(alter) if alter is not None else None
+
+    # -------------------------------------------------------------------------
+    def remove_set_parameter(self, param_id: str) -> bool:
+        """Remove the ``modify.set-parameters`` entry for *param_id*.
+
+        Prunes an emptied ``set-parameters`` array and an emptied ``modify`` object.
+
+        Args:
+            param_id (str, required): The ``param-id`` of the set-parameter to remove.
+
+        Returns:
+            bool: True if a set-parameter was removed, else False (no match, blank
+                ``param_id``, or read-only content).
+        """
+        if not self._can_mutate("remove_set_parameter"):
+            return False
+        if not param_id:
+            logger.error("remove_set_parameter: 'param_id' is required.")
+            return False
+        setp = self._find_set_parameter_node(param_id)
+        if setp is None:
+            return False
+        modify = self._dict.get(self.model, {}).get("modify", {})
+        setps = modify.get("set-parameters", [])
+        setps.remove(setp)
+        if not setps:
+            modify.pop("set-parameters", None)
+        self._prune_empty_modify()
+        self._after_modify_changed()
+        self.is_unsaved = True
+        self.last_modified = oscal_date_time_with_timezone()
+        self._on_content_mutated()
+        return True
+
+    # =========================================================================
     # controls_tree construction (placement) — builds the profile's own tree
     # =========================================================================
     def _place_tree_import(self, result: list, src_tree: list, selected: set,
@@ -3428,13 +3932,18 @@ class Profile(OSCAL):
             attach_enhancements(src_node, node)
 
         def attach_enhancements(src_node: dict, node: dict) -> None:
+            # ``as-is`` preserves control->control containment (enhancements nest under
+            # their parent control); ``flat`` hoists every control — including nested
+            # enhancements — to the root, so a selected child lands beside its parent, not
+            # beneath it.
+            dest = result if mode == "flat" else node["children"]
             for child in src_node.get("children", []):
                 if child.get("group"):
                     continue
                 if child.get("id") in selected:
-                    place_control(child, node["children"])
+                    place_control(child, dest)
                 else:
-                    promote(child, node["children"])
+                    promote(child, dest)
 
         def promote(src_node: dict, dest_children: list) -> None:
             for child in src_node.get("children", []):

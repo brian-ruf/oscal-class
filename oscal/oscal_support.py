@@ -735,10 +735,20 @@ class OSCALSupport:
         ``check_for_tables`` creates missing *tables* but never alters existing ones, so a
         database created before a column was added would lack it. Each table's current
         field list in :data:`OSCAL_SUPPORT_TABLES` is compared against the live columns and
-        any missing ones are added via ``ALTER TABLE``. The ``oscal_versions.index_version``
-        column is additionally backfilled to :data:`METASCHEMA_INDEX_VERSION` for pre-existing
-        rows — indexes built by this codebase already conform to the current index schema, so
-        backfilling avoids a needless heal on upgrade.
+        any missing ones are added via ``ALTER TABLE``.
+
+        ``oscal_versions.index_version`` is then backfilled to :data:`METASCHEMA_INDEX_VERSION`
+        for every row still holding ``NULL``. This must run whether the column was just added
+        (a legacy DB predating it) **or** it was already present but left ``NULL`` for rows the
+        build never stamped — notably OSCAL versions below :data:`METASCHEMA_MIN_VERSION`
+        (``v1.1.1``), which have no NIST-published resolved metaschema and so never get an
+        index built (``set_version_index_version`` is only called for versions that are
+        indexed). Because ``index_version`` is part of the base schema, freshly built/bundled
+        databases create the column up front, so the add-time backfill alone would leave those
+        rows ``NULL`` in the shipped artifact. Stamping is uniform and idempotent: a DB built
+        by any compatible library conforms to the current index schema, and
+        :meth:`resolve_index_version` only reads non-NULL rows, so a uniform value keeps the
+        invariant without affecting resolution.
         """
         if self.db_type != "sqlite3":
             return
@@ -752,11 +762,16 @@ class OSCALSupport:
                     continue
                 logger.info(f"Support DB migration: adding column '{col}' to '{table_name}'.")
                 self.db.db_execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {field['type']}")
-                if table_name == "oscal_versions" and col == "index_version":
-                    self.db.db_execute(
-                        f"UPDATE oscal_versions SET index_version = '{METASCHEMA_INDEX_VERSION}' "
-                        "WHERE index_version IS NULL"
-                    )
+                existing.add(col)
+
+            # Uniformly backfill index_version — runs regardless of whether the column was
+            # just added, so a bundled/pulled DB with NULL rows (e.g. un-indexed versions
+            # below METASCHEMA_MIN_VERSION) is self-healed rather than shipped with holes.
+            if table_name == "oscal_versions" and "index_version" in existing:
+                self.db.db_execute(
+                    f"UPDATE oscal_versions SET index_version = '{METASCHEMA_INDEX_VERSION}' "
+                    "WHERE index_version IS NULL"
+                )
 
     # -------------------------------------------------------------------------
     def resolve_index_version(self) -> str:

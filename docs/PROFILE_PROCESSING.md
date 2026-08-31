@@ -44,6 +44,12 @@ specification.
 | `set_import_selection(href, ...)` | rewritten import `dict` \| `None` | No — edits scope |
 | `get_directives()` | `{"combine","hierarchy"[,"custom"]}` | No — reads the merge directives |
 | `set_directives(combine=, hierarchy=, custom=)` | `bool` | No — edits organization |
+| `set_parameter(param_id, …)` | `set-parameter` `dict` \| `None` | No — upserts a modify set-parameter |
+| `add_alter(control_id)` | `alter` `dict` \| `None` | No — ensures a modify alter |
+| `add_alter_adds` / `add_alter_removes` | addition/removal `dict` \| `None` | No — appends to an alter |
+| `remove_alter_adds` / `remove_alter_removes` | `bool` | No — selector-matched delete + cleanup |
+| `get_set_parameter(param_id)` / `get_alter(control_id)` | `dict` \| `None` | No — safe-copy read |
+| `remove_set_parameter(param_id)` | `bool` | No — deletes a set-parameter + cleanup |
 | `resolve()` | `ResolutionStatus` | — builds `profile.catalog` |
 | `catalog` (attribute) | `Catalog` \| `None` | `None` until `resolve()` |
 | `dumps_catalog(format, pretty_print)` | `str` | Yes |
@@ -256,7 +262,8 @@ Directive summary:
   `set_merge()` / `set_merge_directive()` pass-throughs are **deprecated** in favor of
   `set_directives()`.
 - **`modify`** — per-control tailoring: `alters` (removes → adds) and `set-parameters`,
-  applied during resolution and JIT reads alike.
+  applied during resolution and JIT reads alike. Author them with `set_parameter(...)` and
+  the alter methods (see below).
 
 ### Editing one import's control selection
 
@@ -282,6 +289,40 @@ profile.set_import_selection(
 sel = profile.get_import_selection("nist-800-53.json")
 # {"include-controls": [{"with-ids": ["ac-1", "ac-2"]}],
 #  "exclude-controls": [{"with-ids": ["ac-2.1"]}]}
+```
+
+### Authoring `modify` directives (set-parameters and alters)
+
+`modify` tailoring is authored with dedicated methods; each builds the structure and
+validates it through the metaschema staging gate (unknown keys dropped, invalid content
+rejected with no change), returns a safe copy, and marks the profile unsaved.
+
+- **`set_parameter(param_id, class_=, props=, links=, label=, usage=, constraints=,
+  guidelines=, values=, select_cardinality=, select_choices=)`** — upsert a
+  `set-parameters` entry. Missing when absent → created; when present → each supplied field
+  overwrites and omitted fields are left untouched (per-field merge). `values` and the
+  `select_*` form are the OSCAL mutually-exclusive choice (supplying both is rejected;
+  supplying one clears the other). Most often used to set a `value` or a `constraint`.
+- **`add_alter(control_id)`** — ensure an (initially empty) alter exists; idempotent.
+- **`add_alter_adds(control_id, position=, by_id=, title=, params=, props=, links=,
+  parts=)`** — append an addition (needs at least one content field); creates the alter if
+  needed.
+- **`add_alter_removes(control_id, by_name=, by_class=, by_id=, by_item_name=, by_ns=)`** —
+  append a removal (needs at least one selector); creates the alter if needed.
+- **`remove_alter_adds(control_id, by_id, position=)`** — delete additions whose supplied
+  selectors all match (`by_id` required). **`remove_alter_removes(control_id, by_name=,
+  by_class=, by_id=, by_item_name=, by_ns=)`** — delete removals whose supplied selectors
+  all match (none supplied → all). Both prune emptied `adds`/`removes`, an alter left with
+  only its `control-id`, an emptied `alters`, and an emptied `modify`.
+- **`get_set_parameter(param_id)`** / **`get_alter(control_id)`** — safe-copy reads of a
+  single set-parameter / alter (`None` if absent). **`remove_set_parameter(param_id)`** —
+  delete a set-parameter, pruning an emptied `set-parameters` and `modify`.
+
+```python
+profile.set_parameter("ac-1_prm_1", values=["daily"])          # set a value
+profile.add_alter_adds("ac-1", by_id="ac-1_smt", position="after",
+                       parts=[{"id": "ac-1_gd", "name": "guidance", "prose": "…"}])
+profile.add_alter_removes("ac-1", by_name="label")
 ```
 
 ### `merge_directive` vs `MergeStrategy` (as-is only)
