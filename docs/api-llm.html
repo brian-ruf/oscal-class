@@ -7,7 +7,7 @@
 <style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.5;max-width:64rem;margin:1.5rem auto;padding:0 1rem;color:#111}h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #ccc}h3{font-size:1rem;margin-top:1.3rem}h4{font-size:.95rem;margin:.9rem 0 .2rem}.sig{background:#eef;padding:.15rem .4rem;border-radius:3px}pre.doc{white-space:pre-wrap;margin:.2rem 0 .7rem;padding:.4rem .6rem;background:#f6f6f6;border-left:3px solid #bbb;overflow-x:auto}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}#index ul{margin:.2rem 0;padding-left:1.1rem}.muted{color:#666}</style></head><body>
 <header>
 <h1>oscal — API reference</h1>
-<p class="muted">version 3.2.1 · generated 2026-08-31T21:55:39Z · 12 modules, 30 classes, 668 methods, 32 functions</p>
+<p class="muted">version 3.2.2 · generated 2026-09-01T02:41:25Z · 12 modules, 30 classes, 669 methods, 32 functions</p>
 <p>Machine-oriented API reference for automated (agentic) consumption. Every symbol carries a stable <code>id</code> (its fully-qualified name) and <code>data-*</code> attributes; docstrings are preserved verbatim.</p>
 </header>
 <section id="index"><h2>Index</h2><ul>
@@ -774,6 +774,7 @@
 <li><a href="#oscal.oscal_registry.ObjectRegistry.clear">clear</a></li>
 <li><a href="#oscal.oscal_registry.ObjectRegistry.enter_resolving">enter_resolving</a></li>
 <li><a href="#oscal.oscal_registry.ObjectRegistry.exit_resolving">exit_resolving</a></li>
+<li><a href="#oscal.oscal_registry.ObjectRegistry.forget">forget</a></li>
 <li><a href="#oscal.oscal_registry.ObjectRegistry.get">get</a></li>
 <li><a href="#oscal.oscal_registry.ObjectRegistry.is_resolving">is_resolving</a></li>
 <li><a href="#oscal.oscal_registry.ObjectRegistry.register">register</a></li>
@@ -11867,6 +11868,13 @@ Module constants:
 <section class="member" id="oscal.oscal_registry.ObjectRegistry.exit_resolving" data-kind="method" data-fqname="oscal.oscal_registry.ObjectRegistry.exit_resolving">
 <h4><code class="sig">def exit_resolving(self, href: str) -&gt; None</code></h4>
 <pre class="doc">Unmark a canonical href once its resolution completes (pop from the stack).</pre>
+</section>
+<section class="member" id="oscal.oscal_registry.ObjectRegistry.forget" data-kind="method" data-fqname="oscal.oscal_registry.ObjectRegistry.forget">
+<h4><code class="sig">def forget(self, obj: Any) -&gt; None</code></h4>
+<pre class="doc">Remove every reference to ``obj`` from the registry (thread-safe).
+
+        Used to drop a document that was only transiently registered (e.g. a root
+        registered by identity key for the duration of its import resolution).</pre>
 </section>
 <section class="member" id="oscal.oscal_registry.ObjectRegistry.get" data-kind="method" data-fqname="oscal.oscal_registry.ObjectRegistry.get">
 <h4><code class="sig">def get(self, *, key: Optional[tuple] = None, href: str = &#x27;&#x27;) -&gt; Optional[Any]</code></h4>

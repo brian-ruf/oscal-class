@@ -47,7 +47,7 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 </style></head><body>
 <div class="layout">
 <aside class="sidebar">
-<div class="brand">oscal <span>3.2.1</span></div>
+<div class="brand">oscal <span>3.2.2</span></div>
 <div class="muted">API reference</div>
 <input id="filter" type="search" placeholder="Filter symbols…" aria-label="Filter symbols">
 <nav id="nav">
@@ -141,7 +141,7 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 <main>
 <div class="page-header">
 <h1>oscal — API reference</h1>
-<div class="muted">Version 3.2.1 · Generated 2026-08-31T21:55:39Z · 12 modules · 30 classes · 668 methods · 32 functions</div>
+<div class="muted">Version 3.2.2 · Generated 2026-09-01T02:41:26Z · 12 modules · 30 classes · 669 methods · 32 functions</div>
 </div>
 <section class="module" id="oscal.oscal_support">
 <h2 class="module-title">oscal.oscal_support<a class="anchor" href="#oscal.oscal_support" title="Link to this item">#</a></h2>
@@ -11179,6 +11179,13 @@ Module constants:
 <div class="member" id="oscal.oscal_registry.ObjectRegistry.exit_resolving">
 <span class="badge method">method</span><code class="sig">def exit_resolving(self, href: str) -&gt; None</code><a class="anchor" href="#oscal.oscal_registry.ObjectRegistry.exit_resolving" title="Link to this item">#</a>
 <pre class="doc">Unmark a canonical href once its resolution completes (pop from the stack).</pre>
+</div>
+<div class="member" id="oscal.oscal_registry.ObjectRegistry.forget">
+<span class="badge method">method</span><code class="sig">def forget(self, obj: Any) -&gt; None</code><a class="anchor" href="#oscal.oscal_registry.ObjectRegistry.forget" title="Link to this item">#</a>
+<pre class="doc">Remove every reference to ``obj`` from the registry (thread-safe).
+
+        Used to drop a document that was only transiently registered (e.g. a root
+        registered by identity key for the duration of its import resolution).</pre>
 </div>
 <div class="member" id="oscal.oscal_registry.ObjectRegistry.get">
 <span class="badge method">method</span><code class="sig">def get(self, *, key: Optional[tuple] = None, href: str = &#x27;&#x27;) -&gt; Optional[Any]</code><a class="anchor" href="#oscal.oscal_registry.ObjectRegistry.get" title="Link to this item">#</a>
