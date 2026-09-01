@@ -255,6 +255,88 @@ class TestFlat:
 
 
 # ===========================================================================
+# cycle guard in the control-fetch cascade
+# ===========================================================================
+class TestMaterializeCycleGuard:
+    """A cyclic import graph (a self-importing profile, or a root-uuid collision that makes
+    a source resolve back to an ancestor) must break gracefully — returning no content —
+    instead of recursing into a stack overflow."""
+
+    @staticmethod
+    def _find(nodes, cid):
+        for n in nodes:
+            if n.get("id") == cid and not n.get("group"):
+                return n
+            hit = TestMaterializeCycleGuard._find(n.get("children", []), cid)
+            if hit is not None:
+                return hit
+        return None
+
+    def test_self_referential_origin_returns_none(self, src_path):
+        p = _baseline(src_path)
+        p._ensure_controls_tree()
+        node = self._find(p.controls_tree, "ac-1")
+        node["origin"]["object_uuid"] = p.uuid   # source now resolves back to the profile
+        assert p.get_control_by_id("ac-1") is None   # no RecursionError
+        assert p._materializing == set()             # guard cleaned up
+
+    def test_normal_materialize_leaves_guard_empty(self, src_path):
+        p = _baseline(src_path)
+        assert p.get_control_by_id("ac-1") is not None
+        assert p._materializing == set()
+
+
+# ===========================================================================
+# a profile importing another document that shares its root uuid
+# ===========================================================================
+class TestSharedRootUuidImport:
+    """When a profile imports another document emitted with the *same* root uuid (a common
+    generator defect — e.g. sibling FedRAMP profiles copied without changing the uuid), the
+    import must be uuid-reassigned at load so its controls still resolve, rather than the
+    source resolving back to the importing profile itself."""
+
+    _UUID = "08beb860-3c94-49a6-bc82-5ebb73a55e33"
+
+    def _chain(self, tmp_path):
+        meta = {"last-modified": "2024-01-01T00:00:00Z", "version": "1",
+                "oscal-version": "1.1.2"}
+        cat = {"catalog": {"uuid": "c0000000-0000-4000-8000-000000000000",
+               "metadata": {"title": "Cat", **meta},
+               "controls": [{"id": "ac-1", "title": "AC-1"}]}}
+        inner = {"profile": {"uuid": self._UUID,
+                 "metadata": {"title": "Inner", **meta},
+                 "imports": [{"href": "cat.json",
+                              "include-controls": [{"with-ids": ["ac-1"]}]}]}}
+        outer = {"profile": {"uuid": self._UUID,            # SAME uuid as inner
+                 "metadata": {"title": "Outer", **meta},
+                 "imports": [{"href": "inner.json",
+                              "include-controls": [{"with-ids": ["ac-1"]}]}]}}
+        (tmp_path / "cat.json").write_text(json.dumps(cat))
+        (tmp_path / "inner.json").write_text(json.dumps(inner))
+        (tmp_path / "outer.json").write_text(json.dumps(outer))
+        return str(tmp_path / "outer.json")
+
+    def test_control_resolves_despite_shared_uuid(self, tmp_path):
+        p = Profile.load(self._chain(tmp_path))
+        c = p.get_control_by_id("ac-1")
+        assert c is not None and c["id"] == "ac-1"
+
+    def test_imported_profile_uuid_reassigned(self, tmp_path):
+        p = Profile.load(self._chain(tmp_path))
+        p.resolve_imports()
+        inner = p.import_list[0]["object"]
+        assert inner is not None
+        assert inner.uuid != p.uuid          # collision detected and reassigned
+
+    def test_registry_does_not_retain_root(self, tmp_path):
+        from oscal.oscal_registry import get_registry
+        p = Profile.load(self._chain(tmp_path))
+        p.resolve_imports()
+        # the root registers only transiently for collision detection; it must not linger
+        assert get_registry().get(key=p._identity_key()) is not p
+
+
+# ===========================================================================
 # selection via include/exclude
 # ===========================================================================
 class TestSelection:

@@ -116,6 +116,15 @@ class ObjectRegistry:
                 self._by_href[href] = obj
 
     # -- maintenance ----------------------------------------------------------
+    def forget(self, obj: Any) -> None:
+        """Remove every reference to ``obj`` from the registry (thread-safe).
+
+        Used to drop a document that was only transiently registered (e.g. a root
+        registered by identity key for the duration of its import resolution).
+        """
+        with self._lock:
+            self._forget(obj)
+
     def _forget(self, obj: Any) -> None:
         """Remove every reference to ``obj`` from both maps."""
         for store in (self._by_href, self._by_key):

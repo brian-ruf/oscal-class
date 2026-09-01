@@ -647,6 +647,9 @@ class OSCAL:
         self._identity: tuple | None = None
         self._registry = get_registry()
         self._workspace = None  # back-reference to the owning Workspace, if any
+        # Explicit uuid/last-modified set by the current mutation; consumed by the
+        # post-mutation revision stamp so an explicit value wins over the auto-stamp.
+        self._identity_override: dict = {}
 
         # Validation Status
         self.validation_status: dict[str, bool | None] = {
@@ -1041,6 +1044,9 @@ class OSCAL:
         instance._init_common()
         instance._origin      = "new"
         instance.is_read_only = False
+        # The template ships a fixed placeholder uuid (shared by every new document of a
+        # model); give this instance its own identity so it never leaks into real content.
+        instance._stamp_revision()
         return instance
 
     # -------------------------------------------------------------------------
@@ -2111,11 +2117,41 @@ class OSCAL:
             list[dict]: self.import_list, one entry per discovered reference.
         """
         self_canonical = _canonicalize_ref(self.href or self.href_original)
+        # Register self by content identity before resolving imports. Root-UUID collision
+        # detection in :meth:`_acquire_shared` only fires against *already-registered*
+        # objects; a root document is loaded (not acquired) and so is otherwise never
+        # registered. Without this, a profile that imports another document sharing its
+        # root uuid (e.g. a FedRAMP profile importing a sibling/tailoring profile emitted
+        # with the same uuid) would not get that import uuid-reassigned — and
+        # ``get_oscal_object`` would then resolve the import's controls back to this
+        # document, breaking the fetch (previously a stack overflow; now "not found").
+        registered_self = self._register_self_by_identity()
         self._registry.enter_resolving(self_canonical)
         try:
             return self._resolve_imports_inner(base_path, cache_directive)
         finally:
             self._registry.exit_resolving(self_canonical)
+            # Drop the transient self-registration so the registry keeps its role as a
+            # shared-import cache (roots are loaded, not shared) — the reassignment of any
+            # colliding child has already been applied and persists on that child.
+            if registered_self:
+                self._registry.forget(self)
+
+    # -------------------------------------------------------------------------
+    def _register_self_by_identity(self) -> bool:
+        """Transiently register this document under its content-identity key (key-only).
+
+        Enables :meth:`_acquire_shared` to detect an imported document that collides with
+        this document's own root uuid while its imports resolve. Registers by key only
+        (not href) so collision/identity dedup sees it without altering href fast-path
+        resolution. Returns True when it added a registration (so the caller drops it
+        afterward); False when there is no identity key or an entry already exists.
+        """
+        key = self._identity_key()
+        if key is None or self._registry.get(key=key) is not None:
+            return False
+        self._registry.register(self, key=key)
+        return True
 
     # -------------------------------------------------------------------------
     def _resolve_imports_inner(self, base_path: str = "", cache_directive: "CacheDirective | None" = None) -> list:
@@ -3221,6 +3257,9 @@ class OSCAL:
                 logger.warning(f"Setting complex metadata field '{item}' is not yet implemented.")
                 continue
             metadata[item] = content.get(item, "")
+        # An explicit last-modified must survive the post-mutation revision stamp.
+        if "last-modified" in content:
+            self._identity_override["last-modified"] = metadata["last-modified"]
         success = True
 
         return success
@@ -3390,11 +3429,46 @@ class OSCAL:
     def _on_content_mutated(self) -> None:
         """Hook invoked after a successful content mutation.
 
-        A no-op on the base class; subclasses override it to react to edits — e.g.
-        :class:`~oscal.oscal_controls.Profile` uses it to invalidate a stale resolved
-        catalog. Called by :func:`if_update_successful`-decorated mutators and by
-        :meth:`put` on success.
+        Stamps a new document revision (see :meth:`_stamp_revision`): any change to OSCAL
+        content assigns a fresh root ``uuid`` and ``last-modified``, since the root uuid
+        identifies *this instance* of the document and must change when it is revised.
+        Subclasses override to react to edits — e.g.
+        :class:`~oscal.oscal_controls.Profile` also invalidates a stale resolved catalog —
+        and must call ``super()._on_content_mutated()``. Called by
+        :func:`if_update_successful`-decorated mutators and by :meth:`put` on success.
         """
+        self._stamp_revision()
+
+    # -------------------------------------------------------------------------
+    def _stamp_revision(self) -> None:
+        """Assign a fresh root ``uuid`` and ``last-modified``, in content and on the cache.
+
+        The OSCAL root ``uuid`` identifies a specific instance/revision of a document, so
+        every mutation (and :meth:`new`) yields a new one, alongside a refreshed
+        ``metadata/last-modified``. Writes ``_dict`` directly — never through :meth:`put`
+        or a mutator — so it does not re-enter :meth:`_on_content_mutated`. A no-op when
+        content or its model root is unavailable.
+        """
+        if not isinstance(self._dict, dict):
+            return
+        root = self._dict.get(self.model)
+        if not isinstance(root, dict):
+            return
+        # A mutation that *explicitly* set the root uuid or last-modified wins over the
+        # auto-stamp (e.g. set_metadata({"last-modified": ...}) or put("uuid", ...)); such
+        # values are recorded in _identity_override by the mutating call and consumed here.
+        override = getattr(self, "_identity_override", None) or {}
+        self._identity_override = {}
+        new_id = override.get("uuid") or new_uuid()
+        stamp = override.get("last-modified") or oscal_date_time_with_timezone()
+        root["uuid"] = new_id
+        meta = root.get("metadata")
+        if isinstance(meta, dict):
+            meta["last-modified"] = stamp
+        # Keep the cached identity in sync with the content.
+        self.uuid = new_id
+        self.last_modified = stamp
+        self._identity = (new_id, stamp, self.published) if new_id else None
 
     # -------------------------------------------------------------------------
     def put(
@@ -3504,6 +3578,13 @@ class OSCAL:
             else:
                 logger.error(f"put: cannot set value on {type(obj).__name__} at path '{path}'.")
                 return False
+
+        # An explicit write of the root uuid or metadata/last-modified must survive the
+        # post-mutation revision stamp (see _stamp_revision).
+        if path == "uuid":
+            self._identity_override["uuid"] = value
+        elif path == "metadata/last-modified":
+            self._identity_override["last-modified"] = value
 
         # Dirty-state bookkeeping (done inline so a False return never marks unsaved).
         self.is_unsaved = True

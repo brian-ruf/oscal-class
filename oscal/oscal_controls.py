@@ -2079,6 +2079,10 @@ class Profile(OSCAL):
         # Cached index of this profile's modify directives (alters by control-id,
         # set-parameters by param-id); rebuilt lazily and cleared with the tree.
         self._modify_idx: Optional[dict] = None
+        # (object_uuid, source_id) pairs currently being materialized on the call stack —
+        # a re-entrant guard that breaks cyclic control fetches (a self-importing profile
+        # or a root-uuid collision between imported documents) instead of overflowing.
+        self._materializing: set = set()
 
         # Best-effort build at load; guarded so content-not-ready never breaks init.
         try:
@@ -2130,6 +2134,7 @@ class Profile(OSCAL):
         edits that don't affect scope (e.g. metadata) leave the tree valid. Any future
         directive editor that changes scope must set ``_tree_dirty`` itself.
         """
+        super()._on_content_mutated()   # stamp a fresh root uuid + last-modified
         self._invalidate_resolution()
 
     # -------------------------------------------------------------------------
@@ -4024,7 +4029,7 @@ class Profile(OSCAL):
             self._materialize_into_catalog(target, node, "[root]", shared_params)
         self._insert_shared_params(target, shared_params)
 
-        self._assemble_metadata(target, sources)
+        newest = self._assemble_metadata(target, sources)
         self._carry_backmatter(target)
         self._rewrite_out_of_scope_refs(target)
 
@@ -4032,6 +4037,10 @@ class Profile(OSCAL):
         if not target.is_valid:
             logger.warning("resolve: resolved catalog did not pass validation; "
                            "inspect Profile.catalog.validation_errors.")
+        # Set the resolved catalog's final identity last of all — after every building
+        # mutation and validation — so the per-mutation revision stamp cannot overwrite the
+        # intended resolved-catalog uuid/last-modified.
+        self._finalize_resolved_identity(target, newest)
 
         self.catalog = target
         self.resolution_status = ResolutionStatus.RESOLVED
@@ -4221,37 +4230,55 @@ class Profile(OSCAL):
                 cannot be fetched.
         """
         origin = node.get("origin", {})
-        source = self.get_oscal_object(origin.get("object_uuid"))
-        if source is None:
+        # Cycle guard: if we are already materializing this same (source, control) on the
+        # current call stack, the import graph is cyclic (a self-importing profile, or a
+        # root-uuid collision that makes a source resolve back to an ancestor). Break the
+        # cycle with a logged error and no content, rather than recursing into a stack
+        # overflow that surfaces to callers as an opaque failure.
+        guard_key = (origin.get("object_uuid"), origin.get("source_id"))
+        if guard_key in self._materializing:
+            logger.error(
+                f"materialize: cyclic control reference for '{origin.get('source_id')}' via "
+                f"source {origin.get('object_uuid')} — breaking the cycle (check for a "
+                "self-importing profile or a duplicate root uuid across imports). No content "
+                "returned for this node."
+            )
             return None
-        content = source.get_control_by_id(origin.get("source_id"), depth=0)
-        if content is None:
-            return None
+        self._materializing.add(guard_key)
+        try:
+            source = self.get_oscal_object(origin.get("object_uuid"))
+            if source is None:
+                return None
+            content = source.get_control_by_id(origin.get("source_id"), depth=0)
+            if content is None:
+                return None
 
-        # This profile's modify directives — on natural (source-scope) ids.
-        self._apply_modify(content, origin.get("source_id"), ancestors)
-        # Parameters cited here but defined elsewhere are also in scope.
-        self._resolve_cited_params(content, shared_sink)
+            # This profile's modify directives — on natural (source-scope) ids.
+            self._apply_modify(content, origin.get("source_id"), ancestors)
+            # Parameters cited here but defined elsewhere are also in scope.
+            self._resolve_cited_params(content, shared_sink)
 
-        uid = self._rename_uuid_for("controls", node.get("id"))
-        if uid:
-            _suffix_control(content, uid)
+            uid = self._rename_uuid_for("controls", node.get("id"))
+            if uid:
+                _suffix_control(content, uid)
 
-        content.pop("controls", None)
-        if depth != 0:
-            child_depth = None if depth is None else depth - 1
-            child_ancestors = ancestors + (origin.get("source_id"),)
-            kids: list = []
-            for child in node.get("children", []):
-                if child.get("group"):
-                    continue
-                materialized = self._materialize_control_node(child, child_depth,
-                                                              child_ancestors, shared_sink)
-                if materialized is not None:
-                    kids.append(materialized)
-            if kids:
-                content["controls"] = kids
-        return content
+            content.pop("controls", None)
+            if depth != 0:
+                child_depth = None if depth is None else depth - 1
+                child_ancestors = ancestors + (origin.get("source_id"),)
+                kids: list = []
+                for child in node.get("children", []):
+                    if child.get("group"):
+                        continue
+                    materialized = self._materialize_control_node(child, child_depth,
+                                                                  child_ancestors, shared_sink)
+                    if materialized is not None:
+                        kids.append(materialized)
+                if kids:
+                    content["controls"] = kids
+            return content
+        finally:
+            self._materializing.discard(guard_key)
 
     # -------------------------------------------------------------------------
     def _modify_index(self) -> dict:
@@ -4500,6 +4527,28 @@ class Profile(OSCAL):
             meta_obj["parties"] = parties
         if resp_parties:
             meta_obj["responsible-parties"] = resp_parties
+        return newest
+
+    # -------------------------------------------------------------------------
+    def _finalize_resolved_identity(self, target: "Catalog", newest: Optional[str]) -> None:
+        """Set the resolved catalog's authoritative identity as the final resolve step.
+
+        The catalog is assembled through many mutations, each of which stamps a fresh
+        ``uuid`` / ``last-modified`` (:meth:`OSCAL._stamp_revision`). That is correct for
+        ordinary edits, but the *resolved* catalog has intentional metadata semantics: a
+        single fresh document ``uuid`` and ``last-modified`` = the newest timestamp across
+        the profile and its import tree. Applied here with direct ``_dict`` writes (after
+        all building mutations) so the per-mutation stamp cannot overwrite it.
+        """
+        root = target._dict.setdefault("catalog", {})
+        root["uuid"] = new_uuid()
+        target.uuid = root["uuid"]
+        if newest:
+            meta = root.setdefault("metadata", {})
+            meta["last-modified"] = newest
+            target.last_modified = newest
+        target._identity = (target.uuid, target.last_modified, target.published) \
+            if target.uuid else None
 
     # -------------------------------------------------------------------------
     def _carry_backmatter(self, target: "Catalog") -> None:
