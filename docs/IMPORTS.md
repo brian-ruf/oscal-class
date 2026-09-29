@@ -127,6 +127,14 @@ node = profile.import_tree["imports"][0]
 catalog = profile.get_oscal_object(node["object_uuid"])   # live OSCAL object, or None
 ```
 
+> **Root-UUID collisions.** Documents are identified by root `uuid`. If an import shares
+> its importer's (or another loaded document's) root `uuid` but is genuinely different
+> content — a common defect when files are copied without changing the uuid — the library
+> **reassigns the colliding import a fresh uuid at load** and logs a warning, so its
+> content still resolves instead of aliasing back to the other document. Fix the source to
+> use unique root UUIDs; note that `.new()` and every mutation now assign a fresh root uuid
+> automatically (see [CONTENT.md](CONTENT.md)).
+
 ### Import getters return the same node shape
 
 `failed_imports`, `duplicate_imports`, and `unresolved_imports` return safe-copy

@@ -1,14 +1,17 @@
 """
-Unit tests for Profile merge-directive reflection and import-selection editing:
+Unit tests for Profile merge directives and import-selection editing:
 
     - ``Profile.merge_directive`` attribute (as-is / flat / custom), populated on load
       and kept in sync after merge edits + round-trips.
-    - ``set_merge_directive()`` convenience wrapper (preserves combine / reuses custom).
+    - ``get_directives()`` / ``set_directives()`` — normalized read and independent edit
+      of ``combine`` and the hierarchy directive (with ``custom`` staged/validated).
+    - ``set_merge_directive()`` (deprecated) convenience wrapper.
     - ``get_import_selection()`` — safe-copy fetch of include-all/include-controls/
       exclude-controls for an import identified by any valid href.
-    - ``set_import_selection()`` — validated wholesale replacement of those structures,
-      including the include-all XOR include-controls choice constraint and scope side
-      effects (controls_tree rebuild, resolved catalog dropped).
+    - ``set_import_selection()`` — replacement of those structures, staged and validated
+      through the metaschema gate (prune unknown keys, enforce the include-all XOR
+      include-controls choice, atomic commit/rollback) with scope side effects
+      (controls_tree rebuild, resolved catalog dropped).
 """
 import copy
 import os

@@ -8,12 +8,14 @@ Covers:
   - Malformed XML / JSON / YAML (well-formed check fails)
   - Well-formed but OSCAL schema-invalid content (each format)
 """
+import json
 import os
 import tempfile
 
 import pytest
 
 from oscal import OSCAL, Catalog, Profile
+from oscal.oscal_content import _constraint_conditions_met
 
 # ---------------------------------------------------------------------------
 # Fixtures — schema-valid structure but missing required fields
@@ -329,3 +331,242 @@ class TestChoiceCardinality:
         assert c.validation_status["choice"] is False
         errs = [e for e in c.validation_errors if e["error-type"] == "choice"]
         assert any(set(e["field"]) == {"groups", "controls"} for e in errs)
+
+
+# ===========================================================================
+# Scoped allowed-values constraints — a constraint whose target predicate is
+# translated into a `flag-in` / `flag-equals` condition must only apply where
+# that flag matches. Regression: an unhandled `flag-in` condition was treated as
+# always-satisfied ("fail-open"), so a constraint scoped to
+# @type=('software','hardware','service') (allowing only `vendor-name`) fired on
+# every inventory-item prop @name and produced false allowed-values errors — which
+# marked an otherwise-valid SSP invalid and blocked import resolution.
+# ===========================================================================
+class TestConstraintConditionsMet:
+
+    def test_flag_in_satisfied_when_flag_matches(self):
+        cond = {"type": "flag-in", "flag": "type", "values": ["software", "hardware"]}
+        assert _constraint_conditions_met({"conditions": [cond]}, {"type": "software"})
+
+    def test_flag_in_not_satisfied_when_flag_differs(self):
+        cond = {"type": "flag-in", "flag": "type", "values": ["software", "hardware"]}
+        assert not _constraint_conditions_met({"conditions": [cond]}, {"type": "policy"})
+
+    def test_flag_in_not_satisfied_when_flag_absent(self):
+        # A prop has no `type` flag, so a @type-scoped constraint must not apply.
+        cond = {"type": "flag-in", "flag": "type", "values": ["software", "hardware"]}
+        assert not _constraint_conditions_met({"conditions": [cond]}, {"name": "asset-type"})
+
+    def test_flag_equals_still_works(self):
+        cond = {"type": "flag-equals", "flag": "type", "value": "software"}
+        assert _constraint_conditions_met({"conditions": [cond]}, {"type": "software"})
+        assert not _constraint_conditions_met({"conditions": [cond]}, {"type": "hardware"})
+
+    def test_no_conditions_is_satisfied(self):
+        assert _constraint_conditions_met({}, {"anything": "x"})
+
+
+class TestScopedInventoryPropNames:
+    """An inventory-item prop with a legitimate (but non-`vendor-name`) name must not
+    trip the @type-scoped `vendor-name`-only allowed-values constraint."""
+
+    @staticmethod
+    def _ssp_with_inventory_prop(name):
+        return OSCAL.loads({
+            "system-security-plan": {
+                "uuid": "30000000-0000-4000-8000-000000000001",
+                "metadata": {"title": "T", "last-modified": "2026-01-01T00:00:00Z",
+                             "version": "1.0", "oscal-version": "1.1.3"},
+                "system-implementation": {
+                    "inventory-items": [
+                        {"uuid": "40000000-0000-4000-8000-000000000001", "description": "d",
+                         "props": [{"name": name, "value": "x"}]},
+                    ],
+                },
+            }
+        })
+
+    @staticmethod
+    def _inventory_av_errors(doc):
+        return [e for e in doc.validation_errors
+                if e["error-type"] == "allowed-values" and "inventory-items" in e["location"]]
+
+    def test_legitimate_prop_name_not_flagged(self):
+        doc = self._ssp_with_inventory_prop("asset-type")
+        doc.validate()
+        assert self._inventory_av_errors(doc) == []
+
+    def test_bogus_prop_name_still_flagged(self):
+        # The general (unscoped) allowed-values constraint is still enforced.
+        doc = self._ssp_with_inventory_prop("definitely-not-a-real-prop-name")
+        doc.validate()
+        assert self._inventory_av_errors(doc)
+
+
+# ===========================================================================
+# Normalized validation errors — every error carries an `identifier` (uuid/id of
+# the nearest enclosing identifiable object) alongside the JSON `location`.
+# ===========================================================================
+_SSP_UUID = "30000000-0000-4000-8000-000000000001"
+_INV_UUID = "40000000-0000-4000-8000-000000000001"
+
+
+def _ssp_with_inventory_prop_name(name):
+    return OSCAL.loads({
+        "system-security-plan": {
+            "uuid": _SSP_UUID,
+            "metadata": {"title": "T", "last-modified": "2026-01-01T00:00:00Z",
+                         "version": "1.0", "oscal-version": "1.1.3"},
+            "system-implementation": {
+                "inventory-items": [
+                    {"uuid": _INV_UUID, "description": "d",
+                     "props": [{"name": name, "value": "x"}]},
+                ],
+            },
+        }
+    })
+
+
+class TestValidationErrorIdentifier:
+
+    def test_error_has_identifier_of_nearest_item(self):
+        # A prop has no id/uuid, so the error's identifier is the enclosing
+        # inventory-item's uuid (the nearest identifiable ancestor).
+        doc = _ssp_with_inventory_prop_name("definitely-not-a-real-prop-name")
+        doc.validate()
+        errs = [e for e in doc.validation_errors
+                if e["error-type"] == "allowed-values" and "inventory-items" in e["location"]]
+        assert errs
+        assert errs[0]["identifier"] == _INV_UUID
+
+    def test_error_core_shape_is_normalized(self):
+        doc = _ssp_with_inventory_prop_name("definitely-not-a-real-prop-name")
+        doc.validate()
+        for e in doc.validation_errors:
+            assert {"error-type", "location", "identifier", "field", "value"} <= set(e.keys())
+
+    def test_identifier_falls_back_to_root_uuid(self):
+        # A malformed metadata datetime -> invalid-type; metadata has no id/uuid, so the
+        # nearest identifiable ancestor is the document root uuid.
+        doc = OSCAL.loads({
+            "system-security-plan": {
+                "uuid": _SSP_UUID,
+                "metadata": {"title": "T", "last-modified": "not-a-datetime",
+                             "version": "1.0", "oscal-version": "1.1.3"},
+                "system-implementation": {"components": []},
+            }
+        })
+        doc.validate()
+        dt_errs = [e for e in doc.validation_errors if e["error-type"] == "invalid-type"]
+        assert dt_errs
+        assert all(e["identifier"] == _SSP_UUID for e in dt_errs)
+
+
+# ===========================================================================
+# Import gating — non-blocking (allowed-values / invalid-type) errors do not stop
+# import resolution; structural errors (missing-required / cardinality / choice) do.
+# ===========================================================================
+def _catalog_doc():
+    return {"catalog": {
+        "uuid": "10000000-0000-4000-8000-000000000001",
+        "metadata": {"title": "Cat", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.1.3"},
+        "groups": [{"id": "ac", "title": "AC", "controls": [{"id": "ac-1", "title": "P"}]}],
+    }}
+
+
+def _ssp_importing(catalog_href, *, bogus_inventory=False, drop_required=False):
+    root = {
+        "uuid": _SSP_UUID,
+        "metadata": {"title": "SSP", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.1.3"},
+        "import-profile": {"href": catalog_href},
+        "system-characteristics": {
+            "system-ids": [{"id": "s"}], "system-name": "S", "description": "d",
+            "system-information": {"information-types": [{"title": "IT", "description": "d"}]},
+            "security-sensitivity-level": "low",
+            "security-impact-level": {"security-objective-confidentiality": "low",
+                                      "security-objective-integrity": "low",
+                                      "security-objective-availability": "low"},
+            "status": {"state": "operational"},
+            "authorization-boundary": {"description": "b"}},
+        "system-implementation": {
+            "users": [{"uuid": "60000000-0000-4000-8000-000000000001", "role-ids": ["admin"]}],
+            "components": [{"uuid": "70000000-0000-4000-8000-000000000001", "type": "this-system",
+                            "title": "This System", "description": "d",
+                            "status": {"state": "operational"}}]},
+        "control-implementation": {"description": "ci", "implemented-requirements": [
+            {"uuid": "80000000-0000-4000-8000-000000000001", "control-id": "ac-1"}]},
+    }
+    if bogus_inventory:
+        root["system-implementation"]["inventory-items"] = [
+            {"uuid": _INV_UUID, "description": "d",
+             "props": [{"name": "definitely-not-a-real-prop-name", "value": "x"}]}]
+    if drop_required:
+        del root["system-characteristics"]   # required -> missing-required (blocking)
+    return {"system-security-plan": root}
+
+
+class TestImportBlockingErrorsProperty:
+
+    def test_partitions_by_allow_list(self):
+        doc = OSCAL.loads(_catalog_doc())  # any doc; we set errors directly
+        doc.validation_errors = [
+            {"error-type": "allowed-values", "location": "/x", "identifier": None,
+             "field": "@name", "value": "z"},
+            {"error-type": "missing-required", "location": "/y", "identifier": None,
+             "field": "title", "value": None},
+        ]
+        blocking = doc.import_blocking_errors
+        assert [e["error-type"] for e in blocking] == ["missing-required"]
+
+    def test_only_nonblocking_yields_no_blocking(self):
+        doc = OSCAL.loads(_catalog_doc())
+        doc.validation_errors = [
+            {"error-type": "allowed-values", "location": "/x", "identifier": None,
+             "field": "@name", "value": "z"},
+            {"error-type": "invalid-type", "location": "/y", "identifier": None,
+             "field": "d", "value": "bad"},
+        ]
+        assert doc.import_blocking_errors == []
+
+    def test_allow_list_is_tunable(self):
+        doc = OSCAL.loads(_catalog_doc())
+        doc.validation_errors = [
+            {"error-type": "allowed-values", "location": "/x", "identifier": None,
+             "field": "@name", "value": "z"}]
+        # Narrow the allow-list so allowed-values now blocks.
+        doc.import_nonblocking_error_types = frozenset({"invalid-type"})
+        assert [e["error-type"] for e in doc.import_blocking_errors] == ["allowed-values"]
+
+
+class TestImportGating:
+
+    def _write(self, d, ssp_doc):
+        with open(os.path.join(d, "catalog.json"), "w") as fh:
+            json.dump(_catalog_doc(), fh)
+        path = os.path.join(d, "ssp.json")
+        with open(path, "w") as fh:
+            json.dump(ssp_doc, fh)
+        return path
+
+    def test_valid_ssp_resolves_import(self):
+        with tempfile.TemporaryDirectory() as d:
+            doc = OSCAL.load(self._write(d, _ssp_importing("catalog.json")))
+            assert doc.is_valid
+            assert len(doc.import_list) == 1
+
+    def test_nonblocking_error_still_resolves_import(self):
+        with tempfile.TemporaryDirectory() as d:
+            doc = OSCAL.load(self._write(d, _ssp_importing("catalog.json", bogus_inventory=True)))
+            assert not doc.is_valid                     # allowed-values failure
+            assert doc.import_blocking_errors == []     # but nothing blocking
+            assert len(doc.import_list) == 1            # import still resolved
+            assert not doc.imports_resolved             # not falsely marked valid/resolved
+
+    def test_blocking_error_prevents_import(self):
+        with tempfile.TemporaryDirectory() as d:
+            doc = OSCAL.load(self._write(d, _ssp_importing("catalog.json", drop_required=True)))
+            assert not doc.is_valid
+            assert doc.import_blocking_errors          # missing-required blocks
+            assert doc.import_list == []               # not auto-resolved

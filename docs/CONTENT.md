@@ -211,8 +211,18 @@ print(catalog.validation_status)
 # }
 
 for err in catalog.validation_errors:
-    print(err["error-type"], err["location"], err["field"], err["value"])
+    # Every error is normalized to: error-type, location (JSON path), identifier
+    # (uuid/id of the nearest enclosing identifiable object, or None), field, value,
+    # plus error-type-specific detail (expected / min / max).
+    print(err["error-type"], err["location"], err["identifier"], err["value"])
 ```
+
+Not every validation failure blocks import resolution. When a document is not strictly
+valid but its **only** errors are non-blocking (by default `allowed-values` /
+`invalid-type`), `validate()` still resolves imports so `import_list` is populated
+(while `is_valid` stays `False`). Use `import_blocking_errors` to see what, if anything,
+is holding resolution back. See the [Validation & Import Gating](VALIDATION.html) guide
+for the full error-type reference and the block/allow rationale.
 
 ### `validate()` — re-run validation
 
@@ -379,6 +389,13 @@ not read-only). They return `None` and log an error when the guard fails. Method
 return the created node return a **safe copy** of it — edit further via another method
 call, not by mutating the return value.
 
+> **Revision stamping.** The OSCAL root `uuid` identifies a specific *instance* of a
+> document, so the library assigns a **fresh root `uuid` and `metadata/last-modified`
+> on every mutation** — and on `.new()`, so a new document never carries the packaged
+> stub template's placeholder uuid. If a mutation *explicitly* sets `uuid` or
+> `last-modified` (e.g. `set_metadata({"last-modified": ...})` or `put("uuid", ...)`),
+> that explicit value is honored instead of the auto-stamp. `is_unsaved` becomes `True`.
+
 ### `set_metadata`
 
 Set scalar metadata fields:
@@ -503,8 +520,9 @@ entry. `scope` is `"successful"` (default), `"failed"`, or `"all"`.
 
 `add_import` / `remove_import` / `update_import` operate only on **this** document's
 first-level import statement(s), never on descendants. Each refreshes the import tree and
-any derived state (e.g. a `Profile`'s `controls_tree` / resolved `catalog`). Legality is
-enforced per model's import cardinality:
+any derived state (e.g. a `Profile`'s `controls_tree` / resolved `catalog`, or a
+`ComponentDefinition`'s / `SSP`'s `implementation_tree`). Legality is enforced per
+model's import cardinality:
 
 | Model | Import | add / remove | update_import |
 |---|---|---|---|

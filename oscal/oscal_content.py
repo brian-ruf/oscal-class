@@ -160,15 +160,22 @@ _IMPORT_PATTERNS_DICT: dict[str, list[dict]] = {
 # invalid (catalog 0/0, mapping-collection 0/0, SSP/AP/AR 1/1); such imports are set via
 # the retry_import modify path. Otherwise add is allowed while count < max and remove
 # while count > min (counting only imports with a non-empty, non-"#" href).
+# ``allowed_imports`` is the set of OSCAL models a first-level import added/updated via
+# add_import/update_import may reference; the add/update type gate rejects anything else
+# (see _reject_import_type). Models with no addable imports (catalog, mapping-collection —
+# path None) carry an empty set. cDef's set is only {component-definition}: the catalog/
+# profile objects that appear in a cDef's *import tree* come from control-implementation
+# @source references (a separate, future add/update mechanism), never via
+# import-component-definition. resolve_imports still discovers the full tree regardless.
 _IMPORT_SPEC: dict[str, dict] = {
-    "catalog":                       {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0},
-    "profile":                       {"path": "imports",                      "single": False, "href": "href", "min": 1, "max": None},
-    "component-definition":          {"path": "import-component-definitions", "single": False, "href": "href", "min": 0, "max": None},
-    "system-security-plan":          {"path": "import-profile",               "single": True,  "href": "href", "min": 1, "max": 1},
-    "assessment-plan":               {"path": "import-ssp",                   "single": True,  "href": "href", "min": 1, "max": 1},
-    "assessment-results":            {"path": "import-ap",                    "single": True,  "href": "href", "min": 1, "max": 1},
-    "plan-of-action-and-milestones": {"path": "import-ssp",                   "single": True,  "href": "href", "min": 0, "max": 1},
-    "mapping-collection":            {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0},
+    "catalog":                       {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0,    "allowed_imports": set()},
+    "profile":                       {"path": "imports",                      "single": False, "href": "href", "min": 1, "max": None, "allowed_imports": {"catalog", "profile"}},
+    "component-definition":          {"path": "import-component-definitions", "single": False, "href": "href", "min": 0, "max": None, "allowed_imports": {"component-definition"}},
+    "system-security-plan":          {"path": "import-profile",               "single": True,  "href": "href", "min": 1, "max": 1,    "allowed_imports": {"catalog", "profile"}},
+    "assessment-plan":               {"path": "import-ssp",                   "single": True,  "href": "href", "min": 1, "max": 1,    "allowed_imports": {"system-security-plan"}},
+    "assessment-results":            {"path": "import-ap",                    "single": True,  "href": "href", "min": 1, "max": 1,    "allowed_imports": {"assessment-plan"}},
+    "plan-of-action-and-milestones": {"path": "import-ssp",                   "single": True,  "href": "href", "min": 0, "max": 1,    "allowed_imports": {"system-security-plan"}},
+    "mapping-collection":            {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0,    "allowed_imports": set()},
 }
 
 # Conditional origin states — not progressive; freshness is time-based and computed on demand.
@@ -212,12 +219,14 @@ class VersionSupport(Enum):
     UNSUPPORTED   = "unsupported"
 
 
-def _check_datatype(value: str, datatype: str, location: str, field: str) -> dict | None:
+def _check_datatype(value: str, datatype: str, location: str, field: str,
+                    identifier: str | None = None) -> dict | None:
     """Validate a string *value* against an OSCAL *datatype* pattern.
 
     Returns a structured error dict when the value fails the pattern, or ``None``
     when the value is acceptable (including when no applicable pattern is defined).
-    Patterns that fail to compile are silently skipped.
+    Patterns that fail to compile are silently skipped. ``identifier`` is the id/uuid
+    of the nearest enclosing identifiable object (see :meth:`OSCAL._walk_instance`).
     """
     type_info = OSCAL_DATATYPES.get(datatype)
     if not type_info:
@@ -230,6 +239,7 @@ def _check_datatype(value: str, datatype: str, location: str, field: str) -> dic
             return {
                 "error-type": "invalid-type",
                 "location":   location,
+                "identifier": identifier,
                 "field":      field,
                 "value":      value,
                 "expected": {
@@ -246,13 +256,29 @@ def _check_datatype(value: str, datatype: str, location: str, field: str) -> dic
 _OSCAL_NS = "http://csrc.nist.gov/ns/oscal" # OSCAL default namespace for props, parts and any other `ns` qualified elements.
 
 
+# Validation error types that, on their own, do NOT block import resolution. When a
+# document is not strictly valid but *every* validation error is of a type in this
+# allow-list, imports are still resolved (import_list is populated) — the document's
+# structure is navigable, so its references can be followed. Structural error types
+# (missing-required, cardinality, choice) are intentionally excluded: they can leave the
+# tree ambiguous or incomplete, so they still block. See docs/VALIDATION.md and the
+# ``oscal_import_nonblocking_errors`` memory note. Tune via ``OSCAL.import_nonblocking_error_types``.
+IMPORT_NONBLOCKING_ERROR_TYPES: frozenset = frozenset({"allowed-values", "invalid-type"})
+
+
 def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
     """Return True when all conditions on a constraint are satisfied by *instance*.
 
     Condition types:
       namespace   – ``@ns`` flag must be in the allowed namespace values list.
                     Absent ``@ns`` is treated as the OSCAL default namespace per spec.
-      flag-equals – a sibling flag must equal a specific value.
+      flag-equals – a flag must equal a specific value (from an ``@f='v'`` target
+                    predicate).
+      flag-in     – a flag must be one of a set of values (from an ``@f=('v1','v2')``
+                    target predicate). An absent flag never matches, so the guarded
+                    constraint does not apply — e.g. the ``vendor-name``-only allowed
+                    values scoped to ``@type=('software','hardware','service')`` must not
+                    fire on props that carry no such ``type`` flag.
 
     An absent or unrecognised condition type is treated as satisfied (fail-open).
     """
@@ -268,6 +294,10 @@ def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
             flag = cond.get("flag", "")
             expected = cond.get("value", "")
             if instance.get(flag) != expected:
+                return False
+        elif ctype == "flag-in":
+            flag = cond.get("flag", "")
+            if instance.get(flag) not in cond.get("values", []):
                 return False
     return True
 
@@ -451,6 +481,48 @@ class UnsupportedModelOperation(OSCALError, AttributeError):
         )
 
 
+class TransactionError(OSCALError):
+    """Raised when an :meth:`OSCAL.transaction` block cannot be committed.
+
+    A transaction aborts — rolling every enrolled document back to its pre-transaction
+    state — when commit-time checks fail: a structural metaschema failure, a *dangling*
+    cross-reference (a referenced id/uuid that resolves nowhere in scope), or an
+    *unverifiable* import-eligible reference (one that could only live in an imported
+    document, checked while the import tree is unresolved) when the caller did not opt in
+    via ``allow_unresolved_refs``. The offending items are carried on :attr:`problems`
+    for inspection/telemetry.
+
+    Attributes:
+        problems (list): The specific failures (``_RefProblem`` entries or validation
+            error dicts) that caused the abort; empty for a plain guard failure.
+    """
+
+    default_user_message = "The changes could not be saved because they failed validation."
+
+    def __init__(self, message: str, problems: "list | None" = None):
+        """Initialize the error.
+
+        Args:
+            message (str, required): Developer-facing detail (the default ``str``).
+            problems (list, optional): The failures that triggered the abort.
+        """
+        self.problems = problems or []
+        super().__init__(message)
+
+
+class _TxnAbort(Exception):
+    """Internal control-flow signal raised by :meth:`Transaction.abort`.
+
+    Unwinds the ``with`` block and rolls the transaction back *without* surfacing an
+    exception to the caller — an explicit, exception-free abort. Never escapes
+    :meth:`OSCAL.transaction`; not part of the public API.
+    """
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+        super().__init__(reason)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Current actor (view/session) — identifies who is performing mutations, so a
 # Workspace's write locks can be enforced per view on shared documents.
@@ -535,6 +607,247 @@ class ImportResult:
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Transactions — atomic, validated, all-or-nothing batches of mutations.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+@dataclass(frozen=True)
+class _Reference:
+    """A cross-reference discovered in a document, for commit-time integrity checking.
+
+    Attributes:
+        value (str): The bare id/uuid referenced (no leading ``#``).
+        kinds (tuple): Candidate element kinds (subset of ``_RESOLVE_KINDS``); empty
+            means "any kind".
+        local_only (bool): True when the referent MUST live in this document (e.g. an
+            SSP ``component-uuid``); False when it may resolve through the import tree.
+        location (str): Human-readable JSON location of the reference, for diagnostics.
+    """
+    value: str
+    kinds: tuple
+    local_only: bool
+    location: str
+
+
+@dataclass(frozen=True)
+class _RefProblem:
+    """A referential-integrity problem found at commit.
+
+    Attributes:
+        status (str): ``"dangle"`` (resolves nowhere in scope) or ``"unverifiable"``
+            (import-eligible, but the import tree is unresolved so it cannot be checked).
+        reference (_Reference): The offending reference.
+        document_uuid (str): Root uuid of the document the reference was found in.
+    """
+    status: str
+    reference: _Reference
+    document_uuid: str
+
+
+class Savepoint:
+    """A named point within a :class:`Transaction` to which state can be rolled back.
+
+    Created by :meth:`Transaction.savepoint`; pass it to :meth:`Transaction.rollback_to`
+    to undo mutations made since the savepoint while keeping the surrounding transaction
+    open. Holds a deep-copied snapshot of every enrolled document's content at the moment
+    of creation. Treat it as an opaque token.
+    """
+
+    __slots__ = ("name", "_snapshots", "_seq")
+
+    def __init__(self, name: str, snapshots: dict, seq: int):
+        self.name = name
+        self._snapshots = snapshots   # id(doc) -> deepcopy(doc._dict)
+        self._seq = seq               # position in the owning transaction's stack
+
+
+class Transaction:
+    """Coordinator for an atomic, validated batch of mutations (see :meth:`OSCAL.transaction`).
+
+    A transaction defers each mutation's revision stamp and validation to a single commit:
+    mutations accumulate on the live document(s), and on clean exit the transaction runs
+    referential-integrity and (optionally) structural metaschema validation, then applies
+    one coalesced revision stamp per changed document. On any failure or exception it rolls
+    every enrolled document back to its pre-transaction content — all-or-nothing.
+
+    The object is a *coordinator* over one or more *participant* documents. Today only the
+    root document participates; the participant machinery (snapshots, dirty-tracking,
+    two-phase commit) is in place so cross-import-tree (multi-document) transactions can be
+    enabled later without restructuring — see :meth:`enroll`.
+
+    Attribute access not found on the transaction delegates to the root document, so a
+    document's own mutators can be called on the handle (``tx.add_component(...)`` ==
+    ``doc.add_component(...)``), mirroring a database session.
+    """
+
+    def __init__(self, root: "OSCAL", *, validate: bool = True, check_refs: bool = True,
+                 strict_refs: bool = True, stamp: bool = True,
+                 allow_unresolved_refs: bool = False):
+        self.root                  = root
+        self.do_validate           = validate
+        self.do_check_refs         = check_refs
+        self.strict_refs           = strict_refs
+        self.do_stamp              = stamp
+        self.allow_unresolved_refs = allow_unresolved_refs
+        self._participants: dict[int, "OSCAL"] = {}
+        self._entry:        dict[int, dict]    = {}   # id(doc) -> capture at enroll
+        self._dirty:        set[int]           = set()
+        self._savepoints:   list[Savepoint]    = []
+        self._active                           = True
+
+    # -- content capture / restore -------------------------------------------
+    @staticmethod
+    def _capture(doc: "OSCAL") -> dict:
+        """Snapshot a participant's content and identity bookkeeping for rollback."""
+        return {
+            "dict":          copy.deepcopy(doc._dict),
+            "uuid":          doc.uuid,
+            "last_modified": doc.last_modified,
+            "is_unsaved":    doc.is_unsaved,
+        }
+
+    @staticmethod
+    def _restore(doc: "OSCAL", snap: dict) -> None:
+        """Restore a participant from a :meth:`_capture` snapshot and drop derived caches."""
+        doc._dict          = copy.deepcopy(snap["dict"])
+        doc.uuid           = snap["uuid"]
+        doc.last_modified  = snap["last_modified"]
+        doc.is_unsaved     = snap["is_unsaved"]
+        doc._identity_override = {}
+        doc._import_tree   = None   # invalidate the derived import tree cache
+
+    # -- enrollment / dirty-tracking -----------------------------------------
+    def enroll(self, doc: "OSCAL") -> "Transaction":
+        """Enroll a document as a participant (idempotent). Only the root in v1.
+
+        Cross-document (import-tree) mutation is deferred: enrolling any document other
+        than the root raises :class:`TransactionError`. The coordinator/participant design
+        is already multi-document; this guard is the only thing to lift when cross-import
+        writes are enabled.
+        """
+        if doc is not self.root and id(doc) not in self._participants:
+            raise TransactionError(
+                "Cross-document transactions are not yet enabled; only the root document "
+                "may be enrolled in a transaction."
+            )
+        if id(doc) not in self._participants:
+            self._participants[id(doc)] = doc
+            self._entry[id(doc)] = Transaction._capture(doc)
+            doc._txn = self
+        return self
+
+    def mark_dirty(self, doc: "OSCAL") -> None:
+        """Record that ``doc`` was mutated during this transaction (drives the commit stamp)."""
+        self._dirty.add(id(doc))
+
+    # -- savepoints -----------------------------------------------------------
+    def savepoint(self, name: "str | None" = None) -> Savepoint:
+        """Create a savepoint capturing all participants' current content."""
+        snaps = {did: copy.deepcopy(doc._dict) for did, doc in self._participants.items()}
+        sp = Savepoint(name or f"sp{len(self._savepoints)}", snaps, len(self._savepoints))
+        self._savepoints.append(sp)
+        return sp
+
+    def rollback_to(self, sp: Savepoint) -> None:
+        """Restore all participants to ``sp`` and discard it and any later savepoints."""
+        for did, doc in self._participants.items():
+            if did in sp._snapshots:
+                doc._dict = copy.deepcopy(sp._snapshots[did])
+                doc._import_tree = None
+        self._savepoints = self._savepoints[:sp._seq]
+
+    def release_savepoint(self, sp: Savepoint) -> None:
+        """Keep changes made since ``sp`` but drop it (and later savepoints) from the stack."""
+        self._savepoints = self._savepoints[:sp._seq]
+
+    def abort(self, reason: str = "") -> None:
+        """Abort the transaction: roll back and exit the ``with`` block without raising."""
+        raise _TxnAbort(reason)
+
+    @property
+    def dirty(self) -> bool:
+        """bool: True if any participant was mutated during the transaction."""
+        return bool(self._dirty)
+
+    # -- delegation to the root document -------------------------------------
+    def __getattr__(self, name: str):
+        # Only reached for names not found on the Transaction itself; forward to the root
+        # document so its mutators are callable on the handle. Guard against recursion
+        # before ``root`` is assigned.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        root = self.__dict__.get("root")
+        if root is None:
+            raise AttributeError(name)
+        return getattr(root, name)
+
+    # -- commit / rollback (driven by OSCAL.transaction) ---------------------
+    def _rollback_all(self) -> None:
+        """Restore every participant to its pre-transaction state and end the transaction."""
+        for did, doc in self._participants.items():
+            Transaction._restore(doc, self._entry[did])
+            doc._txn = None
+        self._active = False
+
+    def _finish(self) -> None:
+        """Detach the transaction from its participants after a successful commit."""
+        for doc in self._participants.values():
+            doc._txn = None
+        self._active = False
+
+    def _commit(self) -> None:
+        """Validate all participants and apply one coalesced stamp each; raise on failure.
+
+        Runs in three phases across every participant: (1) referential integrity —
+        dangling references abort unconditionally, unverifiable import-eligible references
+        abort unless ``allow_unresolved_refs``; (2) structural metaschema validation when
+        ``validate`` is set; (3) one revision stamp per dirty participant. Raising leaves
+        the live content mutated — the caller (:meth:`OSCAL.transaction`) rolls back.
+        """
+        # Phase 1 — referential integrity (reads local scope + import tree; never resolves).
+        if self.do_check_refs:
+            problems: list = []
+            for doc in self._participants.values():
+                problems.extend(doc._run_reference_check())
+            dangles = [p for p in problems if p.status == "dangle"]
+            unver   = [p for p in problems if p.status == "unverifiable"]
+            if dangles:
+                detail = "; ".join(
+                    f"{p.reference.value!r} at {p.reference.location}" for p in dangles[:5]
+                )
+                raise TransactionError(
+                    f"{len(dangles)} dangling reference(s) — resolves nowhere in scope: {detail}",
+                    problems=dangles,
+                )
+            if unver and not self.allow_unresolved_refs:
+                first = unver[0].reference
+                raise TransactionError(
+                    f"{len(unver)} import-eligible reference(s) cannot be verified because the "
+                    f"import tree is unresolved; resolve imports or pass allow_unresolved_refs=True "
+                    f"(first: {first.value!r} at {first.location})",
+                    problems=unver,
+                )
+            for p in unver:
+                logger.warning(
+                    f"transaction: unverified import-eligible reference {p.reference.value!r} "
+                    f"at {p.reference.location} (imports unresolved; permitted by "
+                    f"allow_unresolved_refs)."
+                )
+        # Phase 2 — structural metaschema validation.
+        if self.do_validate:
+            for doc in self._participants.values():
+                if not doc.validate():
+                    raise TransactionError(
+                        f"structural validation failed for {doc.model or 'document'} "
+                        f"{doc.uuid or ''}".strip(),
+                        problems=list(getattr(doc, "validation_errors", []) or []),
+                    )
+        # Phase 3 — one coalesced revision stamp per changed participant.
+        if self.do_stamp:
+            for did in self._dirty:
+                self._participants[did]._stamp_revision()
+        self._finish()
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # OSCAL CLASS
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCAL:
@@ -595,6 +908,13 @@ class OSCAL:
         boundary and show the user ``err.user_message`` instead of internals.
 
     """
+
+    # Validation error types that do not, by themselves, block import resolution. Class
+    # attribute (shared default = module-level :data:`IMPORT_NONBLOCKING_ERROR_TYPES`);
+    # override on an instance or subclass to widen/narrow the allow-list. Consumed by
+    # :attr:`import_blocking_errors` and the import gate in :meth:`validate`.
+    import_nonblocking_error_types: frozenset = IMPORT_NONBLOCKING_ERROR_TYPES
+
     def __init_common__(self, ttl: int = 0, support_db_conn: str = "", support_db_type: str = ""):
 
         logger.debug("Initializing common OSCAL class properties...")
@@ -650,6 +970,9 @@ class OSCAL:
         # Explicit uuid/last-modified set by the current mutation; consumed by the
         # post-mutation revision stamp so an explicit value wins over the auto-stamp.
         self._identity_override: dict = {}
+        # Active transaction (Transaction) coordinating this document's mutations, or None.
+        # When set, mutations defer their revision stamp/validation to a single commit.
+        self._txn: "Transaction | None" = None
 
         # Validation Status
         self.validation_status: dict[str, bool | None] = {
@@ -834,6 +1157,20 @@ class OSCAL:
         return self.content_state >= ContentState.IMPORTS_RESOLVED
 
     # -------------------------------------------------------------------------
+    @property
+    def import_blocking_errors(self) -> list[dict]:
+        """list[dict]: Validation errors that block import resolution.
+
+        Every error from the most recent :meth:`validate` whose ``error-type`` is *not*
+        on the non-blocking allow-list (:attr:`import_nonblocking_error_types`). Empty
+        when the document is valid, or when its only errors are non-blocking (e.g.
+        ``allowed-values`` / ``invalid-type``) — in which case :meth:`validate` still
+        resolves imports so ``import_list`` is populated. See docs/VALIDATION.md.
+        """
+        allow = self.import_nonblocking_error_types
+        return [e for e in self.validation_errors if e.get("error-type") not in allow]
+
+    # -------------------------------------------------------------------------
     @classmethod
     def loads(cls, content: str | dict, *, href: str | None = None):
         """Initialize an instance from in-memory OSCAL content.
@@ -1012,7 +1349,9 @@ class OSCAL:
         """Create a new OSCAL document from a template.
 
         Must be called on a specific model class (``Catalog.new()``,
-        ``Profile.new()``, etc.), not on ``OSCAL`` directly.
+        ``Profile.new()``, etc.), not on ``OSCAL`` directly. The new document is given its
+        own fresh root ``uuid`` and ``last-modified`` (:meth:`_stamp_revision`) so it never
+        carries the packaged stub template's shared placeholder uuid.
 
         Args:
             title (str, required): Document title (stored in metadata).
@@ -1587,6 +1926,12 @@ class OSCAL:
             logger.error(f"add_import: '{href}' is already imported by this {self.model}.")
             return ImportResult("duplicate", entry=existing, message=f"'{href}' is already imported.")
 
+        # Enforce import-type rules: only appropriate models may be imported here.
+        rejected = self._reject_import_type(spec, href)
+        if rejected is not None:
+            logger.error(f"add_import: {rejected.message}")
+            return rejected
+
         # Reuse a back-matter resource already targeting this href, else create one
         # through the shared append_resource path. The href becomes the resource's
         # single rlink and version is folded into props.
@@ -1694,6 +2039,15 @@ class OSCAL:
                          "(system-security-plan, assessment-plan, assessment-results, "
                          "plan-of-action-and-milestones)."),
             )
+
+        # Enforce import-type rules when repointing to a new target (supplied via rlinks).
+        # (The no-import bootstrap path below delegates to add_import, which gates its own
+        # href; the in-place metadata edit with no rlinks leaves the target unchanged.)
+        if rlinks:
+            rejected = self._reject_import_type(spec, str(rlinks[0].get("href", "")).strip())
+            if rejected is not None:
+                logger.error(f"update_import: {rejected.message}")
+                return rejected
 
         key = spec["href"]
         entries = self._import_entries()
@@ -1869,6 +2223,62 @@ class OSCAL:
                     container.pop(i)
                     return True
         return False
+
+    # -------------------------------------------------------------------------
+    def _import_base_path(self) -> str:
+        """Directory/base URL used to resolve this document's relative import hrefs.
+
+        The directory of this document's own href (or working directory when it has no
+        href). Shared by :meth:`resolve_imports` and the add/update import type gate.
+        """
+        src = self.href or self.href_original
+        if not src:
+            return os.getcwd()
+        parsed_src = urlparse(src)
+        if parsed_src.scheme and len(parsed_src.scheme) > 1:  # real URL (not a drive letter)
+            return src.rsplit("/", 1)[0] + "/"
+        return os.path.dirname(os.path.abspath(src))
+
+    # -------------------------------------------------------------------------
+    def _peek_import_model(self, href: str) -> Optional[str]:
+        """Best-effort load of *href* (relative to this document) → its OSCAL model.
+
+        Returns the imported document's ``model``, or None when it is a fragment ref, is
+        blank, or cannot be loaded/classified. The load is registry-shared with
+        :meth:`resolve_imports`, so a subsequent resolve reuses it rather than re-fetching.
+        Used by the add/update import type gate to reject inappropriate imports before
+        committing them.
+        """
+        if not href or href.startswith("#"):
+            return None
+        resolved = _resolve_href(self._import_base_path(), href)
+        try:
+            return self._acquire_shared(resolved).model or None
+        except Exception as exc:  # load failures are handled downstream by resolve_imports
+            logger.debug(f"_peek_import_model: could not load '{href}': {exc}")
+            return None
+
+    # -------------------------------------------------------------------------
+    def _reject_import_type(self, spec: dict, href: str) -> Optional["ImportResult"]:
+        """Return an ``invalid`` ImportResult when *href*'s model is not importable here.
+
+        Enforces per-model import-type rules (``spec['allowed_imports']``): the target is
+        loaded (best-effort) and its model checked against the allow-set. Only a
+        *positively determined* disallowed model is rejected; an undeterminable target
+        (unreachable/not-yet-OSCAL) is left to :meth:`resolve_imports` to flag. Returns
+        None when the import type is acceptable (or cannot be determined).
+        """
+        allowed = spec.get("allowed_imports")
+        if not allowed or not href or href.startswith("#"):
+            return None
+        model = self._peek_import_model(href)
+        if model is not None and model not in allowed:
+            return ImportResult(
+                "invalid",
+                message=(f"a {self.model} may import only "
+                         f"{', '.join(sorted(allowed))}; '{href}' is a {model}."),
+            )
+        return None
 
     # -------------------------------------------------------------------------
     def _place_import_entry(self, spec: dict, import_entry: dict) -> Optional[str]:
@@ -2161,16 +2571,7 @@ class OSCAL:
 
         # --- resolve base directory for relative hrefs ---
         if not base_path:
-            src = self.href or self.href_original
-            if src:
-                parsed_src = urlparse(src)
-                if parsed_src.scheme and len(parsed_src.scheme) > 1:
-                    # Real URL (not a Windows drive letter like 'C')
-                    base_path = src.rsplit("/", 1)[0] + "/"
-                else:
-                    base_path = os.path.dirname(os.path.abspath(src))
-            else:
-                base_path = os.getcwd()
+            base_path = self._import_base_path()
 
         # --- collect raw hrefs from dict ---
         raw_hrefs: list[str] = []
@@ -2195,10 +2596,15 @@ class OSCAL:
         # --- load each referenced document (shared for both branches) ---
         loaded_hrefs: set[str] = set()  # tracks resolved hrefs already loaded this pass
         for raw_href in raw_hrefs:
+            # A back-matter fragment ref (#uuid) is not itself a loadable location — it is
+            # resolved through the cited resource's rlinks, which are appended below. So the
+            # fragment is never placed in href_list: for a valid resource the list holds only
+            # the resolved rlinks; for a missing/invalid resource it stays blank. A direct
+            # href seeds the list with itself.
             entry: dict = {
                 "href_original": raw_href,
                 "href_valid":    "",
-                "href_list":     [{"href": raw_href, "original": True}],
+                "href_list":     [] if raw_href.startswith("#") else [{"href": raw_href, "original": True}],
                 "status":        ImportState.NOT_LOADED,
                 "is_valid":      False,
                 "is_local":      None,
@@ -2920,7 +3326,19 @@ class OSCAL:
             failed = [p for p in _phases if not self.validation_status[p]]
             logger.info(f"Validation failed phases: {failed} ({len(errors)} total error(s))")
 
-        if self.is_valid and self.content_state < ContentState.IMPORTS_RESOLVED:
+        # Resolve imports when nothing *blocking* remains: either the document is valid,
+        # or its only errors are non-blocking (e.g. allowed-values / invalid-type). In the
+        # latter case content_state stays WELL_FORMED (resolve_imports only advances to
+        # IMPORTS_RESOLVED from VALID), so is_valid stays False while import_list is still
+        # populated — a not-quite-valid document's references remain followable.
+        if self.content_state < ContentState.IMPORTS_RESOLVED and not self.import_blocking_errors:
+            if not self.is_valid:
+                logger.info(
+                    "Resolving imports despite %d non-blocking validation error(s) "
+                    "(types: %s).",
+                    len(self.validation_errors),
+                    sorted({e.get("error-type") for e in self.validation_errors}),
+                )
             self.resolve_imports()
 
         return self.is_valid
@@ -2932,8 +3350,21 @@ class OSCAL:
         node: dict,
         errors: list[dict],
         location: str,
+        identifier: str | None = None,
     ) -> None:
         """Recursively walk *instance* against metaschema *node*, collecting structured errors.
+
+        Every error dict is normalized to the same core shape::
+
+            {
+              "error-type": str,      # missing-required | invalid-type | allowed-values
+                                      # | cardinality | choice
+              "location":   str,      # JSON path to the erroneous item (e.g. "/catalog/groups[0]")
+              "identifier": str|None, # id/uuid of the nearest enclosing identifiable object
+              "field":      str|list, # the offending flag/field name(s)
+              "value":      Any,      # the offending value (or count / None)
+              ...                     # error-type-specific details: "expected", or "min"/"max"
+            }
 
         Error types produced:
           ``missing-required``  – a required field or flag is absent
@@ -2950,9 +3381,15 @@ class OSCAL:
             node:     The metaschema index node describing the expected structure.
             errors:   Accumulator list — errors are appended in-place.
             location: JSON path to *instance* used for error reporting (e.g. "/catalog/metadata").
+            identifier: id/uuid of the nearest enclosing identifiable object, inherited from
+                the parent. Refined to *instance*'s own ``uuid``/``id`` when it has one, so
+                every error reports the closest identifiable item.
         """
         if not isinstance(instance, dict) or not isinstance(node, dict):
             return
+
+        # Nearest identifiable ancestor: this object's own uuid/id if present, else inherited.
+        identifier = instance.get("uuid") or instance.get("id") or identifier
 
         children = node.get("children", [])
 
@@ -2968,6 +3405,7 @@ class OSCAL:
                 errors.append({
                     "error-type": "missing-required",
                     "location":   location,
+                    "identifier": identifier,
                     "field":      f"@{flag_name}",
                     "value":      None,
                     "expected":   {},
@@ -2989,7 +3427,7 @@ class OSCAL:
                     if fixed != flag_val:
                         logger.warning(f"Repaired non-conformant {datatype} @{flag_name} at {location}: {flag_val!r} -> {fixed!r}")
                         instance[flag_name] = flag_val = fixed
-                err = _check_datatype(flag_val, datatype, location, f"@{flag_name}")
+                err = _check_datatype(flag_val, datatype, location, f"@{flag_name}", identifier)
                 if err:
                     errors.append(err)
 
@@ -3006,6 +3444,7 @@ class OSCAL:
                     errors.append({
                         "error-type": "allowed-values",
                         "location":   location,
+                        "identifier": identifier,
                         "field":      f"@{flag_name}",
                         "value":      flag_val,
                         "expected": {
@@ -3038,6 +3477,7 @@ class OSCAL:
                     errors.append({
                         "error-type": "missing-required",
                         "location":   location,
+                        "identifier": identifier,
                         "field":      child_name,
                         "value":      None,
                         "expected":   {},
@@ -3056,7 +3496,7 @@ class OSCAL:
                         if fixed != child_val:
                             logger.warning(f"Repaired non-conformant {datatype} {child_name} at {location}: {child_val!r} -> {fixed!r}")
                             instance[json_key] = child_val = fixed
-                    err = _check_datatype(child_val, datatype, location, child_name)
+                    err = _check_datatype(child_val, datatype, location, child_name, identifier)
                     if err:
                         errors.append(err)
 
@@ -3069,6 +3509,7 @@ class OSCAL:
                     errors.append({
                         "error-type": "cardinality",
                         "location":   location,
+                        "identifier": identifier,
                         "field":      child_name,
                         "value":      actual,
                         "min":        min_int,
@@ -3076,20 +3517,21 @@ class OSCAL:
                     })
                 for i, item in enumerate(child_val):
                     if isinstance(item, dict):
-                        self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]")
+                        self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]", identifier)
             elif isinstance(child_val, dict):
-                self._walk_instance(child_val, child_node, errors, child_loc)
+                self._walk_instance(child_val, child_node, errors, child_loc, identifier)
 
         # ------------------------------------------------------------------
         # Choice groups: mutually exclusive members (at most one), and a member
         # required when every member is min-occurs="1"
         # ------------------------------------------------------------------
         for choice_node in (c for c in children if c.get("structure-type") == "choice"):
-            self._check_choice(instance, choice_node, errors, location)
+            self._check_choice(instance, choice_node, errors, location, identifier)
 
     # -------------------------------------------------------------------------
     def _check_choice(self, instance: dict, choice_node: dict,
-                      errors: list[dict], location: str) -> None:
+                      errors: list[dict], location: str,
+                      identifier: str | None = None) -> None:
         """Enforce a metaschema ``choice``: mutually exclusive use of its members.
 
         Per the Metaschema specification, a ``choice`` "permits the mutually exclusive
@@ -3114,6 +3556,8 @@ class OSCAL:
             choice_node (dict, required): The index node of structure-type ``"choice"``.
             errors (list, required): Accumulator for ``"choice"`` errors.
             location (str, required): JSON path to ``instance`` for error reporting.
+            identifier (str | None, optional): id/uuid of the nearest enclosing
+                identifiable object, attached to any error for provenance.
         """
         members: list[dict] = []
 
@@ -3136,6 +3580,7 @@ class OSCAL:
             errors.append({
                 "error-type": "choice",
                 "location":   location,
+                "identifier": identifier,
                 "field":      keys,
                 "value":      0,
                 "expected":   {"select-one-of": keys},
@@ -3144,6 +3589,7 @@ class OSCAL:
             errors.append({
                 "error-type": "choice",
                 "location":   location,
+                "identifier": identifier,
                 "field":      present,
                 "value":      len(present),
                 "expected":   {"mutually-exclusive": keys},
@@ -3436,8 +3882,190 @@ class OSCAL:
         :class:`~oscal.oscal_controls.Profile` also invalidates a stale resolved catalog —
         and must call ``super()._on_content_mutated()``. Called by
         :func:`if_update_successful`-decorated mutators and by :meth:`put` on success.
+
+        Inside an open :class:`Transaction` the revision stamp is *deferred*: the document
+        is marked dirty and stamped once at commit, so a batch of edits yields a single new
+        revision rather than one per mutation. Subclass reactions (e.g. Profile's resolved
+        catalog invalidation) still run per mutation.
         """
+        if self._txn is not None:
+            self._txn.mark_dirty(self)
+            return
         self._stamp_revision()
+
+    # -------------------------------------------------------------------------
+    @contextmanager
+    def transaction(self, *, validate: bool = True, check_refs: bool = True,
+                    strict_refs: bool = True, stamp: bool = True,
+                    allow_unresolved_refs: bool = False):
+        """Group mutations into an atomic, validated, all-or-nothing batch.
+
+        Within the ``with`` block, mutations accumulate on the live document but their
+        per-edit revision stamp is deferred. On clean exit the transaction validates and
+        commits as one unit: referential integrity, then (optionally) structural
+        metaschema validation, then a single coalesced revision stamp. If any check fails
+        — or any exception propagates out of the block — every enrolled document is rolled
+        back to its pre-transaction state and the failure is raised as a
+        :class:`TransactionError` (or the original exception).
+
+        Referential integrity treats a reference as *dangling* (always aborts) when it
+        resolves nowhere in scope. An import-eligible reference — one that may legitimately
+        live in an imported profile/catalog — is resolved against this document first and
+        then the already-resolved import tree; it is never re-resolved here. When the
+        import tree is unresolved such a reference is *unverifiable*: by default this
+        aborts the commit (critical cross-import references must be gotten right), unless
+        ``allow_unresolved_refs`` is set, which downgrades the unverifiable subset to
+        warnings. Local-only references (e.g. an SSP ``component-uuid``) must always
+        resolve in this document.
+
+        Nesting: opening a transaction while one is already active reuses the active
+        transaction bracketed by a :class:`Savepoint`, so an inner block that raises rolls
+        back only its own changes while the outer transaction continues.
+
+        Cross-document scope: only the root document participates today. The yielded
+        :class:`Transaction` is a coordinator whose participant machinery already supports
+        multiple documents, so import-tree (multi-document) transactions can be enabled
+        later without changing this API.
+
+        Args:
+            validate (bool, optional): Run :meth:`validate` at commit. Defaults to True.
+            check_refs (bool, optional): Run referential-integrity at commit. Defaults to True.
+            strict_refs (bool, optional): Reserved policy flag for per-model reference
+                strictness; local dangling references always abort. Defaults to True.
+            stamp (bool, optional): Apply the single coalesced revision stamp at commit.
+                Defaults to True.
+            allow_unresolved_refs (bool, optional): Permit commit when import-eligible
+                references cannot be verified because the import tree is unresolved (they
+                become warnings instead of aborting). Defaults to False.
+
+        Yields:
+            Transaction: The transaction handle (savepoints, ``abort``, mutator delegation).
+
+        Raises:
+            TransactionError: On a commit-time validation/integrity failure, or when the
+                content is read-only/unavailable.
+        """
+        # Nested transaction: reuse the active one, bracketed by a savepoint.
+        if self._txn is not None:
+            tx = self._txn
+            sp = tx.savepoint()
+            try:
+                yield tx
+            except _TxnAbort:
+                tx.rollback_to(sp)
+            except Exception:
+                tx.rollback_to(sp)
+                raise
+            else:
+                tx.release_savepoint(sp)
+            return
+
+        if not self._can_mutate("transaction"):
+            raise TransactionError("content is read-only or unavailable; cannot open a transaction.")
+
+        tx = Transaction(self, validate=validate, check_refs=check_refs,
+                         strict_refs=strict_refs, stamp=stamp,
+                         allow_unresolved_refs=allow_unresolved_refs)
+        tx.enroll(self)
+        self._txn = tx
+        try:
+            yield tx
+        except _TxnAbort as abort:
+            tx._rollback_all()
+            self._txn = None
+            logger.info(f"transaction aborted: {abort.reason}")
+            return
+        except Exception:
+            tx._rollback_all()
+            self._txn = None
+            raise
+        # Clean block exit — attempt the commit; roll back if it fails.
+        try:
+            tx._commit()
+        except Exception:
+            tx._rollback_all()
+            self._txn = None
+            raise
+        self._txn = None
+
+    # -------------------------------------------------------------------------
+    # Keyed cross-references shared by every OSCAL model, checked at commit. Maps a JSON
+    # key to (candidate kinds, local_only). Subclasses extend the walk via
+    # :meth:`_collect_references` for model-specific references.
+    _REFERENCE_KEYS: dict = {
+        "role-id":        (("role",),     False),
+        "role-ids":       (("role",),     False),
+        "party-uuid":     (("party",),    False),
+        "party-uuids":    (("party",),    False),
+        "location-uuids": (("location",), False),
+    }
+
+    def _collect_references(self) -> list:
+        """Collect cross-references in this document for commit-time integrity checking.
+
+        Walks ``self._dict`` for the universal, stable-key references shared by every OSCAL
+        model — metadata ``role-id``(s), ``party-uuid``(s), ``location-uuids``, and
+        ``#``-fragment ``href`` references (back-matter resources). Subclasses override
+        (calling ``super()._collect_references()``) to add model-specific references, e.g.
+        an SSP's ``by-component.component-uuid`` (local-only) or implemented-requirement
+        control ids (import-eligible).
+
+        Returns:
+            list[_Reference]: Every reference found, each tagged with candidate kinds, a
+                local-only flag, and a human-readable location.
+        """
+        refs: list = []
+        root = (self._dict or {}).get(self.model)
+        if isinstance(root, (dict, list)):
+            self._walk_references(root, f"/{self.model}", refs)
+        return refs
+
+    def _walk_references(self, node, path: str, refs: list) -> None:
+        """Recursively gather :attr:`_REFERENCE_KEYS` and ``#``-fragment ``href`` references."""
+        if isinstance(node, dict):
+            for key, val in node.items():
+                here = f"{path}/{key}"
+                if key in self._REFERENCE_KEYS:
+                    kinds, local_only = self._REFERENCE_KEYS[key]
+                    for v in (val if isinstance(val, list) else [val]):
+                        if isinstance(v, str) and v:
+                            refs.append(_Reference(v, kinds, local_only, here))
+                elif key == "href" and isinstance(val, str) and val.startswith("#"):
+                    frag = val[1:]
+                    if frag:
+                        refs.append(_Reference(frag, (), False, here))
+                else:
+                    self._walk_references(val, here, refs)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                self._walk_references(item, f"{path}/{i}", refs)
+
+    def _run_reference_check(self) -> list:
+        """Resolve every collected reference; return unresolved/unverifiable problems.
+
+        Local-only references must resolve in THIS document. Import-eligible references
+        resolve in scope — this document first, then (only when :attr:`imports_resolved`)
+        the import tree via :meth:`find_in_import_tree`; this never triggers import
+        re-resolution. An import-eligible reference that resolves nowhere is a *dangle*;
+        one that cannot be checked because the import tree is unresolved is *unverifiable*.
+
+        Returns:
+            list[_RefProblem]: One entry per unresolved or unverifiable reference (empty
+                when every reference resolves).
+        """
+        problems: list = []
+        for ref in self._collect_references():
+            kinds = list(ref.kinds) if ref.kinds else None
+            if self._find_local_element(ref.value, kinds=kinds) is not None:
+                continue
+            if ref.local_only:
+                problems.append(_RefProblem("dangle", ref, self.uuid))
+            elif self.imports_resolved:
+                if self.find_in_import_tree(ref.value, kinds=kinds) is None:
+                    problems.append(_RefProblem("dangle", ref, self.uuid))
+            else:
+                problems.append(_RefProblem("unverifiable", ref, self.uuid))
+        return problems
 
     # -------------------------------------------------------------------------
     def _stamp_revision(self) -> None:

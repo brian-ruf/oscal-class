@@ -986,6 +986,29 @@ def _apply_one_set_parameter(param: dict, setp: dict) -> list:
                 param.pop(field, None)
 
     return warnings
+
+
+def _apply_set_parameters_to_control(content: dict, set_params_by_id: dict) -> None:
+    """Apply grouped ``set-parameters`` to a control's *defined* parameters, in place.
+
+    *set_params_by_id* maps ``param-id`` → list of ``set-parameter`` dicts. Each parameter
+    defined directly in ``content`` (its ``params``) receives every matching
+    set-parameter, in order, via :func:`_apply_one_set_parameter`; any resulting warnings
+    are logged. Parameters not defined in ``content`` are ignored here.
+
+    Shared by profile resolution (:meth:`Profile._apply_set_parameters`, where the source
+    is the profile's ``modify.set-parameters``) and SSP implemented-requirement rendering
+    (:meth:`~oscal.oscal_implementation.SSP.control`, where the source is the
+    implemented-requirement's own ``set-parameters``).
+    """
+    if not set_params_by_id:
+        return
+    for param in content.get("params", []) or []:
+        if not isinstance(param, dict):
+            continue
+        for setp in set_params_by_id.get(param.get("id"), []):
+            for warning in _apply_one_set_parameter(param, setp):
+                logger.warning(f"set-parameter: {warning}")
 class Catalog(OSCAL):
     """Editable OSCAL Catalog model.
 
@@ -2120,14 +2143,16 @@ class Profile(OSCAL):
 
     # -------------------------------------------------------------------------
     def _on_content_mutated(self) -> None:
-        """React to any edit of the profile's content by dropping a stale resolved catalog.
+        """React to any edit of the profile's content.
 
-        Invoked automatically after every successful content mutation (via
-        :func:`if_update_successful` and :meth:`OSCAL.put`). A resolved catalog reflects
-        the profile as it was *before* the edit, so any change resets the profile to
-        ``UNRESOLVED``; re-run :meth:`resolve` to rebuild it. (Manual duplicate resolution
-        edits :attr:`catalog` through Catalog methods, which do not trigger this hook, so
-        those intentionally keep the profile resolved.)
+        Chains to :meth:`OSCAL._on_content_mutated` (which stamps a fresh root uuid +
+        last-modified) and then drops a stale resolved catalog. Invoked automatically after
+        every successful content mutation (via :func:`if_update_successful` and
+        :meth:`OSCAL.put`). A resolved catalog reflects the profile as it was *before* the
+        edit, so any change resets the profile to ``UNRESOLVED``; re-run :meth:`resolve` to
+        rebuild it. (Manual duplicate resolution edits :attr:`catalog` through Catalog
+        methods, which do not trigger this hook, so those intentionally keep the profile
+        resolved.)
 
         This does not itself mark the ``controls_tree`` stale: scope/organization mutators
         (:meth:`add_import`, :meth:`set_merge`) already set ``_tree_dirty`` and rebuild;
@@ -4373,17 +4398,10 @@ class Profile(OSCAL):
 
         Each parameter defined in the control receives every matching ``set-parameter``
         (by ``param-id``), in profile order. Parameters cited but not defined in the
-        control are handled separately by :meth:`_resolve_cited_params`.
+        control are handled separately by :meth:`_resolve_cited_params`. Delegates the
+        per-control application to the shared :func:`_apply_set_parameters_to_control`.
         """
-        set_params = self._modify_index()["set_params"]
-        if not set_params:
-            return
-        for param in content.get("params", []):
-            if not isinstance(param, dict):
-                continue
-            for setp in set_params.get(param.get("id"), []):
-                for warning in _apply_one_set_parameter(param, setp):
-                    logger.warning(f"modify: {warning}")
+        _apply_set_parameters_to_control(content, self._modify_index()["set_params"])
 
     # -------------------------------------------------------------------------
     def _resolve_cited_params(self, content: dict, shared_sink: Optional[list]) -> None:

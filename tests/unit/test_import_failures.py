@@ -637,29 +637,32 @@ class TestHrefList:
         statuses = [item.get("status") for item in entry["href_list"] if "status" in item]
         assert ImportState.INVALID in statuses
 
-    def test_fragment_initial_item_is_raw_href(self):
+    def test_fragment_ref_not_in_href_list(self):
+        """A #uuid fragment ref is resolved through back-matter and is never itself an
+        href_list item; only the cited resource's rlinks appear."""
         bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_nonexistent.xml"])
         obj = _load_profile(f"#{_RLINK_UUID}", bm)
         entry = obj.import_list[0]
-        assert entry["href_list"][0]["href"] == f"#{_RLINK_UUID}"
-        assert entry["href_list"][0]["original"] is True
+        assert all(not item["href"].startswith("#") for item in entry["href_list"])
+        assert f"#{_RLINK_UUID}" not in [item["href"] for item in entry["href_list"]]
 
-    def test_fragment_rlinks_appended_with_original_true(self):
+    def test_fragment_rlinks_are_the_href_list_with_original_true(self):
         bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/a.xml", "/tmp/b.xml"])
         obj = _load_profile(f"#{_RLINK_UUID}", bm)
         entry = obj.import_list[0]
-        rlink_hrefs = [item["href"] for item in entry["href_list"][1:]]
-        assert "/tmp/a.xml" in rlink_hrefs
-        assert "/tmp/b.xml" in rlink_hrefs
-        for item in entry["href_list"][1:]:
+        rlink_hrefs = [item["href"] for item in entry["href_list"]]
+        assert rlink_hrefs == ["/tmp/a.xml", "/tmp/b.xml"]
+        for item in entry["href_list"]:
             assert item.get("original") is True
 
-    def test_fragment_initial_item_has_no_status(self):
-        """The #uuid placeholder is skipped — it never gets a status stamped on it."""
-        bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_nonexistent.xml"])
-        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+    def test_fragment_to_missing_resource_leaves_href_list_blank(self):
+        """A fragment citing a non-existent / invalid back-matter resource yields an
+        empty href_list (nothing to attempt)."""
+        # No back-matter at all: the resource UUID cannot be found.
+        obj = _load_profile(f"#{_RLINK_UUID}")
         entry = obj.import_list[0]
-        assert "status" not in entry["href_list"][0]
+        assert entry["href_list"] == []
+        assert entry["status"] == ImportState.INVALID
 
     def test_successful_item_gets_status_ready(self):
         bm = _resource_xml(_RLINK_UUID, rlinks=[_CATALOG_PATH])

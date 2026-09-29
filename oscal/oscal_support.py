@@ -102,13 +102,25 @@ SCHEMA_FILE_PATTERNS = {
     "_schema.json": "json-schema",              # OSCAL JSON schema validation files
 }
 
-_KNOWN_CATALOGS = {
-    "nist-sp800-53r5": {
-        "canonical": "https://doi.org/10.6028/NIST.SP.800-53r5",
-        "oscal":     "https://raw.githubusercontent.com/usnistgov/OSCAL/main/content/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json",
-        "doted-notation": True,
-        "use-skin": "nist-rmf"
+_KNOWN_FRAMEWORKS = {
+    "fedramp-cr26": {
+        "canonical": ["https://raw.githubusercontent.com/FedRAMP/rules/main/fedramp-consolidated-rules.json"],
+        "oscal":     "",
+        "doted-notation": False,
+        "dashed-notation": True
     },
+    "nist-rmf": {
+        "canonical":       ["https://doi.org/10.6028/NIST.SP.800-53r5", "https://doi.org/10.6028/NIST.SP.800-53r4"],
+        "oscal":           "https://raw.githubusercontent.com/usnistgov/OSCAL/main/content/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json",
+        "doted-notation":  True,
+        "dashed-notation": True
+    },
+    "pci-dss": {
+        "canonical": ["https://docs-prv.pcisecuritystandards.org/PCI%20DSS/Standard/PCI-DSS-v4_0_1.pdf"],
+        "oscal":     "",
+        "doted-notation": False,
+        "dashed-notation": True
+    }
 }
 
 _KNOWN_EXTENSION_NAMESPACES = {
@@ -350,7 +362,7 @@ class OSCALSupport:
         self.active_index_version = METASCHEMA_INDEX_VERSION  # Metaschema-index-schema version this instance uses when fetching indexes (resolved at startup)
         self.extensions = {}        # Supported OSCAL extensions available within the support database, and support references
         self.backend    = None      # If working within an application, this is the backend object
-        self.known_catalogs = _KNOWN_CATALOGS  # Known OSCAL catalogs with canonical and OSCAL locations
+        self.known_frameworks = _KNOWN_FRAMEWORKS  # Known OSCAL frameworks with canonical and OSCAL locations
         self.known_extensions = _KNOWN_EXTENSION_NAMESPACES  # Known OSCAL extensions
         self.datatypes  = OSCAL_DATATYPES  # OSCAL Metaschema datatype definitions + validation regexes
         self._cache     = {}        # Internal cache for support operations
