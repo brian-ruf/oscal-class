@@ -11,13 +11,13 @@ Both models expose:
       an SSP's adds ``leveraged-authorizations`` and ``controls`` (the imported profile's
       ``controls_tree``).
     * a ``component(uuid)`` getter returning a safe copy of the component annotated with
-      resolved ``responsible-roles`` (role titles + party names) and a ``relationships``
+      resolved responsibilities (role titles + full party objects) and a ``relationships``
       object (forward relationship links plus the reverse relationships discovered by
       scanning every component in scope). ``ComponentDefinition`` adds a ``capability(uuid)``
       getter and ``incorporates-components`` resolution; ``SSP`` adds ``implemented-controls``.
 
 Module-level helpers shared by both classes build the responsible-role annotation
-(:func:`_enrich_responsible_roles`) and the relationships object
+(:func:`_enrich_responsibilities`) and the relationships object
 (:func:`_build_component_relationships`). Others build the nested SSP assemblies
 (components, implemented requirements, by-component statements, responsible roles) and
 are also exposed as ``SSP`` methods where appropriate.
@@ -31,49 +31,81 @@ import copy
 import logging
 from typing import Any, Optional
 
-from .oscal_content import OSCAL, requires, if_update_successful, new_uuid, append_props, append_links, register_model, get_props, ImportState
+from .oscal_content import (OSCAL, requires, if_update_successful, new_uuid, append_props,
+                            append_links, register_model, get_props, ImportState,
+                            _find_import_candidates)
 from .oscal_controls import _apply_set_parameters_to_control
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-def _enrich_responsible_roles(doc: OSCAL, obj: dict) -> dict:
-    """Annotate an object's ``responsible-roles`` with resolved role/party names.
+# The ``role-id`` / ``party-uuids`` responsibility construct appears under these keys
+# across models — ``responsible-roles`` (on components, capabilities,
+# implemented-requirements, statements, by-components, …) and ``responsible-parties`` (on
+# inventory-items, metadata, …). Both share the same shape: a ``role-id``, a
+# ``party-uuids`` array, plus ``props``/``links``/``remarks``. New models that reuse the
+# construct are picked up automatically by the recursive walk in
+# :func:`_enrich_responsibilities`.
+_RESPONSIBILITY_KEYS = ("responsible-roles", "responsible-parties")
 
-    For each ``responsible-role`` on *obj* (when present): the role's
-    ``metadata.roles`` title is looked up by ``role-id`` and inserted as ``title``; and
-    when the role carries a ``party-uuids`` array, a ``parties`` array of
-    ``{"uuid", "name"}`` is inserted, each name resolved from ``metadata.parties`` by
-    uuid. Both lookups use the in-scope cascade (:meth:`OSCAL.get_role_by_id` /
-    :meth:`OSCAL.get_party_by_uuid`), so a role or party defined in an imported document
-    still resolves; an unresolved id yields an empty ``title``/``name``.
 
-    Mutates *obj* in place and returns it — callers pass a safe copy, so stored content
-    is never altered.
+def _resolve_responsibility_entry(doc: OSCAL, entry: dict) -> None:
+    """Resolve one responsible-role / responsible-party entry, in place.
 
-    Args:
-        doc (OSCAL, required): The document whose metadata backs the lookups.
-        obj (dict, required): A component dict (a copy) that may hold ``responsible-roles``.
+    Inserts, as siblings of the lookup fields:
 
-    Returns:
-        dict: The same ``obj``, with its responsible-roles annotated.
+    * ``title`` — the ``metadata.roles`` title for this entry's ``role-id``; and
+    * ``parties`` — the full ``metadata.parties`` object (``type``, ``name``,
+      ``short-name``, …) for each uuid in ``party-uuids``.
+
+    Both lookups use the in-scope cascade (:meth:`OSCAL.get_role_by_id` /
+    :meth:`OSCAL.get_party_by_uuid`): the current document first, then its imported
+    documents, so a role or party defined upstream still resolves. An unresolved ``role-id``
+    yields an empty ``title``; an unresolved party uuid yields a ``parties`` entry carrying
+    only its ``uuid``. ``props``/``links``/``remarks`` are left untouched.
     """
-    for role in obj.get("responsible-roles", []) or []:
-        role_id = role.get("role-id", "")
-        if role_id:
-            meta_role = doc.get_role_by_id(role_id)
-            role["title"] = meta_role.get("title", "") if meta_role is not None else ""
-        party_uuids = role.get("party-uuids")
-        if party_uuids:
-            parties = []
-            for party_uuid in party_uuids:
-                party = doc.get_party_by_uuid(party_uuid)
-                parties.append({
-                    "uuid": party_uuid,
-                    "name": party.get("name", "") if party is not None else "",
-                })
-            role["parties"] = parties
+    if not isinstance(entry, dict):
+        return
+    role_id = entry.get("role-id", "")
+    if role_id:
+        meta_role = doc.get_role_by_id(role_id)
+        entry["title"] = meta_role.get("title", "") if meta_role is not None else ""
+    party_uuids = entry.get("party-uuids")
+    if party_uuids:
+        parties = []
+        for party_uuid in party_uuids:
+            party = doc.get_party_by_uuid(party_uuid)
+            if party is not None:
+                resolved = copy.deepcopy(party)
+                resolved.setdefault("uuid", party_uuid)
+                parties.append(resolved)
+            else:
+                parties.append({"uuid": party_uuid})
+        entry["parties"] = parties
+
+
+def _enrich_responsibilities(doc: OSCAL, obj: Any) -> Any:
+    """Recursively resolve the responsibility construct anywhere within *obj*.
+
+    Walks *obj* and, at every depth, annotates each ``responsible-roles`` /
+    ``responsible-parties`` entry via :func:`_resolve_responsibility_entry` (role ``title``
+    + full ``parties`` objects). Walking the whole result applies the same enrichment
+    uniformly wherever the construct nests — a component, a capability, an
+    implemented-requirement, a statement, a by-component, an inventory-item — and to any
+    future model that reuses it, without each getter having to know where it lives.
+
+    Mutates *obj* in place (callers pass a safe copy) and returns it.
+    """
+    if isinstance(obj, dict):
+        for key in _RESPONSIBILITY_KEYS:
+            for entry in obj.get(key, []) or []:
+                _resolve_responsibility_entry(doc, entry)
+        for value in obj.values():
+            _enrich_responsibilities(doc, value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _enrich_responsibilities(doc, item)
     return obj
 
 
@@ -166,6 +198,44 @@ def _build_component_relationships(obj: dict, tree_by_uuid: dict,
     return relationships
 
 
+def _index_controls_tree(controls_tree: list) -> dict:
+    """Flatten a catalog/profile ``controls_tree`` into ``{id: node}`` for fast lookup.
+
+    Indexes every node (groups and controls, at all depths) by its ``id`` so a
+    ``control-id`` can be resolved to its lightweight ``{id, label, title, ...}`` node
+    without walking or materializing the whole document. Built once per source and reused.
+    """
+    index: dict[str, dict] = {}
+
+    def _walk(nodes: list) -> None:
+        for node in nodes or []:
+            node_id = node.get("id")
+            if node_id and node_id not in index:
+                index[node_id] = node
+            _walk(node.get("children", []))
+
+    _walk(controls_tree)
+    return index
+
+
+def _overlay_implemented(nodes: list, impl_by_id: dict) -> None:
+    """Overlay SSP implementation onto a (copied) ``controls_tree``, in place.
+
+    For every control node (``group`` is false), set ``implemented`` (True when an
+    implemented-requirement cites its ``id``) and, when implemented, the requirement's
+    ``implemented-requirement-uuid`` so a UI can drill in via :meth:`SSP.control`. Group
+    nodes are left unmarked. Recurses control enhancements. *impl_by_id* maps control-id to
+    the first implementing requirement.
+    """
+    for node in nodes or []:
+        if not node.get("group"):
+            req = impl_by_id.get(node.get("id"))
+            node["implemented"] = req is not None
+            if req is not None:
+                node["implemented-requirement-uuid"] = req.get("uuid", "")
+        _overlay_implemented(node.get("children", []) or [], impl_by_id)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ComponentDefinition(OSCAL):
     """OSCAL Component Definition (cDef) model.
@@ -202,16 +272,17 @@ class ComponentDefinition(OSCAL):
         """Initialize cDef-specific state, then build ``implementation_tree`` if valid."""
         super()._init_common()
         self.implementation_tree: dict[str, list] = {"components": []}
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
 
     # -------------------------------------------------------------------------
     def validate(self, format: str = "") -> bool:
         """Validate the component definition, then (re)build ``implementation_tree``.
 
-        Extends :meth:`OSCAL.validate` so the view is refreshed the moment the content
-        is converted and found to be valid OSCAL. When the content is not valid the tree
-        is emptied — an invalid cDef exposes no navigable hierarchy.
+        OSCAL content is validated at load; the tree is built only when the content is
+        valid (an invalid cDef exposes no navigable summary and the tree is emptied). The
+        tree itself is a lightweight, OSCAL-aligned **summary** — it is never itself an
+        OSCAL-valid document.
 
         Args:
             format (str, optional): Accepted for API compatibility with the base
@@ -221,7 +292,7 @@ class ComponentDefinition(OSCAL):
             bool: True when every validation phase passes.
         """
         result = super().validate(format=format)
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
         else:
             self.implementation_tree = {"components": []}
@@ -235,7 +306,7 @@ class ComponentDefinition(OSCAL):
         into (or dropped from) this cDef's flat ``components`` list.
         """
         super()._after_imports_changed()
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
 
     # -------------------------------------------------------------------------
@@ -247,7 +318,8 @@ class ComponentDefinition(OSCAL):
         return cdef if isinstance(cdef, dict) else {}
 
     # -------------------------------------------------------------------------
-    def _component_node(self, obj: dict, title: str, node_type: str) -> dict[str, Any]:
+    def _component_node(self, obj: dict, title: str, node_type: str,
+                        source_index_cache: Optional[dict] = None) -> dict[str, Any]:
         """Build a single ``implementation_tree['components']`` node for a component or capability.
 
         Args:
@@ -256,9 +328,14 @@ class ComponentDefinition(OSCAL):
                 capability's ``name``).
             node_type (str, required): The node ``type`` (a component's ``type`` flag
                 or the literal ``"capability"``).
+            source_index_cache (dict, optional): Shared cache of per-source
+                ``controls_tree`` indexes, threaded through a whole tree build so each
+                control-implementation ``source`` is indexed at most once.
 
         Returns:
-            dict: A node ``{"uuid", "title", "type", "asset-type", "incorporates"}``.
+            dict: A node ``{"uuid", "title", "type", "asset-type", "incorporates",
+                "children"}``, where ``children`` holds this component/capability's
+                control-implementation subtree (empty when it has none).
         """
         asset_props = get_props(obj, name="asset-type")
         asset_type = asset_props[0].get("value", "") if asset_props else ""
@@ -276,7 +353,54 @@ class ComponentDefinition(OSCAL):
             "type":       node_type,
             "asset-type": asset_type,
             "incorporates": incorporates,
+            "children":   self._control_implementation_nodes(
+                obj, source_index_cache if source_index_cache is not None else {}),
         }
+
+    # -------------------------------------------------------------------------
+    def _control_implementation_nodes(self, obj: dict, source_index_cache: dict) -> list:
+        """Build the control-implementation child nodes for a component/capability tree node.
+
+        One child per ``control-implementations`` entry, carrying only ``uuid`` and
+        ``source`` plus the source's resolved ``title`` / ``version`` / ``published``
+        (from the import tree — :meth:`_control_implementation_source`); an unresolvable
+        source (missing, or not a catalog/profile) yields ``title`` ``"**Import Error**"``
+        and no version/published. Each control-implementation node's own ``children`` are
+        one node per ``implemented-requirement``, carrying its ``control-id`` plus the
+        control's ``label`` and ``title`` looked up in the source's ``controls_tree``
+        index (never materializing the full control). ``source_index_cache`` (keyed by
+        source object id) ensures each source is indexed once per build.
+        """
+        nodes: list[dict[str, Any]] = []
+        for ci in obj.get("control-implementations", []) or []:
+            source = ci.get("source", "")
+            source_obj = self._control_implementation_source(source)
+            node: dict[str, Any] = {"uuid": ci.get("uuid", ""), "source": source}
+
+            if source_obj is None:
+                node["title"] = "**Import Error**"
+                index: dict = {}
+            else:
+                node["title"]     = source_obj.title
+                node["version"]   = source_obj.version
+                node["published"] = source_obj.published
+                index = source_index_cache.get(id(source_obj))
+                if index is None:
+                    index = _index_controls_tree(source_obj.controls_tree)
+                    source_index_cache[id(source_obj)] = index
+
+            requirements: list[dict[str, Any]] = []
+            for req in ci.get("implemented-requirements", []) or []:
+                control_id = req.get("control-id", "")
+                ctl = index.get(control_id)
+                requirements.append({
+                    "control-id": control_id,
+                    "label": ctl.get("label", "") if ctl else "",
+                    "title": ctl.get("title", "") if ctl else "",
+                })
+            node["children"] = requirements
+            nodes.append(node)
+        return nodes
 
     # -------------------------------------------------------------------------
     def _imported_cdef_sources(self) -> list["ComponentDefinition"]:
@@ -319,23 +443,29 @@ class ComponentDefinition(OSCAL):
 
     # -------------------------------------------------------------------------
     def _build_implementation_tree(self) -> dict[str, list]:
-        """(Re)build ``implementation_tree`` — currently its flat ``components`` list.
+        """(Re)build ``implementation_tree`` — its ``components`` list and their subtrees.
 
         The ``components`` list holds ``{"uuid", "title", "type", "asset-type",
-        "incorporates"}`` nodes: one per defined component, one per capability (with
-        ``type`` ``"capability"``), followed by the nodes contributed by each imported
-        component definition's own ``implementation_tree['components']``. Rebuilt from
-        the current ``_dict`` on each call and stored on ``self.implementation_tree``.
+        "incorporates", "children"}`` nodes: one per defined component, one per capability
+        (with ``type`` ``"capability"``), followed by the nodes contributed by each
+        imported component definition's own ``implementation_tree['components']``. Each
+        node's ``children`` are its control-implementation subtree (control-implementation
+        → implemented-requirement nodes; see :meth:`_control_implementation_nodes`).
+        Rebuilt from the current ``_dict`` on each call and stored on
+        ``self.implementation_tree``.
 
         Returns:
             dict: The freshly built ``implementation_tree``.
         """
         root = self._cdef_root()
+        source_index_cache: dict = {}   # source object id -> its controls_tree index (built once)
         components: list[dict[str, Any]] = []
         for comp in root.get("components", []) or []:
-            components.append(self._component_node(comp, comp.get("title", ""), comp.get("type", "")))
+            components.append(self._component_node(
+                comp, comp.get("title", ""), comp.get("type", ""), source_index_cache))
         for cap in root.get("capabilities", []) or []:
-            components.append(self._component_node(cap, cap.get("name", ""), "capability"))
+            components.append(self._component_node(
+                cap, cap.get("name", ""), "capability", source_index_cache))
         for source in self._imported_cdef_sources():
             components.extend(copy.deepcopy(source.implementation_tree.get("components", []) or []))
         self.implementation_tree = {"components": components}
@@ -393,31 +523,86 @@ class ComponentDefinition(OSCAL):
         return obj
 
     # -------------------------------------------------------------------------
+    def _control_implementation_source(self, source_href: str) -> Optional[OSCAL]:
+        """The loaded catalog/profile behind a control-implementation ``source``, or None.
+
+        Resolves *source_href* through this cDef's import tree (resolving imports first
+        when needed). Returns None when the source is blank, is not present in the import
+        tree, did not load (not READY), or resolved to anything other than a ``catalog``
+        or ``profile``.
+        """
+        if not source_href:
+            return None
+        if not self.imports_resolved:
+            try:
+                self.resolve_imports()
+            except Exception as error:  # best-effort: an unresolved source yields None
+                logger.debug(f"control-implementations: import resolution deferred ({error}).")
+        # A source cited by more than one control-implementation appears multiple times in
+        # import_list — once READY, the rest DUPLICATE (object=None). Take the first READY
+        # candidate that loaded to a catalog/profile.
+        for entry in _find_import_candidates(self.import_list, source_href):
+            obj = entry.get("object")
+            if (entry.get("status") == ImportState.READY and obj is not None
+                    and getattr(obj, "model", None) in ("catalog", "profile")):
+                return obj
+        return None
+
+    # -------------------------------------------------------------------------
+    def _summarize_control_implementations(self, obj: dict) -> dict:
+        """Summarize each ``control-implementations`` entry on a component/capability copy.
+
+        For every control-implementation (when the array is present): the ``source``'s
+        ``title`` / ``version`` / ``published`` are inserted, or ``title`` is set to
+        ``"**Import Error**"`` when the source is not a resolvable catalog/profile (see
+        :meth:`_control_implementation_source`). An ``implemented-requirements-count`` is
+        inserted, then the heavyweight ``set-parameters`` and ``implemented-requirements``
+        keys are dropped. Mutates ``obj`` in place (a safe copy) and returns it.
+        """
+        for ci in obj.get("control-implementations", []) or []:
+            source_obj = self._control_implementation_source(ci.get("source", ""))
+            if source_obj is None:
+                ci["title"] = "**Import Error**"
+            else:
+                ci["title"]     = source_obj.title
+                ci["version"]   = source_obj.version
+                ci["published"] = source_obj.published
+            ci["implemented-requirements-count"] = len(ci.get("implemented-requirements", []) or [])
+            ci.pop("set-parameters", None)
+            ci.pop("implemented-requirements", None)
+        return obj
+
+    # -------------------------------------------------------------------------
     def component(self, uuid: str) -> Optional[dict]:
         """Retrieve a defined component by its ``uuid``, as a safe copy.
 
         Any ``incorporates-components`` entries on the component are annotated against
         ``implementation_tree['components']`` — see :meth:`_enrich_incorporates`. Any
-        ``responsible-roles`` are annotated with resolved role/party names — see
-        :func:`_enrich_responsible_roles`. A ``relationships`` object is inserted holding
+        ``responsible-roles`` are annotated with the resolved role ``title`` and a
+        ``parties`` array of full metadata party objects — see
+        :func:`_enrich_responsibilities`. A ``relationships`` object is inserted holding
         both this component's forward relationship links and the reverse relationships
         discovered by scanning every component in scope (the whole import tree) — see
-        :func:`_build_component_relationships`.
+        :func:`_build_component_relationships`. Any ``control-implementations`` are
+        summarized (source title/version/date, requirement count, heavy keys dropped) —
+        see :meth:`_summarize_control_implementations`.
 
         Args:
             uuid (str, required): The ``uuid`` of the defined component to retrieve.
 
         Returns:
-            Optional[dict]: A safe copy of the component (incorporates, responsible-roles
-                and relationships annotated), or None when no component has that uuid.
+            Optional[dict]: A safe copy of the component (incorporates, responsible-roles,
+                relationships and control-implementations annotated), or None when no
+                component has that uuid.
         """
         for comp in self._cdef_root().get("components", []) or []:
             if comp.get("uuid") == uuid:
                 result = self._enrich_incorporates(copy.deepcopy(comp))
-                result = _enrich_responsible_roles(self, result)
+                result = _enrich_responsibilities(self, result)
                 tree_by_uuid = {n.get("uuid"): n for n in self.implementation_tree["components"]}
                 result["relationships"] = _build_component_relationships(
                     result, tree_by_uuid, self._all_component_objects(), uuid)
+                self._summarize_control_implementations(result)
                 return result
         return None
 
@@ -426,18 +611,73 @@ class ComponentDefinition(OSCAL):
         """Retrieve a capability by its ``uuid``, as a safe copy.
 
         Any ``incorporates-components`` entries on the capability are annotated against
-        ``implementation_tree['components']`` — see :meth:`_enrich_incorporates`.
+        ``implementation_tree['components']`` — see :meth:`_enrich_incorporates`. Any
+        ``responsible-roles`` are annotated with the resolved role ``title`` and a
+        ``parties`` array of full metadata party objects — see
+        :func:`_enrich_responsibilities`. Any ``control-implementations`` are summarized
+        (source title/version/date, requirement count, heavy keys dropped) — see
+        :meth:`_summarize_control_implementations`.
 
         Args:
             uuid (str, required): The ``uuid`` of the capability to retrieve.
 
         Returns:
-            Optional[dict]: A safe copy of the capability (incorporates annotated), or
-                None when no capability has that uuid.
+            Optional[dict]: A safe copy of the capability (incorporates, responsible-roles
+                and control-implementations annotated), or None when no capability has that uuid.
         """
         for cap in self._cdef_root().get("capabilities", []) or []:
             if cap.get("uuid") == uuid:
-                return self._enrich_incorporates(copy.deepcopy(cap))
+                result = self._enrich_incorporates(copy.deepcopy(cap))
+                _enrich_responsibilities(self, result)
+                self._summarize_control_implementations(result)
+                return result
+        return None
+
+    # -------------------------------------------------------------------------
+    def control_implementation(self, uuid: str) -> Optional[dict]:
+        """Retrieve a ``control-implementation`` by its ``uuid``, as a safe copy.
+
+        Searches every component and capability in this cDef for a control-implementation
+        with the given ``uuid``. All of its ``implemented-requirements`` reference controls
+        from the same ``source`` catalog/profile, so that source is resolved once (through
+        the import tree — see :meth:`_control_implementation_source`) and reused: for each
+        implemented-requirement, the control named by ``control-id`` is fetched **without
+        children** (``depth=0``) and inserted under a ``control`` key (``None`` when the
+        source is not a resolvable catalog/profile or the control is not found).
+
+        Unlike :meth:`component`/:meth:`capability` (which drop them), this getter keeps
+        the ``implemented-requirements`` and ``set-parameters`` intact and augments each
+        requirement with its ``control``. Any ``responsible-roles`` on the requirements
+        (and nested statements/by-components) are resolved with the role ``title`` and a
+        ``parties`` array of full metadata party objects — see
+        :func:`_enrich_responsibilities`.
+
+        Args:
+            uuid (str, required): The ``uuid`` of the control-implementation.
+
+        Returns:
+            Optional[dict]: A safe copy of the control-implementation with each
+                implemented-requirement's ``control`` inserted, or None when no
+                control-implementation has that uuid.
+        """
+        root = self._cdef_root()
+        holders = (root.get("components", []) or []) + (root.get("capabilities", []) or [])
+        for holder in holders:
+            for ci in holder.get("control-implementations", []) or []:
+                if ci.get("uuid") == uuid:
+                    result = copy.deepcopy(ci)
+                    # implemented-requirements (and any nested statements/by-components)
+                    # carry the responsibility construct — enrich before the catalog
+                    # controls are attached below (they have no such construct).
+                    _enrich_responsibilities(self, result)
+                    source_obj = self._control_implementation_source(result.get("source", ""))
+                    for req in result.get("implemented-requirements", []) or []:
+                        control_id = req.get("control-id", "")
+                        req["control"] = (
+                            source_obj.get_control_by_id(control_id, depth=0)
+                            if source_obj is not None and control_id else None
+                        )
+                    return result
         return None
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -457,8 +697,12 @@ class SSP(OSCAL):
               ``{"uuid", "title", "type"}`` plus ``asset-type`` (the value of the
               ``asset-type`` prop in the OSCAL default namespace) only when that prop
               is present.
-            * ``controls`` — the imported profile's ``controls_tree`` (empty when the
-              import-profile is absent or unresolved).
+            * ``controls`` — one ``{"control-id", "label", "title"}`` node per
+              ``control-implementation.implemented-requirements`` entry (the controls this
+              SSP implements), with label/title resolved from the imported profile's
+              ``controls_tree`` (empty when the import-profile is absent/unresolved or the
+              control-id is not found). Unlike a component-definition, an SSP's
+              implemented-requirements live at the root ``control-implementation``.
 
             All three keys are always present (empty lists by default). Built when the
             SSP is valid OSCAL and refreshed on validation, content mutation, and import
@@ -472,7 +716,7 @@ class SSP(OSCAL):
             "components": [],
             "controls": [],
         }
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
 
     def _ssp_root(self) -> dict[str, Any]:
@@ -496,7 +740,7 @@ class SSP(OSCAL):
             bool: True when every validation phase passes.
         """
         result = super().validate(format=format)
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
         else:
             self.implementation_tree = {
@@ -514,14 +758,14 @@ class SSP(OSCAL):
         ``system-implementation`` (components, leveraged authorizations) are reflected.
         """
         super()._on_content_mutated()
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
 
     # -------------------------------------------------------------------------
     def _after_imports_changed(self) -> None:
         """Rebuild ``implementation_tree`` after the import-profile set changes."""
         super()._after_imports_changed()
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_implementation_tree()
 
     # -------------------------------------------------------------------------
@@ -582,8 +826,23 @@ class SSP(OSCAL):
                 node["asset-type"] = asset_props[0].get("value", "")
             components.append(node)
 
+        # Controls: start from the imported profile's ``controls_tree`` (the SSP's control
+        # baseline), then OVERLAY the SSP's implementation. Unlike a component-definition —
+        # where control-implementations (and their implemented-requirements) hang off each
+        # component/capability — an SSP has a single root ``control-implementation`` whose
+        # ``implemented-requirements`` record which baseline controls are implemented. Each
+        # control node gains ``implemented`` (bool); an implemented node also gets the
+        # implementing requirement's ``implemented-requirement-uuid`` (so a UI can drill in
+        # via :meth:`control`). Empty when the import-profile is absent or unresolved.
         profile = self._imported_profile()
         controls = copy.deepcopy(getattr(profile, "controls_tree", []) or []) if profile else []
+        ci = root.get("control-implementation", {}) or {}
+        impl_by_id: dict[str, dict] = {}
+        for req in ci.get("implemented-requirements", []) or []:
+            control_id = req.get("control-id", "")
+            if control_id:
+                impl_by_id.setdefault(control_id, req)   # first requirement per control-id
+        _overlay_implemented(controls, impl_by_id)
 
         self.implementation_tree = {
             "leveraged-authorizations": leveraged,
@@ -647,8 +906,9 @@ class SSP(OSCAL):
         implementation attributes work to this component — i.e. the component's uuid is
         cited in the requirement's ``by-components`` or in any
         ``statements[].by-components``. Control-ids are de-duplicated and kept in
-        document order. Any ``responsible-roles`` are annotated with resolved role/party
-        names — see :func:`_enrich_responsible_roles`. A ``relationships`` object is
+        document order. Any ``responsible-roles`` are annotated with the resolved role
+        ``title`` and a ``parties`` array of full metadata party objects — see
+        :func:`_enrich_responsibilities`. A ``relationships`` object is
         inserted holding both this component's forward relationship links and the reverse
         relationships discovered by scanning the SSP's other components — see
         :func:`_build_component_relationships`.
@@ -666,7 +926,7 @@ class SSP(OSCAL):
             if comp.get("uuid") == uuid:
                 result = copy.deepcopy(comp)
                 result["implemented-controls"] = self._implemented_controls_for(uuid)
-                result = _enrich_responsible_roles(self, result)
+                result = _enrich_responsibilities(self, result)
                 tree_by_uuid = {n.get("uuid"): n for n in self.implementation_tree["components"]}
                 result["relationships"] = _build_component_relationships(
                     result, tree_by_uuid, self._all_component_objects(), uuid)
@@ -696,11 +956,12 @@ class SSP(OSCAL):
         everywhere else in the library, where ``0`` already means "node only.")
 
         Each by-component — both the requirement's own ``by-components`` and each
-        ``statements[].by-components`` — is annotated: its cited component's ``title``,
-        ``type`` and ``asset-type`` (from ``implementation_tree['components']``) are added
-        as siblings of ``component-uuid``, and its ``responsible-roles`` gain the resolved
-        role ``title`` and a ``parties`` array of ``{uuid, name}`` (see
-        :func:`_enrich_responsible_roles`).
+        ``statements[].by-components`` — is annotated with its cited component's ``title``,
+        ``type`` and ``asset-type`` (from ``implementation_tree['components']``) as siblings
+        of ``component-uuid``. The responsibility construct is then resolved everywhere it
+        nests in the requirement — the requirement's own ``responsible-roles``, each
+        statement's, and every by-component's — with the role ``title`` and a ``parties``
+        array of full metadata party objects (see :func:`_enrich_responsibilities`).
 
         When the requirement carries a non-empty ``set-parameters`` array and a control is
         fetched, those settings are applied to the inserted control's parameters (the
@@ -725,18 +986,18 @@ class SSP(OSCAL):
         for req in ci.get("implemented-requirements", []) or []:
             if req.get("control-id") == identifier or req.get("uuid") == identifier:
                 result = copy.deepcopy(req)
-                # Annotate each by-component (requirement-level and statement-level): its
-                # cited component's title/type/asset-type from implementation_tree, and its
-                # responsible-roles with resolved role titles + party names (the latter a
-                # no-op where there are no responsible-roles).
+                # Annotate each by-component (requirement-level and statement-level) with its
+                # cited component's title/type/asset-type from implementation_tree.
                 tree_by_uuid = {n.get("uuid"): n for n in self.implementation_tree["components"]}
                 for by_comp in result.get("by-components", []) or []:
                     self._annotate_by_component(by_comp, tree_by_uuid)
-                    _enrich_responsible_roles(self, by_comp)
                 for statement in result.get("statements", []) or []:
                     for by_comp in statement.get("by-components", []) or []:
                         self._annotate_by_component(by_comp, tree_by_uuid)
-                        _enrich_responsible_roles(self, by_comp)
+                # Resolve the responsibility construct everywhere it nests — the requirement
+                # itself, each statement, and every by-component — in one recursive pass
+                # (before the control is attached below; it carries no such construct).
+                _enrich_responsibilities(self, result)
                 if with_control:
                     control_id = req.get("control-id", "")
                     profile = self._imported_profile()

@@ -263,7 +263,8 @@ _OSCAL_NS = "http://csrc.nist.gov/ns/oscal" # OSCAL default namespace for props,
 # (missing-required, cardinality, choice) are intentionally excluded: they can leave the
 # tree ambiguous or incomplete, so they still block. See docs/VALIDATION.md and the
 # ``oscal_import_nonblocking_errors`` memory note. Tune via ``OSCAL.import_nonblocking_error_types``.
-IMPORT_NONBLOCKING_ERROR_TYPES: frozenset = frozenset({"allowed-values", "invalid-type"})
+IMPORT_NONBLOCKING_ERROR_TYPES: frozenset = frozenset(
+    {"allowed-values", "invalid-type", "matches", "has-cardinality", "constraint-violation"})
 
 
 def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
@@ -300,6 +301,407 @@ def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
             if instance.get(flag) not in cond.get("values", []):
                 return False
     return True
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# L2 allowed-values — union semantics (step-2 prototype, not yet wired into the walk)
+#
+# A single flag is frequently governed by SEVERAL allowed-values constraints: one general
+# set plus context-scoped sets (e.g. a component's props accept `vendor-name` only when the
+# component `@type` is software/hardware/service). The correct L2 rule is UNION over the
+# in-scope constraints, not "fails any one":
+#   * a constraint is in scope when its *context-gate* conditions hold against the
+#     DEFINITION-context object (the node the constraint was declared on — e.g. the
+#     component) AND its *target-filter* conditions hold against the matched leaf object
+#     (e.g. the prop's namespace);
+#   * `allow-other` is least-restrictive — if ANY in-scope constraint permits others, the
+#     flag accepts anything (value-checking is short-circuited) while the value sets remain
+#     in the index for later GUI use;
+#   * with no in-scope constraint there is NO L2 opinion (not an error).
+# Conditions are partitioned here with a prototype heuristic (flag-equals/flag-in are
+# context-gates, namespace is a target-filter); Phase 0 of the build plan moves that
+# partition into the index so the evaluator is fed pre-tagged conditions.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+_CONTEXT_GATE_CONDITION_TYPES = frozenset({"flag-equals", "flag-in"})
+
+
+def _partition_conditions(constraint: dict) -> tuple:
+    """Split a constraint's conditions into ``(context_gates, target_filters)``.
+
+    Context-gates are predicates on the constraint's definition-node flags (they decide
+    whether the constraint is in scope for the current context object). Target-filters
+    (currently only ``namespace``) decide whether a matched leaf value is governed.
+    """
+    gates, filters = [], []
+    for cond in constraint.get("conditions", []) or []:
+        if cond.get("type") in _CONTEXT_GATE_CONDITION_TYPES:
+            gates.append(cond)
+        else:
+            filters.append(cond)
+    return gates, filters
+
+
+def _context_gates_met(gates: list, context_obj: Any) -> bool:
+    """True when every context-gate holds against ``context_obj`` (its own flags).
+
+    An absent flag never satisfies a gate, so a context-scoped constraint simply does not
+    apply to a context that lacks the gating flag (it is excluded from the union).
+    """
+    if not gates:
+        return True
+    if not isinstance(context_obj, dict):
+        return False
+    for g in gates:
+        flag = g.get("flag", "")
+        actual = context_obj.get(flag)
+        if g.get("type") == "flag-equals":
+            if actual is None or str(actual) != str(g.get("value", "")):
+                return False
+        elif g.get("type") == "flag-in":
+            if actual is None or str(actual) not in {str(v) for v in g.get("values", [])}:
+                return False
+    return True
+
+
+def _target_filters_met(filters: list, leaf_obj: Any) -> bool:
+    """True when target-filters admit ``leaf_obj`` (currently only ``namespace``).
+
+    A prop/part with no explicit ``@ns`` defaults to the OSCAL namespace, so a namespace
+    filter that lists the OSCAL ns (or allows absent) admits it; a different (vendor)
+    namespace is not governed by an OSCAL allowed-values set.
+    """
+    for f in filters:
+        if f.get("type") == "namespace":
+            allowed = f.get("values", [])
+            ns_val = (leaf_obj or {}).get("ns") if isinstance(leaf_obj, dict) else None
+            if ns_val is None:
+                ns_val = _OSCAL_NS  # OSCAL default per spec
+            if ns_val not in allowed:
+                return False
+    return True
+
+
+def _resolve_flag_allowed_values(constraints: list, context_obj: Any,
+                                 leaf_obj: Any = None) -> dict:
+    """Resolve the union of in-scope allowed-values for one flag.
+
+    Args:
+        constraints: the allowed-values constraints governing the flag.
+        context_obj: the DEFINITION-context instance (gates are evaluated against this).
+        leaf_obj: the matched target instance carrying the flag (target-filters apply here);
+            defaults to ``context_obj`` for self/own-flag constraints.
+
+    Returns:
+        ``{"governed": bool, "allow_other": bool, "allowed": set, "constraint_ids": list}``.
+        ``governed`` is False when no allowed-values constraint is in scope (no L2 opinion).
+    """
+    if leaf_obj is None:
+        leaf_obj = context_obj
+    allowed: set = set()
+    ids: list = []
+    allow_other = False
+    governed = False
+    for con in constraints:
+        if con.get("type") != "allowed-values":
+            continue
+        gates, filters = _partition_conditions(con)
+        if not _context_gates_met(gates, context_obj):
+            continue
+        if not _target_filters_met(filters, leaf_obj):
+            continue
+        governed = True
+        ids.append(con.get("id"))
+        if con.get("allow-other"):
+            allow_other = True
+        allowed |= {v.get("value") for v in con.get("values", [])}
+    return {"governed": governed, "allow_other": allow_other,
+            "allowed": allowed, "constraint_ids": ids}
+
+
+def _flag_value_allowed(value: Any, resolved: dict) -> bool:
+    """True when ``value`` satisfies a resolved allowed-values union.
+
+    No governing constraint ⇒ no L2 opinion (True). ``allow_other`` ⇒ least-restrictive
+    shortcut (True). Otherwise the value must be in the union of in-scope value sets.
+    """
+    if not resolved.get("governed"):
+        return True
+    if resolved.get("allow_other"):
+        return True
+    return value in resolved.get("allowed", set())
+
+
+def _self_gate_ok(gate: list, instance: dict) -> bool:
+    """True when every ``(flag, [vals])`` self-gate holds against *instance*."""
+    for flag, vals in gate or []:
+        if str(instance.get(flag)) not in {str(v) for v in vals}:
+            return False
+    return True
+
+
+def _matches_resolve_value(spec: dict, instance: dict, value_key: str):
+    """Resolve the scalar value a ``matches`` check applies to, per its ``match-spec``.
+
+    Returns the string value, or ``None`` when the target does not apply here (gate not
+    met, flag/field absent, or a non-scalar). Only the self/own-flag L2 shapes are handled
+    (child-path ``matches`` targets are deferred to L3).
+    """
+    if not isinstance(instance, dict) and spec.get("kind") == "self":
+        # a bare-string field value with no flags
+        return instance if isinstance(instance, str) else None
+    if not isinstance(instance, dict):
+        return None
+    kind = spec.get("kind")
+    if not _self_gate_ok(spec.get("gate", []), instance):
+        return None
+    if kind == "flag":
+        val = instance.get(spec.get("flag"))
+        return val if isinstance(val, str) else None
+    if kind == "self":
+        val = instance.get(value_key) if value_key else None
+        return val if isinstance(val, str) else None
+    return None
+
+
+def _apply_matches(value: str, regex: str | None, datatype: str | None,
+                   location: str, field: str, identifier: str | None) -> dict | None:
+    """Apply a ``matches`` regex and/or datatype to *value*; return an error dict or None.
+
+    The regex must match the whole value (Metaschema ``matches`` is anchored); the datatype
+    reuses the shared OSCAL datatype patterns via :func:`_check_datatype`.
+    """
+    if not isinstance(value, str) or value == "":
+        return None
+    if regex:
+        try:
+            if re.fullmatch(regex, value) is None:
+                return {
+                    "error-type": "matches",
+                    "location":   location,
+                    "identifier": identifier,
+                    "field":      field,
+                    "value":      value,
+                    "expected":   {"regex": regex},
+                }
+        except re.error:
+            pass  # an uncompilable metaschema regex is skipped, not a document error
+    if datatype:
+        err = _check_datatype(value, datatype, location, field, identifier)
+        if err:
+            err["error-type"] = "matches"
+            err["expected"]["via"] = "matches"
+            return err
+    return None
+
+
+def _find_child_index(node: dict, elem: str) -> dict | None:
+    """Return *node*'s child index node whose use-name/name is *elem* (descends into
+    ``choice`` groupings), or None. Used to resolve an element step's JSON key."""
+    for ch in node.get("children", []) or []:
+        if ch.get("structure-type") == "choice":
+            found = _find_child_index(ch, elem)
+            if found is not None:
+                return found
+        elif (ch.get("use-name") or ch.get("name")) == elem:
+            return ch
+    return None
+
+
+def _count_cardinality_target(node_index: dict, instance: Any, spec: dict):
+    """Count the child elements matching a ``has-cardinality`` ``card-spec`` under
+    *instance*. Returns the count, or None when not applicable (gate unmet / non-dict)."""
+    if not isinstance(instance, dict):
+        return None
+    if not _self_gate_ok(spec.get("self_gate", []), instance):
+        return None
+    step = spec["step"]
+    child_idx = _find_child_index(node_index, step["elem"])
+    jkey = (child_idx.get("group-as") or child_idx.get("use-name")) if child_idx else None
+    jkey = jkey or step["elem"]
+    val = instance.get(jkey)
+    items = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
+    names = step.get("names")
+    return sum(1 for it in items
+               if names is None or (isinstance(it, dict) and str(it.get("name")) in names))
+
+
+def _resolve_test_path(node_index: dict, instance: Any, steps: list) -> list:
+    """Resolve an expect-test path (list of step dicts) forward from *instance*, returning
+    the reached values/nodes. Element steps use the index for JSON keys; flag steps read the
+    flag off the current dict(s); ``self`` stays put."""
+    frontier = [(node_index, instance)]
+    for st in steps:
+        nf = []
+        for nidx, inst in frontier:
+            kind = st.get("kind")
+            if kind == "self":
+                nf.append((nidx, inst))
+            elif kind == "flag":
+                if isinstance(inst, dict):
+                    v = inst.get(st["flag"])
+                    if v is not None:
+                        nf.append((None, v))
+            else:  # element
+                if not isinstance(inst, dict):
+                    continue
+                child_idx = _find_child_index(nidx, st["elem"]) if nidx else None
+                jkey = (child_idx.get("group-as") or child_idx.get("use-name")) if child_idx else st["elem"]
+                val = inst.get(jkey)
+                items = val if isinstance(val, list) else ([val] if val is not None else [])
+                names = st.get("names")
+                for it in items:
+                    if names is None or (isinstance(it, dict) and str(it.get("name")) in names):
+                        nf.append((child_idx, it))
+        frontier = nf
+    return [v for _, v in frontier]
+
+
+def _eval_test_bool(ast: dict, node_index: dict, instance: Any) -> bool:
+    """Evaluate a restricted expect-test AST (and/or/not/exists/eq) against *instance*.
+
+    Unknown ops default to True (pass) — the classifier only promotes fully-parseable
+    tests, so this is a defensive no-false-positive guard.
+    """
+    if not ast:
+        return True
+    op = ast.get("op")
+    if op == "or":
+        return any(_eval_test_bool(a, node_index, instance) for a in ast.get("args", []))
+    if op == "and":
+        return all(_eval_test_bool(a, node_index, instance) for a in ast.get("args", []))
+    if op == "not":
+        return not _eval_test_bool(ast.get("arg"), node_index, instance)
+    if op == "exists":
+        return len(_resolve_test_path(node_index, instance, ast.get("path", []))) > 0
+    if op == "eq":
+        vals = {str(v) for v in ast.get("values", [])}
+        return any(str(r) in vals for r in _resolve_test_path(node_index, instance, ast.get("path", [])))
+    return True
+
+
+def _find_gate_context(gates: list, chain: list) -> Any:
+    """Nearest instance in ``chain`` (nearest-first) that carries every gate flag.
+
+    A context-gate (e.g. ``(.)[@type=…]``) is evaluated at the constraint's definition
+    node — the object ``(.)`` points at — which is, by construction, the nearest enclosing
+    object that owns the gating flag. Returns ``None`` when no instance in scope carries
+    the flags (the guarded constraint then simply does not apply here).
+    """
+    if not gates:
+        return chain[0] if chain else None
+    need = {g.get("flag") for g in gates}
+    for inst in chain:
+        if isinstance(inst, dict) and need <= set(inst.keys()):
+            return inst
+    return None
+
+
+def _l2b_in_scope(spec: dict, current_use_name: str, current_inst: Any,
+                  ancestors: list) -> bool:
+    """True when an L2-B element-``@name``-gated constraint applies to the current leaf.
+
+    ``spec`` is the reverse-match spec produced by the parser (``metaschema_parser.
+    _parse_l2b_target``): ``{"leaf", "segments": [{"axis", "elem", "names"}, …]}``. The last
+    segment is the *governed* element — its element name must equal ``current_use_name`` and
+    its ``@name`` predicate (if any) must match ``current_inst`` (e.g. a
+    ``prop[@name='method']/@value`` constraint governs only props named ``method``). The
+    earlier segments are matched up the ``ancestors`` chain (nearest-first
+    ``(use_name, instance)`` pairs), honoring child (``/``) vs descendant (``//``) axes and
+    ``@name`` gates.
+    """
+    segs = spec.get("segments") or []
+    if not segs:
+        return False
+
+    def _name_ok(inst, names):
+        return names is None or (isinstance(inst, dict) and str(inst.get("name")) in names)
+
+    gov = segs[-1]
+    if current_use_name != gov.get("elem"):
+        return False
+    if not _name_ok(current_inst, gov.get("names")):
+        return False
+
+    ci = 0
+    axis = segs[-1].get("axis")          # how the governed element connects upward
+    for seg in reversed(segs[:-1]):
+        if axis == "child":
+            if ci >= len(ancestors):
+                return False
+            un, inst = ancestors[ci]
+            if un != seg.get("elem") or not _name_ok(inst, seg.get("names")):
+                return False
+            ci += 1
+        else:  # descendant: match some ancestor at or above the current position
+            found = -1
+            for j in range(ci, len(ancestors)):
+                un, inst = ancestors[j]
+                if un == seg.get("elem") and _name_ok(inst, seg.get("names")):
+                    found = j
+                    break
+            if found < 0:
+                return False
+            ci = found + 1
+        axis = seg.get("axis")
+    return True
+
+
+def _resolve_allowed_values_union(constraints: list, chain: list) -> dict:
+    """Union-resolve the L2 allowed-values for one flag against an ancestor chain.
+
+    ``chain`` is nearest-first ``(use_name, instance)`` pairs: ``chain[0]`` is the flag's
+    own object (the governed element), then each enclosing element up to the document root.
+    For each L2 (``valid``) allowed-values constraint, in scope when:
+
+      * (L2-A) its context-gates hold at the nearest chain instance owning the gate flags
+        — what ``(.)`` resolves to; and/or
+      * (L2-B) its cached ``l2b-spec`` reverse-matches the ancestor chain (element-``@name``
+        gate); and
+      * its target-filters (``namespace``) hold against the leaf object (``chain[0]``).
+
+    In-scope constraints contribute their value sets to the union; ``allow-other`` is
+    least-restrictive. ``fully-compliant`` (L3) constraints are skipped. Returns
+    ``{"governed", "allow_other", "allowed", "entries", "constraint_ids"}``; ``governed`` is
+    False when nothing is in scope (⇒ no L2 opinion).
+    """
+    instances = [inst for _, inst in chain]
+    leaf_obj = instances[0] if instances else {}
+    ancestors = chain[1:]
+    cur_use_name = chain[0][0] if chain else None
+    allowed: set = set()
+    entries: dict = {}
+    ids: list = []
+    allow_other = False
+    governed = False
+    for con in constraints:
+        if con.get("type") != "allowed-values":
+            continue
+        if con.get("validation-level") == "fully-compliant":
+            continue
+        filters = _partition_conditions(con)[1]
+        if not _target_filters_met(filters, leaf_obj):
+            continue
+        spec = con.get("l2b-spec")
+        if spec is not None:
+            if not _l2b_in_scope(spec, cur_use_name, leaf_obj, ancestors):
+                continue
+        else:
+            gates = _partition_conditions(con)[0]
+            ctx = _find_gate_context(gates, instances)
+            if gates and ctx is None:
+                continue
+            if not _context_gates_met(gates, ctx or {}):
+                continue
+        governed = True
+        ids.append(con.get("id"))
+        if con.get("allow-other"):
+            allow_other = True
+        for v in con.get("values", []):
+            val = v.get("value")
+            allowed.add(val)
+            entries.setdefault(val, v.get("description", ""))
+    return {"governed": governed, "allow_other": allow_other, "allowed": allowed,
+            "entries": entries, "constraint_ids": ids}
 
 
 # Progressive content validation states. Each level implies all prior levels passed.
@@ -982,8 +1384,21 @@ class OSCAL:
             "allowed-values": None,  # every constrained value is within its enumerated set
             "cardinality":    None,  # all arrays satisfy their min-occurs/max-occurs bounds
             "choice":         None,  # every choice is mutually exclusive (at most one member) and has a member when one is required
+            "constraints":    None,  # L2 metaschema constraint families: matches / has-cardinality / expect
         }
         self.validation_errors: list[dict] = []  # structured errors from the most recent validate() call
+        # L3 (full-compliance) result, set only by validate_full(): None = not yet
+        # evaluated, True/False once the XML/XPath pass has run. is_fully_compliant
+        # exposes this as a tri-state. Reset to None whenever validate() re-runs.
+        self._fully_compliant: bool | None = None
+        self.full_validation_errors: list[dict] = []  # L3 errors from the most recent validate_full()
+        # Identifier indexes built during the validation walk (one pass, not a second
+        # traversal). Each maps an id/uuid value -> list of occurrence records
+        # {"value", "key", "path"} where "key" is the containing collection's JSON key and
+        # "path" is the JSON path to the object carrying the identifier. A value with more
+        # than one record is a duplicate (consumed by the future uniqueness check).
+        self._id_index: dict[str, list[dict]] = {}
+        self._uuid_index: dict[str, list[dict]] = {}
         self.errors = {} # A dictionary to hold any acquisition, validation or importing errors encountered during processing
 
         # Get the OSCAL support object
@@ -1147,8 +1562,54 @@ class OSCAL:
     # -------------------------------------------------------------------------
     @property
     def is_valid(self) -> bool:
-        """bool: True when content passes OSCAL validation (``content_state >= VALID``)."""
+        """bool: True when content passes **L2 (``valid``)** validation (``content_state >= VALID``).
+
+        L2 validity requires every phase to pass with the checks the library evaluates
+        natively on the JSON: structure, cardinality, choice, data-types, and the
+        **natively-evaluable** allowed-values (those tagged ``valid`` in the metaschema
+        index). Ancestor/cross-path-scoped allowed-values (tagged ``fully-compliant``/L3)
+        and the other constraint families (``matches``/``expect``/``is-unique``/…) are
+        **not** enforced here — they are deferred to :meth:`validate_full` and reflected by
+        :attr:`is_fully_compliant`. This tier is designed to meet or exceed the guarantees
+        of the NIST-published OSCAL JSON Schema. For gating that only needs structural
+        soundness (tree building, import resolution), use :attr:`is_minimally_valid`.
+        """
         return self.content_state >= ContentState.VALID
+
+    # -------------------------------------------------------------------------
+    @property
+    def is_fully_compliant(self) -> bool | None:
+        """bool | None: Tri-state L3 (``fully-compliant``) conformance.
+
+        L3 is the strictest tier: L2 validity **plus** every constraint the automatic walk
+        defers — ancestor/cross-path allowed-values and the ``matches``/``expect``/
+        ``is-unique``/``index``/``index-has-key``/``has-cardinality`` families — evaluated
+        against XML with a real Metapath/XPath engine by :meth:`validate_full`.
+
+        Returns:
+            * ``False`` when the document is not even L2-:attr:`is_valid` (it cannot be
+              fully compliant).
+            * ``None`` when L2 passes but full validation has not been run yet (unknown).
+            * ``True`` / ``False`` once :meth:`validate_full` has evaluated the L3 checks.
+        """
+        if not self.is_valid:
+            return False
+        return self._fully_compliant
+
+    # -------------------------------------------------------------------------
+    @property
+    def is_minimally_valid(self) -> bool:
+        """bool: True when content is well-formed and has no *structural* validation errors.
+
+        Minimal validity is the reliable, operational bar: the document is well-formed and
+        free of structural errors (``missing-required`` / ``cardinality`` / ``choice``),
+        i.e. its hierarchy is complete and navigable. Value-quality errors (``allowed-values``,
+        ``invalid-type``) do not affect it — those are the gap between minimal and full
+        (:attr:`is_valid`) validity. Summary trees and import resolution gate on this, not
+        on full validity. Structural vs value-quality is the same split used by
+        :attr:`import_blocking_errors` / :attr:`import_nonblocking_error_types`.
+        """
+        return self.is_well_formed and not self.import_blocking_errors
 
     # -------------------------------------------------------------------------
     @property
@@ -1644,7 +2105,7 @@ class OSCAL:
         retry_item: dict = {"href": resolved, "original": False}
         try:
             child = OSCAL.acquire(resolved)
-            if child.is_valid:
+            if child.is_minimally_valid:
                 retry_item["status"]        = ImportState.READY
                 target_entry["href_valid"]  = resolved
                 target_entry["object"]      = child
@@ -2452,7 +2913,7 @@ class OSCAL:
         child = OSCAL.acquire(resolved, cache=cache_directive)
         child._registry = self._registry
 
-        if child.is_valid:
+        if child.is_minimally_valid:
             key = child._identity_key()
             if key is not None:
                 if not force_reload:
@@ -2686,7 +3147,7 @@ class OSCAL:
                     rlinks_tried.append(resolved)
                     try:
                         child = self._acquire_shared(resolved, cache_directive)
-                        if child.is_valid:
+                        if child.is_minimally_valid:
                             item["status"]      = ImportState.READY
                             entry["href_valid"] = resolved
                             entry["object"]     = child
@@ -3259,9 +3720,15 @@ class OSCAL:
 
         Returns True only when every phase passes (content_state reaches VALID).
         """
-        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
+        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints"):
             self.validation_status[phase] = None
         self.validation_errors = []
+        # Any prior L3 result is invalidated by re-running the L2 walk.
+        self._fully_compliant = None
+        self.full_validation_errors = []
+        # Rebuilt by the walk below (same single traversal).
+        self._id_index = {}
+        self._uuid_index = {}
 
         if format and format not in OSCAL_FORMATS:
             logger.error(f"Validation format '{format}' is not a recognized OSCAL format.")
@@ -3274,7 +3741,7 @@ class OSCAL:
         index = self._support.get_metaschema_index(self.oscal_version, self.model)
         if index is None:
             logger.warning("Metaschema index unavailable; treating all validation phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -3286,7 +3753,7 @@ class OSCAL:
 
         if not isinstance(model_instance, dict) or model_nodes is None:
             logger.warning("Cannot locate model root or index nodes; treating all phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -3302,12 +3769,18 @@ class OSCAL:
         av_errors          = [e for e in errors if e["error-type"] == "allowed-values"]
         cardinality_errors = [e for e in errors if e["error-type"] == "cardinality"]
         choice_errors      = [e for e in errors if e["error-type"] == "choice"]
+        # L2 metaschema constraint families (regex/datatype `matches`, `has-cardinality`,
+        # and `expect`) report under their own phase so they do not perturb the structural
+        # or pure datatype/allowed-values phase flags.
+        constraint_errors  = [e for e in errors
+                              if e["error-type"] in ("matches", "has-cardinality", "constraint-violation")]
 
         self.validation_status["structure"]      = (len(struct_errors)      == 0)
         self.validation_status["data-types"]     = (len(dtype_errors)       == 0)
         self.validation_status["allowed-values"] = (len(av_errors)          == 0)
         self.validation_status["cardinality"]    = (len(cardinality_errors) == 0)
         self.validation_status["choice"]         = (len(choice_errors)      == 0)
+        self.validation_status["constraints"]    = (len(constraint_errors)  == 0)
         self.validation_errors = errors
 
         for e in errors:
@@ -3316,7 +3789,7 @@ class OSCAL:
                 f"field={e.get('field', '')} value={e.get('value')!r}"
             )
 
-        _phases = ("structure", "data-types", "allowed-values", "cardinality", "choice")
+        _phases = ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints")
         all_passed = all(self.validation_status[p] for p in _phases)
         if all_passed:
             self.content_state = ContentState.VALID
@@ -3344,6 +3817,145 @@ class OSCAL:
         return self.is_valid
 
     # -------------------------------------------------------------------------
+    def validate_full(self) -> bool | None:
+        """Run L3 (``fully-compliant``) validation and set :attr:`is_fully_compliant`.
+
+        L3 covers every constraint the automatic L2 walk defers: ancestor/cross-path-scoped
+        allowed-values (tagged ``fully-compliant`` in the index) and the other rule families
+        captured verbatim in the index (``matches``, ``expect``, ``is-unique``, ``index``,
+        ``index-has-key``, ``has-cardinality``). These targets are Metapath/XPath-3.x against
+        the OSCAL **XML**, so the engine evaluates them on the XML projection of ``_dict``
+        rather than re-implementing XPath over JSON.
+
+        .. note::
+           **Not yet implemented.** The L3 engine (XML projection + Metapath evaluation +
+           ``has-oscal-namespace`` support + error mapping, with result caching invalidated
+           on mutation) is the next step-2 build item; it is deferred pending the design
+           decision on absolute vs. ``//``-prefixed targets and XML-oriented paths over
+           JSON-primary data. Until then this records nothing and leaves
+           :attr:`is_fully_compliant` as ``None`` (unknown) when the document is L2-valid.
+
+        Returns:
+            bool | None: :attr:`is_fully_compliant` after the pass — currently ``False`` when
+            not L2-:attr:`is_valid`, otherwise ``None`` (L3 not yet evaluated).
+        """
+        if not self.is_valid:
+            self._fully_compliant = None  # is_fully_compliant already reports False
+            self.full_validation_errors = []
+            return self.is_fully_compliant
+        logger.info(
+            "validate_full: L3 constraint engine not yet implemented; "
+            "is_fully_compliant remains unknown (None)."
+        )
+        self._fully_compliant = None
+        self.full_validation_errors = []
+        return self.is_fully_compliant
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _record_identifier(index: dict, value: Any, location: str) -> None:
+        """Record one id/uuid occurrence into *index*, keyed by the identifier value.
+
+        *index* maps each value to a list of occurrence records
+        ``{"value", "key", "path"}`` — ``key`` is the JSON key of the collection that
+        contains the object (derived from the last path segment, array index stripped;
+        e.g. ``/component-definition/components[0]`` -> ``components``), and ``path`` is
+        the JSON path to the object itself. A value with more than one record is a
+        duplicate. Only non-empty string values are indexed.
+        """
+        if not isinstance(value, str) or not value:
+            return
+        last_segment = location.rsplit("/", 1)[-1]
+        parent_key = re.sub(r"\[\d+\]$", "", last_segment)
+        index.setdefault(value, []).append(
+            {"value": value, "key": parent_key, "path": location})
+
+    # -------------------------------------------------------------------------
+    def _eval_node_matches(self, node: dict, instance: Any, location: str,
+                           node_name: str | None, identifier: str | None,
+                           errors: list[dict]) -> None:
+        """Evaluate L2 ``matches`` (regex/datatype) declared on *node* against *instance*.
+
+        *instance* is the node's object (a dict for elements/fields-with-flags) or the bare
+        string value of a scalar field. Only constraints carrying a ``match-spec`` (promoted
+        to L2 by the classifier) are checked; others stay deferred to L3.
+        """
+        value_key = node.get("json-value-key")
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "matches":
+                continue
+            if con.get("validation-level") == "fully-compliant":
+                continue
+            mspec = con.get("match-spec")
+            if mspec is None:
+                continue
+            val = _matches_resolve_value(mspec, instance, value_key)
+            if val is None:
+                continue
+            field = f"@{mspec['flag']}" if mspec.get("kind") == "flag" else (node_name or ".")
+            err = _apply_matches(val, con.get("regex"), con.get("datatype"),
+                                 location, field, identifier)
+            if err:
+                err["constraint-id"] = con.get("id")
+                errors.append(err)
+
+    def _eval_node_cardinality(self, node: dict, instance: Any, location: str,
+                               identifier: str | None, errors: list[dict]) -> None:
+        """Evaluate L2 ``has-cardinality`` constraints declared on *node* against *instance*
+        (count a child collection against min/max-occurs)."""
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "has-cardinality":
+                continue
+            if con.get("validation-level") == "fully-compliant":
+                continue
+            cspec = con.get("card-spec")
+            if cspec is None:
+                continue
+            count = _count_cardinality_target(node, instance, cspec)
+            if count is None:
+                continue  # gate not met / not a dict -> constraint does not apply here
+            mn, mx = con.get("min-occurs"), con.get("max-occurs")
+            min_i = int(mn) if mn is not None else None
+            max_i = int(mx) if (mx is not None and mx != "unbounded") else None
+            if (min_i is not None and count < min_i) or (max_i is not None and count > max_i):
+                errors.append({
+                    "error-type":    "has-cardinality",
+                    "location":      location,
+                    "identifier":    identifier,
+                    "field":         con.get("target"),
+                    "value":         count,
+                    "min":           min_i,
+                    "max":           max_i,
+                    "constraint-id": con.get("id"),
+                })
+
+    def _eval_node_expect(self, node: dict, instance: Any, location: str,
+                          identifier: str | None, errors: list[dict]) -> None:
+        """Evaluate L2 ``expect`` boolean tests declared on *node* against *instance*."""
+        if not isinstance(instance, dict):
+            return
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "expect":
+                continue
+            if con.get("validation-level") == "fully-compliant":
+                continue
+            espec = con.get("expect-spec")
+            if espec is None:
+                continue
+            applies = espec.get("applies")
+            if applies is not None and not _eval_test_bool(applies, node, instance):
+                continue  # the target predicate excludes this instance
+            if not _eval_test_bool(espec.get("test"), node, instance):
+                errors.append({
+                    "error-type":    "constraint-violation",
+                    "location":      location,
+                    "identifier":    identifier,
+                    "field":         con.get("target"),
+                    "value":         None,
+                    "test":          con.get("test"),
+                    "constraint-id": con.get("id"),
+                })
+
     def _walk_instance(
         self,
         instance: dict,
@@ -3351,6 +3963,8 @@ class OSCAL:
         errors: list[dict],
         location: str,
         identifier: str | None = None,
+        ancestors: dict | None = None,
+        ancestor_instances: list | None = None,
     ) -> None:
         """Recursively walk *instance* against metaschema *node*, collecting structured errors.
 
@@ -3373,6 +3987,18 @@ class OSCAL:
           ``cardinality``       – an array has fewer items than min-occurs or more than max-occurs
           ``choice``            – a choice has more than one member present (mutually exclusive), or none where one is required
 
+        The walk fully descends OSCAL's nested structure:
+
+        * **choice** groupings are transparent — their members are validated and recursed
+          into like ordinary children, but an *absent* choice member never raises
+          ``missing-required`` (whether a required choice is satisfied is a ``choice``
+          check, handled by :meth:`_check_choice`).
+        * **recursive** self-references (``part/part``, ``group/group``, ``control``
+          enhancements, ``task/task``) are index stubs with no children; each resolves to
+          the nearest same-use-name concrete ancestor node (tracked in *ancestors*) so
+          arbitrarily-deep instance nesting is validated against the real definition.
+          Termination is instance-driven (the walk stops when the data stops nesting).
+
         All error types are collected in a single pass so that ``validate()`` can
         partition them by phase after the walk completes.
 
@@ -3384,6 +4010,12 @@ class OSCAL:
             identifier: id/uuid of the nearest enclosing identifiable object, inherited from
                 the parent. Refined to *instance*'s own ``uuid``/``id`` when it has one, so
                 every error reports the closest identifiable item.
+            ancestors: Map of use-name -> concrete index node for the definitions seen on
+                the path down to here, used to resolve ``recursive`` stubs.
+            ancestor_instances: ``(use_name, instance)`` pairs for the elements enclosing
+                *instance* (root-first), used to resolve an L2 allowed-values constraint's
+                context (``(.)`` flag-gate, L2-A) or element-``@name`` ancestor gate (L2-B)
+                against the instance's ancestor chain.
         """
         if not isinstance(instance, dict) or not isinstance(node, dict):
             return
@@ -3391,7 +4023,19 @@ class OSCAL:
         # Nearest identifiable ancestor: this object's own uuid/id if present, else inherited.
         identifier = instance.get("uuid") or instance.get("id") or identifier
 
+        # Register this (concrete) node so deeper recursive stubs with the same use-name
+        # resolve back to it. Copy-on-descend so sibling branches don't leak into each other.
+        ancestors = dict(ancestors or {})
+        node_name = node.get("use-name") or node.get("name")
+        if node_name and node.get("children"):
+            ancestors[node_name] = node
+
         children = node.get("children", [])
+
+        # Node-level matches (regex/datatype), has-cardinality, and expect on this element.
+        self._eval_node_matches(node, instance, location, node_name, identifier, errors)
+        self._eval_node_cardinality(node, instance, location, identifier, errors)
+        self._eval_node_expect(node, instance, location, identifier, errors)
 
         # ------------------------------------------------------------------
         # Flags: structure → data-type → allowed-values
@@ -3417,6 +4061,14 @@ class OSCAL:
 
             flag_val = instance[flag_name]
 
+            # Identifier indexing (same pass): a flag named exactly "id"/"uuid" is this
+            # object's defining identifier (compound refs like control-id/component-uuid
+            # are not). Record value -> occurrence for the uniqueness check / lookups.
+            if flag_name == "uuid":
+                self._record_identifier(self._uuid_index, flag_val, location)
+            elif flag_name == "id":
+                self._record_identifier(self._id_index, flag_val, location)
+
             # Data type check
             datatype = flag_node.get("datatype")
             if datatype and isinstance(flag_val, str) and flag_val:
@@ -3431,37 +4083,66 @@ class OSCAL:
                 if err:
                     errors.append(err)
 
-            # Allowed-values check
-            for constraint in flag_node.get("constraints", []):
-                if constraint.get("type") != "allowed-values":
-                    continue
-                if constraint.get("allow-other", False):
-                    continue
-                if not _constraint_conditions_met(constraint, instance):
-                    continue
-                values = constraint.get("values", [])
-                if flag_val not in {v["value"] for v in values}:
+            # Allowed-values check (L2 only), UNION semantics.
+            # A flag may be governed by several allowed-values constraints (a general set
+            # plus context-scoped sets, e.g. a component's props accept ``vendor-name`` only
+            # when the component ``@type`` is software/hardware/service). The value is valid
+            # when it is in the UNION of the in-scope sets, or any in-scope set is
+            # ``allow-other`` (least-restrictive). Each constraint's context-gate is resolved
+            # against the nearest enclosing object that owns the gate flag (its definition
+            # context). Only ``valid`` (L2) constraints participate here; ``fully-compliant``
+            # (L3) scoped constraints are deferred to :meth:`validate_full` — evaluating them
+            # on the JSON walk would over-report (the nested ``part/@name='item'`` and
+            # context-only ``vendor-name`` false positives on published catalogs).
+            av_constraints = [c for c in flag_node.get("constraints", [])
+                              if c.get("type") == "allowed-values"]
+            if av_constraints:
+                chain = [(node_name, instance)] + list(reversed(ancestor_instances or []))
+                resolved = _resolve_allowed_values_union(av_constraints, chain)
+                if (resolved["governed"] and not resolved["allow_other"]
+                        and flag_val not in resolved["allowed"]):
                     errors.append({
                         "error-type": "allowed-values",
                         "location":   location,
                         "identifier": identifier,
                         "field":      f"@{flag_name}",
                         "value":      flag_val,
+                        "validation-level": "valid",
                         "expected": {
                             "one-of": [
-                                {"enum": v["value"], "description": v.get("description", "")}
-                                for v in sorted(values, key=lambda x: x["value"])
+                                {"enum": val, "description": resolved["entries"][val]}
+                                for val in sorted(resolved["entries"])
                             ],
                         },
                     })
 
         # ------------------------------------------------------------------
-        # Non-flag children: structure → data-type (fields) → recurse
+        # Non-flag children: structure → data-type (fields) → recurse.
+        # Choice groupings are flattened so their members are validated here (tagged
+        # from_choice so an absent branch is not a missing-required error — that is the
+        # choice's own concern, checked below). Recursive stubs resolve to their concrete
+        # same-use-name ancestor so nested content is validated against the real node.
         # ------------------------------------------------------------------
-        for child_node in children:
+        def _model_children(nodes, from_choice=False):
+            for child in nodes:
+                if child.get("structure-type") == "choice":
+                    yield from _model_children(child.get("children", []), from_choice=True)
+                else:
+                    yield child, from_choice
+
+        for child_node, from_choice in _model_children(children):
             stype = child_node.get("structure-type")
-            if stype in ("flag", "choice", "any", "recursive"):
+            if stype in ("flag", "any"):
                 continue
+
+            # Resolve a recursive stub to its concrete ancestor definition; keep the stub's
+            # own json grouping/cardinality but validate items against the resolved node.
+            effective = child_node
+            if stype == "recursive":
+                effective = ancestors.get(child_node.get("use-name") or child_node.get("name"))
+                if effective is None:
+                    continue  # unresolved self-reference (shouldn't happen in a built index)
+
             child_name = child_node.get("use-name") or child_node.get("name")
             if not child_name:
                 continue
@@ -3470,7 +4151,9 @@ class OSCAL:
             child_val  = instance.get(json_key)
             min_occurs = child_node.get("min-occurs", "0")
             max_occurs = child_node.get("max-occurs", "unbounded")
-            required   = min_occurs == "1"
+            # A direct required child must be present; a choice member's presence is governed
+            # by the choice as a whole, so its absence here is never missing-required.
+            required   = (min_occurs == "1") and not from_choice
 
             if child_val is None:
                 if required:
@@ -3499,10 +4182,15 @@ class OSCAL:
                     err = _check_datatype(child_val, datatype, location, child_name, identifier)
                     if err:
                         errors.append(err)
+                # Node-level matches on a bare-string field (no flags -> not recursed into).
+                self._eval_node_matches(child_node, child_val, child_loc, child_name,
+                                        identifier, errors)
 
             # Recurse into assemblies and grouped fields
             if isinstance(child_val, list):
-                min_int = int(min_occurs)
+                # Lower bound is the choice's concern for members, so only enforce it on
+                # direct children; the upper bound (max-occurs) always applies.
+                min_int = 0 if from_choice else int(min_occurs)
                 max_int = None if max_occurs == "unbounded" else int(max_occurs)
                 actual  = len(child_val)
                 if actual < min_int or (max_int is not None and actual > max_int):
@@ -3515,11 +4203,14 @@ class OSCAL:
                         "min":        min_int,
                         "max":        max_int,
                     })
+                child_ancestors = (ancestor_instances or []) + [(node_name, instance)]
                 for i, item in enumerate(child_val):
                     if isinstance(item, dict):
-                        self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]", identifier)
+                        self._walk_instance(item, effective, errors, f"{child_loc}[{i}]",
+                                            identifier, ancestors, child_ancestors)
             elif isinstance(child_val, dict):
-                self._walk_instance(child_val, child_node, errors, child_loc, identifier)
+                self._walk_instance(child_val, effective, errors, child_loc, identifier,
+                                    ancestors, (ancestor_instances or []) + [(node_name, instance)])
 
         # ------------------------------------------------------------------
         # Choice groups: mutually exclusive members (at most one), and a member

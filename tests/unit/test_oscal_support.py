@@ -9,7 +9,7 @@ import json
 import time
 
 import oscal.oscal_support as support_mod
-from oscal.oscal_support import OSCALSupport, OSCAL_support
+from oscal.oscal_support import OSCALSupport, OSCAL_support, METASCHEMA_INDEX_VERSION
 from oscal.oscal_datatypes import OSCAL_DATATYPES
 from oscal.metaschema_parser import (
     _annotate_ns_conditions,
@@ -407,9 +407,11 @@ def test_update_respects_fetch_alias_over_mode():
 # get_metaschema_index — cache behaviour
 # ===========================================================================
 
-# Per-model index payloads (new format: each model stored individually).
-_FAKE_CATALOG_INDEX = {"oscal_model": "catalog", "nodes": {}}
-_FAKE_PROFILE_INDEX = {"oscal_model": "profile", "nodes": {}}
+# Per-model index payloads (new format: each model stored individually). They embed the
+# current index_version so get_metaschema_index treats them as compatible (a real stored
+# index always carries it; a missing one now signals stale/pre-versioning content).
+_FAKE_CATALOG_INDEX = {"oscal_model": "catalog", "index_version": METASCHEMA_INDEX_VERSION, "nodes": {}}
+_FAKE_PROFILE_INDEX = {"oscal_model": "profile", "index_version": METASCHEMA_INDEX_VERSION, "nodes": {}}
 _FAKE_CATALOG_RAW = json.dumps(_FAKE_CATALOG_INDEX)
 _FAKE_PROFILE_RAW = json.dumps(_FAKE_PROFILE_INDEX)
 

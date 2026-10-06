@@ -3,7 +3,7 @@ Unit tests for ComponentDefinition.implementation_tree — a UI-oriented view of
 component definition. Its ``components`` key is a flat list of the definition's
 components and capabilities (aligning with SSP.implementation_tree['components']).
 
-Each node is ``{"uuid", "title", "type", "asset-type", "incorporates"}``:
+Each node is ``{"uuid", "title", "type", "asset-type", "incorporates", "children"}``:
     * components   -> type is the component's ``type`` flag, title is ``title``.
     * capabilities -> type is the literal ``"capability"``, title is ``name``.
     * ``asset-type`` is the value of the OSCAL-default-namespace ``asset-type`` prop
@@ -11,11 +11,17 @@ Each node is ``{"uuid", "title", "type", "asset-type", "incorporates"}``:
     * ``incorporates`` lists ``{"uuid", "description"}`` from an
       ``incorporates-components`` collection (checked on components and capabilities),
       else [].
-    * Imported component definitions' nodes are appended flat (no nesting).
+    * ``children`` is the control-implementation subtree (empty when none): one node per
+      ``control-implementations`` entry — ``{"uuid", "source", "title", "version",
+      "published"}`` resolved from the import tree (or ``title`` ``"**Import Error**"``) —
+      whose own ``children`` are one ``{"control-id", "label", "title"}`` node per
+      ``implemented-requirement`` (label/title looked up in the source's controls_tree).
+    * The component/capability level is flat (imported cDefs' nodes appended without
+      nesting); nesting exists only within the control-implementation subtree.
 
 Also covers the component()/capability() getters, which return safe copies annotated
 with: incorporates-components resolution (found + title/type/asset-type),
-responsible-roles (role title + party names), and — for component() — a relationships
+responsible-roles (role title + full party objects), and — for component() — a relationships
 object holding forward relationship links plus the reverse relationships discovered by
 scanning every component in scope (across the import tree).
 """
@@ -27,7 +33,7 @@ import pytest
 
 from oscal.oscal_implementation import ComponentDefinition
 
-_NODE_KEYS = {"uuid", "title", "type", "asset-type", "incorporates"}
+_NODE_KEYS = {"uuid", "title", "type", "asset-type", "incorporates", "children"}
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +146,11 @@ class TestNodeShape:
              "description": "uses router"},
         ]
 
-    def test_flat_no_children_key(self, valid_cdef):
-        """The tree is flat: nodes carry no 'children' key."""
+    def test_children_present_and_empty_without_control_implementations(self, valid_cdef):
+        """Each node carries a 'children' list (its control-implementation subtree),
+        empty for components/capabilities that declare no control-implementations."""
         for node in valid_cdef.implementation_tree["components"]:
-            assert "children" not in node
+            assert node["children"] == []
 
 
 # ===========================================================================
@@ -184,6 +191,7 @@ class TestBoundary:
         assert node["incorporates"] == [{"uuid": "", "description": ""}]
 
     def test_invalid_content_empty_tree(self):
+        # Trees build only for valid content; an invalid cDef exposes no summary.
         cd = _load({"component-definition": {"uuid": "not-a-uuid"}})
         assert not cd.is_valid
         assert cd.implementation_tree["components"] == []
@@ -344,7 +352,7 @@ class TestGetters:
 
 
 # ===========================================================================
-# component() responsible-roles enrichment (role title + party names)
+# component() responsible-roles enrichment (role title + full party objects)
 # ===========================================================================
 _P1 = "eeeeeeee-0000-4000-8000-000000000001"  # person Alice
 _P2 = "eeeeeeee-0000-4000-8000-000000000002"  # org Acme
@@ -386,10 +394,11 @@ class TestResponsibleRoles:
         assert roles[1]["title"] == "System Owner"
 
     def test_parties_array_resolved(self, cdef_with_roles):
+        # each party-uuid resolves to the FULL metadata party object (type, name, …)
         comp = cdef_with_roles.component("aaaaaaaa-0000-4000-8000-000000000001")
         assert comp["responsible-roles"][0]["parties"] == [
-            {"uuid": _P1, "name": "Alice"},
-            {"uuid": _P2, "name": "Acme"},
+            {"uuid": _P1, "type": "person", "name": "Alice"},
+            {"uuid": _P2, "type": "organization", "name": "Acme"},
         ]
 
     def test_no_party_uuids_no_parties_key(self, cdef_with_roles):
@@ -409,6 +418,54 @@ class TestResponsibleRoles:
         stored = cdef_with_roles._dict["component-definition"]["components"][0]
         assert "title" not in stored["responsible-roles"][0]
         assert "parties" not in stored["responsible-roles"][0]
+
+
+# ===========================================================================
+# capability() and control_implementation() carry the same responsibility construct
+# ===========================================================================
+_CAP = "cccccccc-0000-4000-8000-000000000001"
+_CI = "dddddddd-0000-4000-8000-000000000001"
+
+
+@pytest.fixture
+def cdef_cap_ci_roles():
+    doc = {"component-definition": {
+        "uuid": "88888888-8888-4888-8888-888888888889",
+        "metadata": {
+            "title": "cDef", "last-modified": "2026-01-01T00:00:00Z",
+            "version": "1.0", "oscal-version": "1.1.3",
+            "roles": [{"id": "admin", "title": "Administrator"}],
+            "parties": [{"uuid": _P1, "type": "person", "name": "Alice"}],
+        },
+        "capabilities": [
+            {"uuid": _CAP, "name": "Logging", "description": "x",
+             "responsible-roles": [{"role-id": "admin", "party-uuids": [_P1]}]},
+        ],
+        "components": [
+            {"uuid": "aaaaaaaa-0000-4000-8000-00000000c001", "type": "software",
+             "title": "C", "description": "x",
+             "control-implementations": [
+                 {"uuid": _CI, "source": "#missing", "description": "ci",
+                  "implemented-requirements": [
+                      {"uuid": "11111111-0000-4000-8000-000000000001", "control-id": "ac-1",
+                       "responsible-roles": [{"role-id": "admin", "party-uuids": [_P1]}]}]}]},
+        ],
+    }}
+    return _load(doc)
+
+
+class TestCapabilityAndControlImplRoles:
+
+    def test_capability_responsible_roles_enriched(self, cdef_cap_ci_roles):
+        rr = cdef_cap_ci_roles.capability(_CAP)["responsible-roles"][0]
+        assert rr["title"] == "Administrator"
+        assert rr["parties"] == [{"uuid": _P1, "type": "person", "name": "Alice"}]
+
+    def test_control_implementation_requirement_roles_enriched(self, cdef_cap_ci_roles):
+        ci = cdef_cap_ci_roles.control_implementation(_CI)
+        rr = ci["implemented-requirements"][0]["responsible-roles"][0]
+        assert rr["title"] == "Administrator"
+        assert rr["parties"] == [{"uuid": _P1, "type": "person", "name": "Alice"}]
 
 
 # ===========================================================================
@@ -585,3 +642,205 @@ class TestRelationshipsReverse:
         # Forward (X used-by Y) and reverse (Y uses-service X) both mean "X is used by Y".
         assert cd.component(x)["relationships"]["used-by"] == [
             {"uuid": y, "title": "Y", "type": "service"}]
+
+
+# ===========================================================================
+# control-implementations: component()/capability() summary + control_implementation()
+# ===========================================================================
+_CI_SRC_META = {"published": "2026-04-01T00:00:00Z", "last-modified": "2026-05-01T00:00:00Z",
+                "version": "5.1.1", "oscal-version": "1.1.3"}
+_CI_CAT_UUID = "10000000-0000-4000-8000-0000000000c1"
+_CI_COMP = "aaaaaaaa-0000-4000-8000-0000000000c1"
+_CI_CAP = "bbbbbbbb-0000-4000-8000-0000000000c1"
+_CI_GOOD = "cccccccc-0000-4000-8000-0000000000c1"   # component, source -> catalog
+_CI_BROKEN = "cccccccc-0000-4000-8000-0000000000c2"  # component, source -> missing file
+_CI_WRONGTYPE = "cccccccc-0000-4000-8000-0000000000c3"  # component, source -> a cDef
+_CI_CAPIMPL = "cccccccc-0000-4000-8000-0000000000c4"  # capability, source -> catalog
+
+
+def _ci_catalog():
+    return {"catalog": {
+        "uuid": _CI_CAT_UUID,
+        "metadata": {"title": "NIST 800-53", **_CI_SRC_META},
+        "groups": [{"id": "ac", "title": "AC", "controls": [
+            {"id": "ac-1", "title": "Policy", "props": [{"name": "label", "value": "AC-1"}],
+             "controls": [{"id": "ac-1.1", "title": "Automated"}]},   # enhancement
+            {"id": "ac-2", "title": "Account Management",
+             "props": [{"name": "label", "value": "AC-2"}]}]}],
+    }}
+
+
+def _ci_cdef():
+    return {"component-definition": {
+        "uuid": "20000000-0000-4000-8000-0000000000c1",
+        "metadata": {"title": "cDef", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.1.3"},
+        "components": [{"uuid": _CI_COMP, "type": "software", "title": "App", "description": "d",
+            "control-implementations": [
+                {"uuid": _CI_GOOD, "source": "catalog.json", "description": "impl vs 800-53",
+                 "set-parameters": [{"param-id": "ac-1_prm", "values": ["30 days"]}],
+                 "implemented-requirements": [
+                     {"uuid": "d0000000-0000-4000-8000-0000000000c1", "control-id": "ac-1", "description": "r"},
+                     {"uuid": "d0000000-0000-4000-8000-0000000000c2", "control-id": "ac-2", "description": "r"}]},
+                {"uuid": _CI_BROKEN, "source": "missing.json", "description": "broken src",
+                 "implemented-requirements": [
+                     {"uuid": "d0000000-0000-4000-8000-0000000000c3", "control-id": "ac-1", "description": "r"}]},
+                {"uuid": _CI_WRONGTYPE, "source": "other_cdef.json", "description": "wrong type",
+                 "implemented-requirements": [
+                     {"uuid": "d0000000-0000-4000-8000-0000000000c4", "control-id": "ac-2", "description": "r"}]}]}],
+        "capabilities": [{"uuid": _CI_CAP, "name": "Logging", "description": "d",
+            "control-implementations": [
+                {"uuid": _CI_CAPIMPL, "source": "catalog.json", "description": "cap impl",
+                 "implemented-requirements": [
+                     {"uuid": "d0000000-0000-4000-8000-0000000000c5", "control-id": "ac-2", "description": "r"}]}]}]}}
+
+
+def _other_cdef():
+    return {"component-definition": {
+        "uuid": "20000000-0000-4000-8000-0000000000c9",
+        "metadata": {"title": "Other", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.1.3"},
+        "components": [{"uuid": "aaaaaaaa-0000-4000-8000-0000000000c9", "type": "software",
+                        "title": "X", "description": "d"}]}}
+
+
+@pytest.fixture
+def cdef_ci():
+    with tempfile.TemporaryDirectory() as d:
+        for name, doc in [("catalog.json", _ci_catalog()),
+                          ("other_cdef.json", _other_cdef()),
+                          ("cdef.json", _ci_cdef())]:
+            with open(os.path.join(d, name), "w") as fh:
+                json.dump(doc, fh)
+        yield ComponentDefinition.load(os.path.join(d, "cdef.json"))
+
+
+class TestControlImplementationsSummary:
+
+    def _cis(self, cd):
+        return {ci["uuid"]: ci for ci in cd.component(_CI_COMP)["control-implementations"]}
+
+    def test_source_title_version_published_inserted(self, cdef_ci):
+        ci = self._cis(cdef_ci)[_CI_GOOD]
+        assert ci["title"] == "NIST 800-53"
+        assert ci["version"] == "5.1.1"
+        assert ci["published"] == "2026-04-01T00:00:00Z"   # source metadata published
+
+    def test_implemented_requirements_count(self, cdef_ci):
+        assert self._cis(cdef_ci)[_CI_GOOD]["implemented-requirements-count"] == 2
+
+    def test_heavy_keys_dropped(self, cdef_ci):
+        ci = self._cis(cdef_ci)[_CI_GOOD]
+        assert "set-parameters" not in ci
+        assert "implemented-requirements" not in ci
+
+    def test_missing_source_is_import_error(self, cdef_ci):
+        ci = self._cis(cdef_ci)[_CI_BROKEN]
+        assert ci["title"] == "**Import Error**"
+        assert "version" not in ci and "published" not in ci
+        assert ci["implemented-requirements-count"] == 1     # count still present
+
+    def test_wrong_type_source_is_import_error(self, cdef_ci):
+        # source resolves, but to a component-definition (not catalog/profile).
+        ci = self._cis(cdef_ci)[_CI_WRONGTYPE]
+        assert ci["title"] == "**Import Error**"
+
+    def test_capability_control_implementations_summarized(self, cdef_ci):
+        ci = cdef_ci.capability(_CI_CAP)["control-implementations"][0]
+        assert ci["title"] == "NIST 800-53"
+        assert ci["implemented-requirements-count"] == 1
+        assert "implemented-requirements" not in ci
+
+
+class TestControlImplementationGetter:
+
+    def test_missing_uuid_returns_none(self, cdef_ci):
+        assert cdef_ci.control_implementation("00000000-0000-4000-8000-000000000000") is None
+
+    def test_keeps_requirements_and_set_parameters(self, cdef_ci):
+        ci = cdef_ci.control_implementation(_CI_GOOD)
+        assert "implemented-requirements" in ci
+        assert "set-parameters" in ci
+
+    def test_control_inserted_per_requirement(self, cdef_ci):
+        ci = cdef_ci.control_implementation(_CI_GOOD)
+        by_cid = {r["control-id"]: r["control"] for r in ci["implemented-requirements"]}
+        assert by_cid["ac-1"]["id"] == "ac-1"
+        assert by_cid["ac-2"]["id"] == "ac-2"
+
+    def test_control_has_no_children(self, cdef_ci):
+        # depth=0 -> control only, enhancement ac-1.1 excluded.
+        ctl = {r["control-id"]: r["control"]
+               for r in cdef_ci.control_implementation(_CI_GOOD)["implemented-requirements"]}["ac-1"]
+        assert "controls" not in ctl or ctl["controls"] == []
+
+    def test_works_for_capability_control_implementation(self, cdef_ci):
+        ci = cdef_ci.control_implementation(_CI_CAPIMPL)
+        assert ci is not None
+        assert ci["implemented-requirements"][0]["control"]["id"] == "ac-2"
+
+    def test_control_none_when_source_unresolvable(self, cdef_ci):
+        ci = cdef_ci.control_implementation(_CI_BROKEN)
+        assert ci["implemented-requirements"][0]["control"] is None
+
+    def test_returns_safe_copy(self, cdef_ci):
+        cdef_ci.control_implementation(_CI_GOOD)
+        stored = cdef_ci._dict["component-definition"]["components"][0]["control-implementations"][0]
+        assert "control" not in stored["implemented-requirements"][0]
+
+
+# ===========================================================================
+# implementation_tree — control-implementation subtree under each component/capability
+# ===========================================================================
+class TestImplementationTreeControlImplementations:
+
+    def test_valid(self, cdef_ci):
+        assert cdef_ci.is_valid
+
+    def _component_node(self, cd):
+        return next(n for n in cd.implementation_tree["components"] if n["uuid"] == _CI_COMP)
+
+    def test_control_implementations_are_children(self, cdef_ci):
+        node = self._component_node(cdef_ci)
+        child_uuids = [c["uuid"] for c in node["children"]]
+        assert child_uuids == [_CI_GOOD, _CI_BROKEN, _CI_WRONGTYPE]
+
+    def test_child_holds_only_uuid_source_and_resolved_source_fields(self, cdef_ci):
+        good = self._component_node(cdef_ci)["children"][0]
+        assert good["uuid"] == _CI_GOOD
+        assert good["source"] == "catalog.json"
+        assert good["title"] == "NIST 800-53"
+        assert good["version"] == "5.1.1"
+        assert good["published"] == "2026-04-01T00:00:00Z"
+        # No heavyweight content carried over from the control-implementation object.
+        assert "set-parameters" not in good
+        assert "description" not in good
+        assert "implemented-requirements" not in good
+
+    def test_implemented_requirements_are_grandchildren_with_label_title(self, cdef_ci):
+        good = self._component_node(cdef_ci)["children"][0]
+        reqs = good["children"]
+        assert [r["control-id"] for r in reqs] == ["ac-1", "ac-2"]
+        assert reqs[0] == {"control-id": "ac-1", "label": "AC-1", "title": "Policy"}
+        assert reqs[1] == {"control-id": "ac-2", "label": "AC-2", "title": "Account Management"}
+
+    def test_requirement_node_has_no_extra_keys(self, cdef_ci):
+        req = self._component_node(cdef_ci)["children"][0]["children"][0]
+        assert set(req.keys()) == {"control-id", "label", "title"}
+
+    def test_missing_source_child_is_import_error(self, cdef_ci):
+        broken = self._component_node(cdef_ci)["children"][1]
+        assert broken["title"] == "**Import Error**"
+        assert "version" not in broken and "published" not in broken
+        # requirement children still present; label/title unresolved -> empty
+        assert broken["children"] == [{"control-id": "ac-1", "label": "", "title": ""}]
+
+    def test_wrong_type_source_child_is_import_error(self, cdef_ci):
+        wrong = self._component_node(cdef_ci)["children"][2]
+        assert wrong["title"] == "**Import Error**"
+
+    def test_capability_control_implementations_in_tree(self, cdef_ci):
+        cap = next(n for n in cdef_ci.implementation_tree["components"] if n["uuid"] == _CI_CAP)
+        assert [c["uuid"] for c in cap["children"]] == [_CI_CAPIMPL]
+        assert cap["children"][0]["children"][0] == {
+            "control-id": "ac-2", "label": "AC-2", "title": "Account Management"}

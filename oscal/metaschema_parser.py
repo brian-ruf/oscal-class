@@ -719,6 +719,9 @@ class MetaschemaParser:
             if metaschema_tree.get("nodes"):
                 self._build_skeleton(metaschema_tree["nodes"])
                 self._apply_constraints(metaschema_tree["nodes"])
+                # Tag each allowed-values constraint valid (L2) / fully-compliant (L3)
+                # once all constraints are attached (per-node all-or-nothing rule).
+                _classify_allowed_values_levels(metaschema_tree["nodes"])
 
         except Exception as e:
             metaschema_tree = {}
@@ -1675,6 +1678,61 @@ class MetaschemaParser:
                     merged_with_target["unresolved-reason"] = reason
                     self._add_constraint_to_node(metaschema_node, merged_with_target)
 
+        # Capture every other constraint rule verbatim so the index is complete even
+        # where we do not yet evaluate the rule. These are kept in context (on this
+        # definition's node), tagged fully-compliant (L3), with the raw XML preserved as
+        # a string for future handling. allowed-values is handled above and skipped here.
+        # The constraint ``id`` (and ``name`` for index / index-has-key) and any
+        # ``key-field`` targets are captured as structured keys alongside ``raw`` so the
+        # referential-integrity / uniqueness passes and L2/L3 error reporting can key on
+        # them without re-parsing the raw XML.
+        for constraint_elem in constraint_elements:
+            for rule in list(constraint_elem):
+                tag = rule.tag
+                if not isinstance(tag, str):
+                    continue
+                local = tag.split("}")[-1]
+                if local not in _CONSTRAINT_RULE_TAGS or local == "allowed-values":
+                    continue
+                entry = {
+                    "type": local,
+                    "id": rule.attrib.get("id"),
+                    "target": rule.attrib.get("target"),
+                    "handled": False,
+                    "validation-level": "fully-compliant",
+                    "raw": ET.tostring(rule, encoding="unicode").strip(),
+                }
+                # Severity: metaschema constraints default to ERROR; WARNING/INFORMATIONAL
+                # are advisory and must never affect L2 validity.
+                entry["level"] = (rule.attrib.get("level") or "ERROR").upper()
+                # Family-specific check parameters (captured for the L2 evaluators).
+                if local == "matches":
+                    if rule.attrib.get("regex") is not None:
+                        entry["regex"] = rule.attrib.get("regex")
+                    if rule.attrib.get("datatype") is not None:
+                        entry["datatype"] = rule.attrib.get("datatype")
+                elif local == "has-cardinality":
+                    if rule.attrib.get("min-occurs") is not None:
+                        entry["min-occurs"] = rule.attrib.get("min-occurs")
+                    if rule.attrib.get("max-occurs") is not None:
+                        entry["max-occurs"] = rule.attrib.get("max-occurs")
+                elif local == "expect":
+                    if rule.attrib.get("test") is not None:
+                        entry["test"] = rule.attrib.get("test")
+                # index / index-has-key reference a named index.
+                if rule.attrib.get("name") is not None:
+                    entry["name"] = rule.attrib.get("name")
+                # is-unique / index / index-has-key carry <key-field target="..."/> children.
+                key_fields = [
+                    kf.attrib.get("target")
+                    for kf in list(rule)
+                    if isinstance(kf.tag, str) and kf.tag.split("}")[-1] == "key-field"
+                    and kf.attrib.get("target") is not None
+                ]
+                if key_fields:
+                    entry["key-fields"] = key_fields
+                self._add_constraint_to_node(metaschema_node, entry)
+
         return metaschema_node
 
     # -------------------------------------------------------------------------
@@ -2114,6 +2172,593 @@ def _extract_oscal_namespace_condition(target: str) -> tuple:
         "allow-absent": allow_absent,
     }
     return cleaned, condition
+
+
+def _split_metapath_steps(path: str) -> list:
+    """Split a Metapath/XPath into steps on ``/`` at bracket-depth 0 (quote-aware).
+
+    ``/`` inside predicates (``[...]``) or quoted strings is not a separator. Empty
+    segments (e.g. from a leading ``/``) are dropped by the caller as needed.
+    """
+    steps: list = []
+    buf = ""
+    depth = 0
+    quote = None
+    for ch in path:
+        if quote:
+            buf += ch
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf += ch
+        elif ch == "[":
+            depth += 1
+            buf += ch
+        elif ch == "]":
+            depth -= 1
+            buf += ch
+        elif ch == "/" and depth == 0:
+            steps.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    steps.append(buf)
+    return steps
+
+
+def _target_is_natively_evaluable(target: str) -> bool:
+    """Decide whether an allowed-values ``target`` can be evaluated correctly on the
+    JSON dict without XPath 3.x — i.e. whether its constraint belongs to L2 (``valid``)
+    rather than L3 (``fully-compliant``).
+
+    A target is natively evaluable only when deciding *whether it governs a node* and
+    *what the node's allowed set is* depends solely on that node itself and its **own
+    flags** (plus ``has-oscal-namespace``, which maps to the node's ``@ns``). That holds
+    when the target is a straight forward path whose only value-predicates sit on the
+    **governed** element (the last named element step), e.g. ``.``, ``@name``,
+    ``prop[@name='type']/@value``, ``prop[has-oscal-namespace(...)]/@name``.
+
+    It is **not** natively evaluable — defer to L3 — when correctness needs ancestor,
+    sibling, descendant, or cross-document context: a descendant axis (``//``), an
+    absolute path (leading ``/``), a non-``self`` axis (``::``/``..``), a function other
+    than ``has-oscal-namespace``, a top-level alternation, or any value-predicate on a
+    step **before** the governed element (an ancestor predicate, e.g.
+    ``part[@name='statement']//part/@name`` or ``(.)[@type='software']/prop/@name``).
+
+    This is deliberately conservative: when in doubt it returns ``False`` (defer to L3),
+    so L2 can never reject a value an L3 sibling would have allowed. The per-node
+    "all-or-nothing" promotion (a node is ``valid`` only if *every* allowed-values
+    constraint on it is natively evaluable) is applied where constraints are grouped.
+    """
+    # has-oscal-namespace is natively supported (maps to @ns); strip it first so the
+    # remaining structure reflects only the scoping we must reason about.
+    cleaned, _ = _extract_oscal_namespace_condition(target)
+    cleaned = cleaned.strip()
+
+    if not cleaned or cleaned in (".", "@"):
+        return True
+    if "//" in cleaned:                      # descendant axis — needs tree context
+        return False
+    if cleaned.startswith("/"):              # absolute — anchored at document root
+        return False
+    if ".." in cleaned or "::" in cleaned:   # parent / explicit non-self axis
+        return False
+    if "|" in cleaned:                       # alternation — handle conservatively
+        return False
+    # Any remaining function call (has-oscal-namespace already removed) is unsupported.
+    if re.search(r"[A-Za-z][\w-]*\s*\(", cleaned.replace("(.)", "")):
+        return False
+
+    steps = [s for s in _split_metapath_steps(cleaned) if s not in ("", ".")]
+    # Index of the governed element (last named-element step; terminal @flag steps and
+    # the self context "(.)" are not themselves the governed element).
+    governed = -1
+    for i, step in enumerate(steps):
+        head = step.split("[", 1)[0].strip()
+        if head and not head.startswith("@") and head != "(.)":
+            governed = i
+    # A value-predicate on any step before the governed element is an ancestor scope.
+    for i, step in enumerate(steps):
+        if i == governed:
+            continue
+        pred = step[step.find("[") + 1:step.rfind("]")] if "[" in step else ""
+        if pred.strip():                     # leftover predicate on a non-governed step
+            return False
+    return True
+
+
+def _target_is_l2_context_gated(target: str, conditions: list) -> bool:
+    """True when a target is L2-evaluable via a context-flag gate on the definition node.
+
+    Shape: a leading self/context predicate — ``(.)[@flag …]`` or ``.[@flag …]`` — whose
+    remaining forward path is itself natively evaluable (see
+    :func:`_target_is_natively_evaluable`). The gate references a flag of the definition
+    node (what ``(.)`` resolves to); the validation walk evaluates it against the nearest
+    enclosing object that carries that flag. A machine-readable flag-equals/flag-in
+    condition must have been extracted (the gate the walk will apply). Examples::
+
+        (.)[@type=('software','hardware','service')]/prop[has-oscal-namespace(…)]/@name
+        (.)[@system='http://csrc.nist.gov/ns/oscal']/@name
+
+    This is the L2-A class; element-``@name``-gated (L2-B) and ``//``-descendant targets
+    remain L3 until the forward-path evaluator lands.
+    """
+    if not any(c.get("type") in ("flag-equals", "flag-in") for c in (conditions or [])):
+        return False
+    cleaned = (target or "").strip()
+    m = re.match(r"^\(\.\)\[([^\]]*)\]|^\.\[([^\]]*)\]", cleaned)
+    if not m:
+        return False
+    pred = m.group(1) or m.group(2) or ""
+    if "@" not in pred:                       # the leading predicate must gate on a flag
+        return False
+    rest = cleaned[m.end():].lstrip("/").strip() or "."
+    return _target_is_natively_evaluable(rest)
+
+
+def _strip_ns_calls(expr: str) -> str:
+    """Remove ``has-oscal-namespace(...)`` calls (balanced parens) from a predicate."""
+    out, i, n = [], 0, len(expr)
+    while i < n:
+        if expr.startswith("has-oscal-namespace", i):
+            j = i + len("has-oscal-namespace")
+            while j < n and expr[j] != "(":
+                j += 1
+            depth = 0
+            while j < n:
+                if expr[j] == "(":
+                    depth += 1
+                elif expr[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+            i = j
+        else:
+            out.append(expr[i])
+            i += 1
+    return "".join(out)
+
+
+def _parse_name_value_set(expr: str):
+    """Parse ``'x'`` or ``('a','b',…)`` into a sorted list of strings; None if not that
+    shape. A list (not a set) so the spec stays JSON-serializable for the stored index."""
+    expr = expr.strip()
+    if expr.startswith("(") and expr.endswith(")"):
+        vals = re.findall(r"'([^']*)'|\"([^\"]*)\"", expr[1:-1])
+        out = sorted({a or b for a, b in vals})
+        return out or None
+    m = re.match(r"^'([^']*)'$|^\"([^\"]*)\"$", expr)
+    if m:
+        return [m.group(1) if m.group(1) is not None else m.group(2)]
+    return None
+
+
+def _parse_l2b_element_step(step: str):
+    """Parse one element step ``elem[preds]`` for L2-B → (elem, names|None, ok).
+
+    ``ok`` is False when the step's predicate contains anything other than
+    ``has-oscal-namespace`` and a single ``@name`` equality/in-set (so non-``@name`` flag
+    gates, functions, positional predicates, … fall out of L2-B and stay L3).
+    """
+    head = step.split("[", 1)[0].strip()
+    if not head or head.startswith("@") or "(" in head:
+        return ("", None, False)
+    names = None
+    if "[" in step:
+        pred = step[step.find("[") + 1:step.rfind("]")]
+        rest = _strip_ns_calls(pred)
+        name_set = None
+        m = re.search(r"@name\s*=\s*(\([^)]*\)|'[^']*'|\"[^\"]*\")", rest)
+        if m:
+            name_set = _parse_name_value_set(m.group(1))
+            if name_set is None:
+                return ("", None, False)
+            rest = rest[:m.start()] + rest[m.end():]
+        # whatever remains may only be boolean glue; any other flag/function → not L2-B
+        rest = re.sub(r"\b(and|or)\b", " ", rest).strip()
+        if rest:
+            return ("", None, False)
+        names = name_set
+    return (head, names, True)
+
+
+def _parse_l2b_target(target: str):
+    """Parse an element-``@name``-gated allowed-values target into a reverse-match spec.
+
+    Returns ``{"leaf": <flag>, "segments": [{"axis": "child"|"descendant", "elem": <name>,
+    "names": set|None}, …]}`` for the restricted L2-B shape — a forward path of element
+    steps (child ``/`` or descendant ``//`` axes) whose only predicates are
+    ``has-oscal-namespace`` and/or a single ``@name`` equality/in-set, ending in one
+    ``/@flag`` — else ``None`` (alternation, other flags/functions, absolute/parent/axis
+    steps stay L3).
+
+    The last element step is the *governed* element (carrying the leaf flag); the earlier
+    steps are the ancestor gate the validation walk matches against the instance's ancestor
+    chain. Examples::
+
+        part[@name='statement']//part/@name        gate: an ancestor part named 'statement'
+        part[@name=('assessment',…)]/part/@name     gate: the immediate parent part so named
+        .//part/@name                               no gate (any descendant part)
+    """
+    if not target:
+        return None
+    t = target.strip()
+    if "|" in t or "::" in t or ".." in t or t.startswith("/"):
+        return None
+    tokens = _split_metapath_steps(t)
+    if not tokens:
+        return None
+    segments: list = []
+    leaf = None
+    pending_axis = "child"   # the first element is a child of the definition context
+    for tok in tokens:
+        if tok == "":
+            pending_axis = "descendant"
+            continue
+        if tok in (".", "(.)"):
+            continue            # context anchor; a trailing '' sets the descendant axis
+        if tok.startswith("@"):
+            if leaf is not None:
+                return None
+            leaf = tok[1:]
+            continue
+        if leaf is not None:
+            return None          # element step after the leaf flag
+        elem, names, ok = _parse_l2b_element_step(tok)
+        if not ok:
+            return None
+        segments.append({"axis": pending_axis, "elem": elem, "names": names})
+        pending_axis = "child"
+    if leaf is None or not segments:
+        return None
+    return {"leaf": leaf, "segments": segments}
+
+
+def _target_is_l2_element_gated(target: str) -> bool:
+    """True when *target* fits the L2-B element-``@name``-gated grammar (see
+    :func:`_parse_l2b_target`)."""
+    return _parse_l2b_target(target) is not None
+
+
+def _has_unsupported_function(expr: str) -> bool:
+    """True when *expr* (after stripping ``has-oscal-namespace``) contains any other
+    function call (``starts-with``/``not``/``exists``/…), which pushes a target to L3."""
+    return bool(re.search(r"[A-Za-z][\w-]*\s*\(", _strip_ns_calls(expr or "")))
+
+
+def _parse_self_gate(pred: str):
+    """Parse a self predicate of only ``@flag='v'`` / ``@flag=('a',…)`` clauses (joined by
+    ``and``, ``has-oscal-namespace`` ignored) into ``[(flag, [vals]), …]``; None otherwise."""
+    rest = _strip_ns_calls(pred or "")
+    gates = []
+    for m in re.finditer(r"@([\w:-]+)\s*=\s*(\([^)]*\)|'[^']*'|\"[^\"]*\")", rest):
+        vals = _parse_name_value_set(m.group(2))
+        if vals is None:
+            return None
+        gates.append((m.group(1), vals))
+    # whatever is left may only be boolean glue
+    leftover = re.sub(r"@([\w:-]+)\s*=\s*(\([^)]*\)|'[^']*'|\"[^\"]*\")", "", rest)
+    leftover = re.sub(r"\b(and|or)\b", " ", leftover).strip()
+    if leftover:
+        return None
+    return gates
+
+
+def _parse_matches_target(target: str):
+    """Parse a ``matches`` target into a value-resolution spec for L2, else ``None``.
+
+    Supported (L2) shapes resolve to a scalar value the regex/datatype is applied to:
+      * ``@flag``                       → ``{"kind":"flag","flag":…}``
+      * ``.``                           → ``{"kind":"self"}`` (the field's own value)
+      * ``.[@f='v' …]`` / ``.[@f=(…)]`` → ``{"kind":"self","gate":[(flag,[vals])]}``
+      * ``.[@f=(…)]/@g``                → ``{"kind":"flag","flag":"g","gate":[…]}``
+      * element ``@name`` child path ending in ``/@flag`` → ``{"kind":"l2b","spec":…}``
+
+    Targets using any function other than ``has-oscal-namespace`` (``starts-with``/
+    ``not``/``exists``/…), alternation, absolute or axis steps return ``None`` (stay L3).
+    """
+    if not target:
+        return None
+    t = target.strip()
+    if "|" in t or "::" in t or ".." in t or t.startswith("/"):
+        return None
+    if _has_unsupported_function(t):
+        return None
+    if re.fullmatch(r"@[\w:-]+", t):
+        return {"kind": "flag", "flag": t[1:]}
+    m = re.fullmatch(r"\.(?:\[([^\]]*)\])?", t)
+    if m:
+        gate = _parse_self_gate(m.group(1)) if m.group(1) else []
+        return None if gate is None else {"kind": "self", "gate": gate}
+    m = re.fullmatch(r"\.\[([^\]]*)\]/@([\w:-]+)", t)
+    if m:
+        gate = _parse_self_gate(m.group(1))
+        return None if gate is None else {"kind": "flag", "flag": m.group(2), "gate": gate}
+    spec = _parse_l2b_target(t)
+    if spec is not None:
+        return {"kind": "l2b", "spec": spec}
+    return None
+
+
+def _parse_cardinality_target(target: str):
+    """Parse a ``has-cardinality`` target into a 1-level count spec for L2, else ``None``.
+
+    Supported (L2): an optional leading self predicate ``.[@f=… …]`` (flag gates only) then
+    exactly ONE forward child element step ``elem[@name=…]`` — e.g.
+    ``part[@name=('objective','assessment-objective')]``, ``prop[@name='method']``,
+    ``.[@name='objective']/prop[@name='method']``. Returns
+    ``{"self_gate": [(flag,[vals]),…], "step": {"elem": …, "names": [..]|None}}``.
+
+    Alternation, descendant ``//``, multi-level child paths, functions, absolute/axis steps
+    and leaf ``@flag`` targets return ``None`` (stay L3).
+    """
+    if not target:
+        return None
+    t = target.strip()
+    stripped = _strip_ns_calls(t)
+    if "|" in t or "::" in stripped or ".." in stripped or "//" in stripped or t.startswith("/"):
+        return None
+    if _has_unsupported_function(t):
+        return None
+    self_gate: list = []
+    m = re.match(r"^\.\[([^\]]*)\]/", t)
+    if m:
+        self_gate = _parse_self_gate(m.group(1))
+        if self_gate is None:
+            return None
+        t = t[m.end():]
+    elif t.startswith(".") or t.startswith("@"):
+        return None  # bare self / self-only / flag count not supported at L2
+    steps = [x for x in _split_metapath_steps(t) if x != ""]
+    if len(steps) != 1:
+        return None  # only single-level child counting at L2
+    elem, names, ok = _parse_l2b_element_step(steps[0])
+    if not ok or not elem or elem.startswith("@"):
+        return None
+    return {"self_gate": self_gate, "step": {"elem": elem, "names": names}}
+
+
+# --- expect: a restricted boolean-test grammar (child existence / value equality) --------
+def _split_top(expr: str, sep: str) -> list:
+    """Split *expr* on ``sep`` (``' or '`` / ``' and '``) at bracket/paren/quote depth 0."""
+    out, buf, depth, i, n = [], [], 0, 0, len(expr)
+    quote = None
+    while i < n:
+        ch = expr[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+        elif ch in "([":
+            depth += 1
+            buf.append(ch)
+        elif ch in ")]":
+            depth -= 1
+            buf.append(ch)
+        elif depth == 0 and expr[i:i + len(sep)] == sep:
+            out.append("".join(buf))
+            buf = []
+            i += len(sep)
+            continue
+        else:
+            buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return out
+
+
+def _parse_test_path(expr: str):
+    """Parse a path into step dicts for the expect evaluator, else None.
+
+    Steps: ``{"kind":"self"}`` / ``{"kind":"flag","flag":…}`` / ``{"kind":"elem","elem":…,
+    "names":[..]|None}``. Only ``@name``/``has-oscal-namespace`` predicates are allowed.
+    """
+    e = expr.strip()
+    if not e or "|" in e or "::" in e or ".." in e or "//" in _strip_ns_calls(e) or e.startswith("/"):
+        return None
+    steps = []
+    for tok in _split_metapath_steps(e):
+        if tok == "" or tok == ".":
+            continue
+        if tok.startswith("@"):
+            if not re.fullmatch(r"@[\w:-]+", tok):
+                return None
+            steps.append({"kind": "flag", "flag": tok[1:]})
+        else:
+            elem, names, ok = _parse_l2b_element_step(tok)
+            if not ok or not elem:
+                return None
+            steps.append({"kind": "elem", "elem": elem, "names": names})
+    return steps or [{"kind": "self"}]
+
+
+def _parse_test_term(term: str):
+    """Parse a single boolean term into an AST node, else None (→ unsupported, stay L3)."""
+    t = term.strip()
+    if t.startswith("(") and t.endswith(")") and _split_top(t[1:-1], " or ") and len(t) > 2:
+        # a fully-parenthesised sub-expression
+        inner = _parse_test_bool(t[1:-1])
+        return inner
+    m = re.fullmatch(r"not\s*\((.*)\)", t, re.DOTALL)
+    if m:
+        inner = _parse_test_bool(m.group(1))
+        return {"op": "not", "arg": inner} if inner is not None else None
+    m = re.fullmatch(r"exists\s*\((.*)\)", t, re.DOTALL)
+    if m:
+        path = _parse_test_path(m.group(1))
+        return {"op": "exists", "path": path} if path is not None else None
+    if _has_unsupported_function(t):
+        return None
+    # PATH = VALUESET  (top-level '=')
+    parts = _split_top(t, "=")
+    if len(parts) == 2:
+        path = _parse_test_path(parts[0])
+        vals = _parse_name_value_set(parts[1].strip())
+        if path is None or vals is None:
+            return None
+        return {"op": "eq", "path": path, "values": vals}
+    if len(parts) > 2:
+        return None  # chained '=' not supported
+    # bare PATH -> existence
+    path = _parse_test_path(t)
+    return {"op": "exists", "path": path} if path is not None else None
+
+
+def _parse_test_bool(expr: str):
+    """Parse a flat ``and``/``or`` boolean expression into an AST, else None."""
+    if expr is None:
+        return None
+    ors = _split_top(expr, " or ")
+    if len(ors) > 1:
+        args = [_parse_test_bool(o) for o in ors]
+        return {"op": "or", "args": args} if all(a is not None for a in args) else None
+    ands = _split_top(expr, " and ")
+    if len(ands) > 1:
+        args = [_parse_test_bool(a) for a in ands]
+        return {"op": "and", "args": args} if all(a is not None for a in args) else None
+    return _parse_test_term(expr)
+
+
+def _parse_expect(target: str, test: str):
+    """Parse an ``expect`` (target applicability + boolean test) into an L2 spec, else None.
+
+    Supported target: ``.`` (always applies) or ``.[PRED]`` where PRED is itself a supported
+    boolean (child existence / flag test). Supported test: the ``and``/``or``/``not`` /
+    ``exists`` / child-existence / ``path = value-set`` grammar. Any other function
+    (``starts-with``/comparisons/…) or shape returns None (stays L3).
+    """
+    if not test:
+        return None
+    tgt = (target or ".").strip()
+    applies = None
+    if tgt != ".":
+        m = re.fullmatch(r"\.\[(.*)\]", tgt, re.DOTALL)
+        if not m:
+            return None
+        applies = _parse_test_bool(m.group(1))
+        if applies is None:
+            return None
+    test_ast = _parse_test_bool(test)
+    if test_ast is None:
+        return None
+    return {"applies": applies, "test": test_ast}
+
+
+# OSCAL Metaschema constraint rule element names. ``allowed-values`` is parsed
+# structurally; the rest are captured verbatim (raw XML) until their handling is built.
+_CONSTRAINT_RULE_TAGS = {
+    "allowed-values", "expect", "index-has-key", "matches",
+    "is-unique", "has-cardinality", "index",
+}
+
+
+def _classify_allowed_values_levels(node: dict, _seen: set | None = None) -> None:
+    """Set ``validation-level`` on every allowed-values constraint, per node.
+
+    A node's allowed-values are ``valid`` (L2) only when *every* allowed-values constraint
+    on it is L2-evaluable — either natively (self/own-flag, see
+    :func:`_target_is_natively_evaluable`) or context-flag-gated (L2-A, see
+    :func:`_target_is_l2_context_gated`) — and successfully routed; if any requires
+    ancestor-element/descendant/cross-path context (or failed to route), they are *all*
+    ``fully-compliant`` (L3). This per-node all-or-nothing rule prevents L2 from rejecting
+    a value an L3 sibling would allow.
+    """
+    if _seen is None:
+        _seen = set()
+    nid = id(node)
+    if nid in _seen:
+        return
+    _seen.add(nid)
+
+    avs = [c for c in node.get("constraints", []) if c.get("type") == "allowed-values"]
+    if avs:
+        # Pre-compute each constraint's L2 eligibility (and cache any L2-B reverse-match
+        # spec on the constraint so the validation walk doesn't re-parse the target).
+        l2b_specs = {}
+        for c in avs:
+            if "unresolved-target" in c:
+                continue
+            tgt = c.get("target", ".")
+            if _target_is_natively_evaluable(tgt):
+                continue        # native: evaluated gate-less, no reverse-match spec needed
+            spec = _parse_l2b_target(tgt)
+            if spec is not None:
+                l2b_specs[id(c)] = spec
+        all_l2 = all(
+            "unresolved-target" not in c
+            and (_target_is_natively_evaluable(c.get("target", "."))
+                 or _target_is_l2_context_gated(c.get("target", "."), c.get("conditions"))
+                 or id(c) in l2b_specs)
+            for c in avs
+        )
+        level = "valid" if all_l2 else "fully-compliant"
+        for c in avs:
+            c["validation-level"] = level
+            if level == "valid" and id(c) in l2b_specs:
+                c["l2b-spec"] = l2b_specs[id(c)]
+
+    # matches (regex/datatype) — promoted to L2 per-constraint (not all-or-nothing) when
+    # ERROR-level with an L2-resolvable target and a check to apply. WARNING/INFORMATIONAL
+    # and function/cross-path targets stay fully-compliant (L3).
+    for c in node.get("constraints", []):
+        if c.get("type") != "matches":
+            continue
+        if c.get("level", "ERROR") != "ERROR":
+            continue
+        if not (c.get("regex") or c.get("datatype")):
+            continue
+        mspec = _parse_matches_target(c.get("target", "."))
+        # Only the self/own-flag shapes are evaluated at L2; child-path (l2b) matches need
+        # forward JSON traversal and stay deferred to L3 for now.
+        if mspec is not None and mspec.get("kind") in ("flag", "self"):
+            c["validation-level"] = "valid"
+            c["handled"] = True
+            c["match-spec"] = mspec
+
+    # has-cardinality (count a child collection vs min/max) — ERROR-level, single-level
+    # child target. Promoted per-constraint (not all-or-nothing).
+    for c in node.get("constraints", []):
+        if c.get("type") != "has-cardinality":
+            continue
+        if c.get("level", "ERROR") != "ERROR":
+            continue
+        if c.get("min-occurs") is None and c.get("max-occurs") is None:
+            continue
+        cspec = _parse_cardinality_target(c.get("target", "."))
+        if cspec is not None:
+            c["validation-level"] = "valid"
+            c["handled"] = True
+            c["card-spec"] = cspec
+
+    # expect (boolean test) — ERROR-level with a target/test in the supported child-
+    # existence / value-equality grammar. Promoted per-constraint.
+    for c in node.get("constraints", []):
+        if c.get("type") != "expect":
+            continue
+        if c.get("level", "ERROR") != "ERROR":
+            continue
+        espec = _parse_expect(c.get("target", "."), c.get("test"))
+        # Completeness-only at L2: promote positive requirements (something must exist / have
+        # a value). A top-level ``not(...)`` test is a prohibition/deprecation (e.g.
+        # ``not(@method='merge')``, ``not(exists(@depends-on))``) that conflicts with legal
+        # content and library APIs — those stay L3.
+        if espec is not None and not (isinstance(espec.get("test"), dict)
+                                      and espec["test"].get("op") == "not"):
+            c["validation-level"] = "valid"
+            c["handled"] = True
+            c["expect-spec"] = espec
+
+    for child in node.get("children", []):
+        _classify_allowed_values_levels(child, _seen)
 
 
 def _migrate_flags_to_children(node: dict, _seen: set | None = None) -> None:

@@ -9,7 +9,9 @@ OSCAL documents reference other documents through *import statements*.  A profil
 
 ## How imports are resolved
 
-Whenever content reaches `ContentState.VALID`, the library calls `resolve_imports()` automatically.  You can also call it manually at any time to force a fresh resolution pass.
+Whenever content is **minimally valid** — structurally sound, i.e. no blocking (structural) validation errors — the library calls `resolve_imports()` automatically. Full OSCAL validity is **not** required: a document whose only problems are value-quality (`allowed-values` / `invalid-type`) still resolves its imports. You can also call `resolve_imports()` manually at any time to force a fresh pass. See [Tiered Validation](VALIDATION.html) for the minimal-vs-full distinction and the blocking/non-blocking error split.
+
+Likewise, an *imported* document is accepted as a usable import (status `READY`) when **it** is minimally valid — so a published catalog or profile with deep `allowed-values` noise is still importable.
 
 ```python
 from oscal import OSCAL
@@ -77,7 +79,7 @@ Relative paths are resolved against the directory that contains the importing do
 | `href_original` | `str` | The raw href from the import statement |
 | `href_valid` | `str` | The resolved href that successfully loaded (empty on failure) |
 | `status` | `ImportState` | `READY`, `NOT_LOADED`, `INVALID`, or `EXPIRED` |
-| `is_valid` | `bool` | `True` when the loaded content passed OSCAL validation |
+| `is_valid` | `bool` | `True` when the loaded import is usable — i.e. at least **minimally valid** (structurally sound). It does not require full OSCAL validity; value-quality issues (`allowed-values` / `invalid-type`) do not prevent an import from being `READY`. |
 | `is_local` | `bool \| None` | `True` for local file, `False` for remote |
 | `is_remote` | `bool \| None` | Inverse of `is_local` |
 | `is_cached` | `bool` | `True` when remote content has a local cache copy |
@@ -172,7 +174,7 @@ When an import cannot be resolved, `entry["status"]` is `ImportState.INVALID` an
 | Code | Meaning |
 |------|---------|
 | `CONTENT_EMPTY` | The source responded successfully but returned no content |
-| `CONTENT_INVALID` | Content was retrieved but failed OSCAL validation |
+| `CONTENT_INVALID` | Content was retrieved but failed **structural (minimal) validation** — a structural error (`missing-required` / `cardinality` / `choice`) makes it unusable as an import. Content that is structurally sound but has only value-quality issues still resolves. |
 
 ---
 

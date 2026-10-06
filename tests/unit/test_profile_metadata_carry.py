@@ -43,10 +43,24 @@ _PB = "bbbbbbbb-2222-4222-8222-222222222222"
 _LOC = "cccccccc-3333-4333-8333-333333333333"
 
 
+def _inject_statements(doc):
+    """Add a 'statement' part to every synthetic control (require-statement expect, L2)."""
+    def walk(node):
+        for g in node.get("groups", []) or []:
+            walk(g)
+        for c in node.get("controls", []) or []:
+            parts = c.setdefault("parts", [])
+            if not any(isinstance(p, dict) and p.get("name") == "statement" for p in parts):
+                parts.insert(0, {"id": f"{c.get('id', 'c')}_smt", "name": "statement", "prose": "."})
+            walk(c)
+    walk(doc.get("catalog", doc))
+    return doc
+
+
 def _write(tmp_path, name, doc):
     path = os.path.join(str(tmp_path), name)
     with open(path, "w") as fh:
-        json.dump(doc, fh)
+        json.dump(_inject_statements(doc), fh)
     return path
 
 

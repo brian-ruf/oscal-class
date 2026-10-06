@@ -19,6 +19,21 @@ from oscal import Profile, Catalog
 from oscal.oscal_controls import ResolutionStatus
 
 
+def _inject_statements(cat):
+    """Give every synthetic control a 'statement' part (the OSCAL require-statement expect,
+    now enforced at L2) so these fixtures are fully valid. Recurses groups + enhancements."""
+    def walk(node):
+        for g in node.get("groups", []) or []:
+            walk(g)
+        for c in node.get("controls", []) or []:
+            parts = c.setdefault("parts", [])
+            if not any(isinstance(p, dict) and p.get("name") == "statement" for p in parts):
+                parts.insert(0, {"id": f"{c.get('id', 'c')}_smt", "name": "statement", "prose": "."})
+            walk(c)
+    walk(cat.get("catalog", cat))
+    return cat
+
+
 # ===========================================================================
 # Helpers / fixtures
 # ===========================================================================
@@ -64,7 +79,7 @@ def _write(tmp_path, name, doc):
     doc["catalog"]["groups"][0]["controls"][0]["links"][0]["href"] = f"#{res['uuid']}"
     path = os.path.join(str(tmp_path), name)
     with open(path, "w") as fh:
-        json.dump(doc, fh)
+        _inject_statements(doc); json.dump(doc, fh)
     return path
 
 
@@ -508,7 +523,7 @@ class TestMultiImport:
             doc["catalog"]["controls"] = [{"id": c, "title": c} for c in root_controls]
         path = os.path.join(str(tmp_path), name)
         with open(path, "w") as fh:
-            json.dump(doc, fh)
+            _inject_statements(doc); json.dump(doc, fh)
         return path
 
     def test_root_controls_wrapped_when_groups_present(self, tmp_path):
@@ -590,7 +605,7 @@ class TestCombineSemantics:
                            "controls": ctrls} for g, ctrls in groups]}}
         path = os.path.join(str(tmp_path), name)
         with open(path, "w") as fh:
-            json.dump(doc, fh)
+            _inject_statements(doc); json.dump(doc, fh)
         return path
 
     def _ids(self, prof):
@@ -664,7 +679,7 @@ class TestUuidCollision:
                            "controls": [{"id": c, "title": c} for c in ctrls]}]}}
         path = os.path.join(str(tmp_path), name)
         with open(path, "w") as fh:
-            json.dump(doc, fh)
+            _inject_statements(doc); json.dump(doc, fh)
         return path
 
     def test_collision_reassigned_and_all_controls_kept(self, tmp_path, caplog):

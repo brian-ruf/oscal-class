@@ -1,55 +1,26 @@
 ---
----
 
 # ROADMAP (_Updated Aug 12, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## Past: 
-
-### Version 1.x
-
-- Support Module: Acquire and manage NIST-pubished support files
-    - Support files in local SQLite database
-    - Support files in local Folder
-    - Deploy, update, and repopulate
-- OSCAL Content Class: 
-    - Simple local loading and saving
-    - Auto-detect OSCAL format, version and model
-    - Validation using NIST schema files
-    - Load any OSCAL format (XML, JSON, YAML)
-    - Convert and save in any OSCAL format (XML, JSON, YAML)
-        - Currently relies on SaxonC-HE and NIST XSLT 3.x Convertion files
+## CURRENT: Version 4.0.0 
 
 
-### Version 2.0.x: Refactoring, XML/JSON Parity
 
-- Separate class for each model
-- Refactor class attributes, methods (names, organization)
-- Efficiency and maintainability improvements
-- Robust Loading from local file system and remote URLs
 
-### Version 3.0.x: Import Dependency Chain
 
-- Top level imports 
-    - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
-    - POAM -> SSP -> Profile -> [ Profile | Catalog ]
-    - cDef -> cDef
-- Failed import handling
-- Basic addressibility across imported files
+### Version 
+- MVP cDef Getters
 
-### Version 3.1.x Profile Resolution
-
-- Control Tree Generation/Caching
-- By-Control Tailoring
-- Saving Resolved Profile Catalogs
 
 ## Up Next:
 
 
+
+
 ### Local Caching
 
-- [ ] Cache remotely acquired files locally
 - [ ] Automatic cache refresh based on TTL
 - [ ] Manually triggered refresh
 - [ ] Fallback to cache after expiration when remote content is not available.

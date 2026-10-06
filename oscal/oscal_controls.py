@@ -1035,7 +1035,7 @@ class Catalog(OSCAL):
         """
         super()._init_common()
         self.controls_tree: list[dict[str, Any]] = []
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_controls_tree()
 
     # -------------------------------------------------------------------------
@@ -1055,7 +1055,7 @@ class Catalog(OSCAL):
             bool: True when every validation phase passes.
         """
         result = super().validate(format=format)
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_controls_tree()
         else:
             self.controls_tree = []
@@ -1318,21 +1318,35 @@ class Catalog(OSCAL):
     def _validate_subtree(self, instance: dict, node_name: str) -> list:
         """Validate an incoming subtree against its model-child metaschema node.
 
+        Only **blocking (structural)** errors are returned — the inserted subtree must be
+        structurally sound (no ``missing-required`` / ``cardinality`` / ``choice``), but
+        value-quality findings (``allowed-values`` / ``invalid-type`` / ``matches`` /
+        ``has-cardinality`` / ``constraint-violation``, e.g. a control still lacking its
+        ``statement`` part) do **not** reject a faithful-copy insert: they are remediable in
+        place and must not cause profile resolution to silently drop content. This mirrors
+        the minimal-vs-full validity split (see :attr:`import_nonblocking_error_types`).
+
         Args:
             instance (dict, required): The control/group dict to validate.
             node_name (str, required): The metaschema node name (``"control"`` /
                 ``"group"``).
 
         Returns:
-            list: Structured error dicts (empty when valid, or when the index is
-                unavailable so validation is skipped).
+            list: Blocking (structural) error dicts (empty when structurally sound, or when
+                the index is unavailable so validation is skipped).
         """
         node = self._model_index_node(node_name)
         if node is None:
             return []
         errors: list[dict] = []
         self._walk_instance(instance, node, errors, f"/{self.model}/{node_name}")
-        return errors
+        # Reject structural problems AND clearly-malformed values (missing-required,
+        # cardinality, choice, invalid-type, allowed-values) — but not the cross-cutting
+        # constraint families (matches / has-cardinality / expect), which are remediable in
+        # place and must not cause a faithful-copy insert (or profile resolution) to drop a
+        # control merely because, e.g., it still lacks its ``statement`` part.
+        _remediable = {"matches", "has-cardinality", "constraint-violation"}
+        return [e for e in errors if e.get("error-type") not in _remediable]
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
@@ -2209,7 +2223,7 @@ class Profile(OSCAL):
             bool: True when every validation phase passes.
         """
         result = super().validate(format=format)
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_controls_tree()
         else:
             self.controls_tree = []

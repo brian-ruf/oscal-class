@@ -181,8 +181,17 @@ Boolean properties are provided for the most common checks:
 |---|---|
 | `.is_acquired` | `content_state >= ACQUIRED` |
 | `.is_well_formed` | `content_state >= WELL_FORMED` |
-| `.is_valid` | `content_state >= VALID` |
+| `.is_minimally_valid` | well-formed **and** no *structural* errors (missing-required / cardinality / choice) |
+| `.is_valid` | **L2** validity — all phases pass with native checks (`content_state >= VALID`) |
+| `.is_fully_compliant` | **L3** tri-state (`bool \| None`): `False` when not `is_valid`; `None` until `validate_full()` runs; then `True`/`False` |
 | `.imports_resolved` | `content_state >= IMPORTS_RESOLVED` |
+
+Validation is **three-tiered**: `.is_minimally_valid` (structural soundness) is the
+operational bar — tree building and import resolution gate on it; `.is_valid` (**L2**)
+adds the natively-evaluable value-quality phases (data types, native allowed-values) and
+is designed to meet or exceed the OSCAL JSON Schema; `.is_fully_compliant` (**L3**) adds
+the ancestor/cross-path-scoped constraints and the other rule families, evaluated against
+XML by `validate_full()`. See [Tiered Validation](VALIDATION.html).
 
 `__bool__` returns `True` when `is_valid` is `True`, so objects can be used directly
 in conditionals:
@@ -217,12 +226,15 @@ for err in catalog.validation_errors:
     print(err["error-type"], err["location"], err["identifier"], err["value"])
 ```
 
-Not every validation failure blocks import resolution. When a document is not strictly
-valid but its **only** errors are non-blocking (by default `allowed-values` /
-`invalid-type`), `validate()` still resolves imports so `import_list` is populated
-(while `is_valid` stays `False`). Use `import_blocking_errors` to see what, if anything,
-is holding resolution back. See the [Validation & Import Gating](VALIDATION.html) guide
-for the full error-type reference and the block/allow rationale.
+`validation_status` reflects **L2** validation (the `allowed-values` phase covers only
+natively-evaluable constraints; scoped ones are deferred to `validate_full`). A document
+can therefore have `is_valid == False` while still being **minimally valid** (structurally
+sound) — e.g. the `allowed-values` phase above is `False` but structure/cardinality/choice
+all pass. In that state `validate()` still builds summary trees and resolves imports
+(`import_list` is populated), because those gate on minimal validity, not L2 validity. Use
+`import_blocking_errors` to see what, if anything, is structural. See
+[Tiered Validation](VALIDATION.html) for the full error-type reference, the
+minimal-vs-full tiers, and the block/allow rationale.
 
 ### `validate()` — re-run validation
 
@@ -267,12 +279,39 @@ class VersionSupport(Enum):
 | `.is_cached` | `bool` | `True` when remote content has a local cache copy |
 | `.is_read_only` | `bool` | `True` when the content must not be mutated |
 | `.is_unsaved` | `bool` | `True` when mutations have not been written to disk |
-| `.is_editable` | `bool` | `True` when `is_valid`, `is_local`, and not `is_read_only` |
+| `.is_editable` | `bool` | `True` when `is_valid` (**L2** validity), `is_local`, and not `is_read_only` |
 | `.is_fresh` | `bool` | `True` when content is local or cached within its TTL |
 | `.is_stale` | `bool` | `True` when remote cached content has exceeded its TTL |
 | `.origin_state` | `OriginState` | `LOCAL`, `REMOTE_UNCACHED`, `REMOTE_FRESH`, or `REMOTE_STALE` |
 | `.loaded` | `datetime` | Timestamp of when content was acquired |
 | `.ttl` | `int` | Cache time-to-live in seconds (0 = never expire) |
+
+### `is_editable` vs. the mutation guard (`_can_mutate`)
+
+Two related but distinct gates govern changes, and the difference matters:
+
+- **`_can_mutate` (the enforcement gate).** Every mutation method calls this internally
+  before touching content and aborts if it returns `False`. It is the *minimum technical
+  precondition* for a change to proceed: the content is loaded (`_dict` is not `None`)
+  and **not read-only**. It does **not** require full validity or a local source.
+- **`is_editable` (an advisory signal).** A stricter, public property for deciding
+  whether to *offer* general editing (e.g. enabling an editor): it requires **L2**
+  validity (`is_valid`) **and** `is_local` **and** not read-only. It is not consulted by
+  the mutation methods themselves.
+
+Because mutation gates on `_can_mutate`, a document can be mutated while `is_editable` is
+`False` — for example content that is only **minimally valid** (structurally sound but
+with `allowed-values` / `invalid-type` issues), or content loaded from a remote source.
+
+> **Convention (guidance, not enforced).** When `_can_mutate` is `True` but
+> `is_editable` is `False`, mutations **should be limited to resolving the issues that
+> are blocking L2 validity** — i.e. remediation toward `is_valid` — rather than
+> general authoring. The library does **not** enforce this restriction; it is the
+> caller's responsibility to honor it. Once the document reaches L2 validity (and is
+> local, not read-only), `is_editable` becomes `True` and unrestricted editing is
+> appropriate.
+
+See [Tiered Validation](VALIDATION.html) for the minimal-vs-full validity tiers.
 
 ---
 
@@ -458,8 +497,10 @@ catalog.update_resource(uuid, rlinks=res["rlinks"])   # full list, nothing dropp
 
 ## Import Handling
 
-Imports are resolved automatically when content reaches `ContentState.VALID`. Results
-are available via `import_list`. See [IMPORTS.md](IMPORTS.md) for full details.
+Imports are resolved automatically once content is **minimally valid** (structurally
+sound — no blocking errors); full validity is not required. Results are available via
+`import_list`. See [IMPORTS.md](IMPORTS.md) and [Tiered Validation](VALIDATION.html) for
+full details.
 
 ### `import_list`
 

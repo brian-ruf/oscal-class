@@ -234,6 +234,7 @@ class TestNormalizeUriReference:
             '<version>1.0</version><oscal-version>1.2.3</oscal-version></metadata>'
             '<control id="ac-1"><title>AC-1</title>'
             '<link href="R:\\rr\\other-catalog.json#ac-2" rel="reference"/>'
+            '<part id="ac-1_smt" name="statement"><prose>Statement.</prose></part>'
             '</control></catalog>'
         )
         doc = OSCAL.loads(xml)

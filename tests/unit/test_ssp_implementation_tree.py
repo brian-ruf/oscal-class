@@ -7,11 +7,13 @@ with three array-valued keys:
     leveraged-authorizations -> {"uuid", "title"} per system-implementation entry
     components               -> {"uuid", "title", "type"} (+ "asset-type" when the
                                 OSCAL-default-namespace asset-type prop is present)
-    controls                 -> the imported profile's controls_tree
+    controls                 -> the imported profile's controls_tree, each control node
+                                overlaid with `implemented` (+ `implemented-requirement-uuid`)
+                                from the SSP's root control-implementation
 
 component(uuid) returns a safe copy of a system-implementation component annotated with:
     * implemented-controls   -> control-ids whose implementation cites the component
-    * responsible-roles      -> each role's metadata title + resolved party names
+    * responsible-roles      -> each role's metadata title + full party objects
     * relationships          -> forward relationship links plus the reverse relationships
                                 found by scanning the SSP's other components
 
@@ -185,27 +187,47 @@ class TestComponents:
 
 
 # ===========================================================================
-# controls (imported profile's controls_tree)
+# controls (imported profile controls_tree, overlaid with implemented status from the
+# root control-implementation implemented-requirements)
 # ===========================================================================
 class TestControls:
 
-    def test_controls_from_imported_profile(self, ssp_chain):
+    def test_base_is_profile_controls_tree(self, ssp_chain):
+        # The base is the imported profile's controls_tree (group ac -> control ac-1).
         controls = ssp_chain.implementation_tree["controls"]
         assert len(controls) == 1
-        group = controls[0]
-        assert group["id"] == "ac" and group["group"] is True
-        assert [c["id"] for c in group["children"]] == ["ac-1"]
+        assert controls[0]["id"] == "ac" and controls[0]["group"] is True
+        assert [c["id"] for c in controls[0]["children"]] == ["ac-1"]
 
-    def test_controls_match_profile_tree(self, ssp_chain):
-        profile = ssp_chain._imported_profile()
-        assert profile is not None
-        assert ssp_chain.implementation_tree["controls"] == profile.controls_tree
+    def test_implemented_overlay(self, ssp_chain):
+        # _ssp_doc implements ac-1 -> that control node is marked implemented and carries
+        # the implementing requirement's uuid.
+        ac1 = ssp_chain.implementation_tree["controls"][0]["children"][0]
+        assert ac1["implemented"] is True
+        assert ac1["implemented-requirement-uuid"] == "80000000-0000-4000-8000-000000000001"
 
-    def test_controls_is_safe_copy(self, ssp_chain):
-        """Mutating the tree's controls must not affect the imported profile."""
+    def test_group_nodes_not_marked(self, ssp_chain):
+        assert "implemented" not in ssp_chain.implementation_tree["controls"][0]
+
+    def test_unimplemented_control_marked_false(self, ssp_chain):
+        # Drop the implemented-requirement and rebuild -> the baseline control remains but
+        # is no longer implemented.
+        ssp_chain._dict["system-security-plan"]["control-implementation"][
+            "implemented-requirements"] = []
+        ssp_chain._build_implementation_tree()
+        ac1 = ssp_chain.implementation_tree["controls"][0]["children"][0]
+        assert ac1["implemented"] is False
+        assert "implemented-requirement-uuid" not in ac1
+
+    def test_overlay_does_not_leak_into_profile(self, ssp_chain):
+        """The overlay keys live only on the tree copy, never on the profile's tree."""
         profile = ssp_chain._imported_profile()
-        ssp_chain.implementation_tree["controls"][0]["title"] = "MUTATED"
-        assert profile.controls_tree[0]["title"] == "Access Control"
+
+        def _flat(nodes):
+            for n in nodes:
+                yield n
+                yield from _flat(n.get("children", []) or [])
+        assert all("implemented" not in n for n in _flat(profile.controls_tree))
 
     def test_controls_empty_without_import(self):
         with tempfile.TemporaryDirectory() as d:
@@ -337,7 +359,7 @@ class TestComponentGetter:
 
 
 # ===========================================================================
-# component() responsible-roles enrichment (role title + party names)
+# component() responsible-roles enrichment (role title + full party objects)
 # ===========================================================================
 _RP1 = "eeeeeeee-0000-4000-8000-000000000001"  # person Alice
 _RP2 = "eeeeeeee-0000-4000-8000-000000000002"  # org Acme
@@ -384,9 +406,10 @@ class TestComponentResponsibleRoles:
         assert roles[1]["title"] == "System Owner"
 
     def test_parties_resolved(self, ssp_roles):
+        # each party-uuid resolves to the FULL metadata party object (type, name, …)
         roles = ssp_roles.component(_RC)["responsible-roles"]
-        assert roles[0]["parties"] == [{"uuid": _RP1, "name": "Alice"},
-                                       {"uuid": _RP2, "name": "Acme"}]
+        assert roles[0]["parties"] == [{"uuid": _RP1, "type": "person", "name": "Alice"},
+                                       {"uuid": _RP2, "type": "organization", "name": "Acme"}]
 
     def test_no_party_uuids_no_parties_key(self, ssp_roles):
         assert "parties" not in ssp_roles.component(_RC)["responsible-roles"][1]
@@ -672,7 +695,7 @@ class TestLeveragedAuthorizationGetter:
 
 # ===========================================================================
 # SSP.control() — responsible-roles on by-components (requirement-level and
-# statement-level) annotated with role title + party names.
+# statement-level) annotated with role title + full party objects.
 # ===========================================================================
 _CR_IR = "80000000-0000-4000-8000-0000000000d1"
 _CR_PARTY = "50000000-0000-4000-8000-0000000000d2"
@@ -687,6 +710,8 @@ def _ssp_doc_for_control_roles():
     ssp["metadata"]["parties"] = [{"uuid": _CR_PARTY, "type": "person", "name": "Alice"}]
     ssp["control-implementation"]["implemented-requirements"] = [{
         "uuid": _CR_IR, "control-id": "ac-2",
+        # requirement-LEVEL responsibility construct (not only on by-components)
+        "responsible-roles": [{"role-id": "isso", "party-uuids": [_CR_PARTY]}],
         "by-components": [{
             "component-uuid": _CR_COMP, "uuid": "90000000-0000-4000-8000-0000000000d1",
             "description": "req-bc",
@@ -694,6 +719,8 @@ def _ssp_doc_for_control_roles():
                                   {"role-id": "ghost"}]}],
         "statements": [{
             "statement-id": "ac-2_smt", "uuid": "a0000000-0000-4000-8000-0000000000d1",
+            # statement-LEVEL responsibility construct
+            "responsible-roles": [{"role-id": "admin"}],
             "by-components": [{
                 "component-uuid": _CR_COMP, "uuid": "b0000000-0000-4000-8000-0000000000d1",
                 "description": "stmt-bc",
@@ -729,11 +756,23 @@ class TestControlResponsibleRoles:
 
     def test_requirement_by_component_parties(self, ssp_ctrl_roles):
         assert self._req_bc_roles(ssp_ctrl_roles)[0]["parties"] == [
-            {"uuid": _CR_PARTY, "name": "Alice"}]
+            {"uuid": _CR_PARTY, "type": "person", "name": "Alice"}]
 
     def test_no_party_uuids_no_parties_key(self, ssp_ctrl_roles):
         # Second req-level role has no party-uuids -> no parties key.
         assert "parties" not in self._req_bc_roles(ssp_ctrl_roles)[1]
+
+    def test_requirement_level_responsible_roles_enriched(self, ssp_ctrl_roles):
+        # The responsibility construct on the requirement ITSELF (not just by-components)
+        # is now resolved by the recursive enrichment.
+        ir = ssp_ctrl_roles.control("ac-2", with_control=False)
+        rr = ir["responsible-roles"][0]
+        assert rr["title"] == "ISSO"
+        assert rr["parties"] == [{"uuid": _CR_PARTY, "type": "person", "name": "Alice"}]
+
+    def test_statement_level_responsible_roles_enriched(self, ssp_ctrl_roles):
+        ir = ssp_ctrl_roles.control("ac-2", with_control=False)
+        assert ir["statements"][0]["responsible-roles"][0]["title"] == "Administrator"
 
     def test_unknown_role_empty_title(self, ssp_ctrl_roles):
         assert self._req_bc_roles(ssp_ctrl_roles)[1]["title"] == ""

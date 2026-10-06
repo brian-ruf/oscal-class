@@ -22,7 +22,7 @@ Guides and reference material for the OSCAL Python library.
 - [Getting Started](GETTING_STARTED.html)
 - [Concept of Operations (ConOps)](CONOPS.html)
 - [OSCAL Class](CONTENT.html)
-- [Validation & Import Gating](VALIDATION.html)
+- [Tiered Validation](VALIDATION.html)
 - [OSCAL Format Converters](CONVERTERS.html)
 - [Import Resolution](IMPORTS.html)
 - [Importing Controls](IMPORTING_CONTROLS.html)

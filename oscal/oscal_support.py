@@ -89,7 +89,14 @@ INDEX_REFRESH = 86400  # Seconds before a cached metaschema index entry is consi
 # additions. Every index built by this library is stamped with this value, and each
 # oscal_versions row records the index version its stored indexes were built with, so a
 # library and a shared support database can detect and reconcile index-schema mismatches.
-METASCHEMA_INDEX_VERSION = "1.0.0"
+METASCHEMA_INDEX_VERSION = "2.7.0"
+
+# Sentinel index_version for rows whose stored content predates index-version stamping (a
+# pre-versioning support DB). It sorts below every real version, so resolve_index_version
+# treats it as out-of-range (never a candidate) and get_metaschema_index treats such
+# content as incompatible — forcing a rebuild/refresh rather than silently trusting it.
+# Never fabricate the CURRENT version for NULL rows (that masked stale content as fresh).
+PRE_VERSIONING_INDEX_SENTINEL = "0.0.0"
 
 # Module-level cache for parsed metaschema index objects.
 # Key: (version, model)  Value: {"version", "model", "last_retrieved", "index"}
@@ -582,19 +589,29 @@ class OSCALSupport:
             return None
 
     # -------------------------------------------------------------------------
-    def _merge_from_bundled_db(self, versions: Optional[list] = None) -> bool:
+    def _merge_from_bundled_db(self, versions: Optional[list] = None,
+                               replace: bool = False) -> bool:
         """Merge records from the bundled support DB into the local database.
 
         Copies ``oscal_versions``, ``oscal_support`` and the referenced ``filecache`` rows
         from the library's bundled database into the local one using SQLite ``ATTACH``.
-        Existing rows are preserved (``INSERT OR IGNORE``). Only the columns common to both
-        schemas are copied, so a bundle built against an older/newer table layout still
-        merges cleanly; any merged version row left without an ``index_version`` is
-        backfilled to :data:`METASCHEMA_INDEX_VERSION`.
+        Existing rows are preserved (``INSERT OR IGNORE``) unless *replace* is set.
+
+        When *replace* is True (requires explicit *versions*), each requested version that
+        the bundle can supply is first **deleted** locally (its ``oscal_support`` rows, the
+        ``filecache`` blobs referenced *only* by those rows, and its ``oscal_versions`` row)
+        and then re-inserted from the bundle — so stale/pre-versioning content is overwritten
+        rather than skipped. This is the self-heal path for a DB whose stored indexes are
+        older than the running library's index schema.
+
+        Only the columns common to both schemas are copied, so a bundle built against an
+        older/newer table layout still merges cleanly.
 
         Args:
             versions (list | None, optional): OSCAL version tags to merge; None merges every
-                version present in the bundle.
+                version present in the bundle. Required when *replace* is True.
+            replace (bool, optional): Overwrite (delete-then-insert) the given versions
+                instead of add-only. Defaults to False.
 
         Returns:
             bool: True if the merge statements executed successfully.
@@ -625,6 +642,19 @@ class OSCALSupport:
                 return [c for c in local_cols if c in bundled_cols]
 
             stmts: list[str] = []
+            # Replace mode: clear the requested versions (only those the bundle can supply)
+            # BEFORE the inserts, so INSERT OR IGNORE actually writes fresh content. Delete
+            # only filecache blobs referenced solely by these versions (never orphan another
+            # version's files).
+            if replace and versions:
+                in_bundle = "version IN (SELECT version FROM bundled.oscal_versions)"
+                stmts.append(
+                    f"DELETE FROM filecache WHERE uuid IN ("
+                    f"SELECT filecache_uuid FROM oscal_support WHERE version IN ({vlist}) AND {in_bundle}) "
+                    f"AND uuid NOT IN (SELECT filecache_uuid FROM oscal_support WHERE version NOT IN ({vlist}))"
+                )
+                stmts.append(f"DELETE FROM oscal_support WHERE version IN ({vlist}) AND {in_bundle}")
+                stmts.append(f"DELETE FROM oscal_versions WHERE version IN ({vlist}) AND {in_bundle}")
             fc_cols = _common_columns("filecache")
             if fc_cols:
                 cols = ", ".join(fc_cols)
@@ -643,10 +673,10 @@ class OSCALSupport:
 
             ok = self.db.db_execute(stmts) if stmts else False
             if ok:
-                # Merged rows from an older bundle may lack index_version; treat them as the
-                # current schema (a bundle is always built by a compatible library).
+                # A merged row that still lacks index_version predates versioning — mark it
+                # with the sentinel (never the current version; see __migrate_schema).
                 self.db.db_execute(
-                    f"UPDATE oscal_versions SET index_version = '{METASCHEMA_INDEX_VERSION}' "
+                    f"UPDATE oscal_versions SET index_version = '{PRE_VERSIONING_INDEX_SENTINEL}' "
                     "WHERE index_version IS NULL"
                 )
                 logger.info(
@@ -667,6 +697,25 @@ class OSCALSupport:
                 os.remove(tmp)
             except OSError:
                 pass
+
+    # -------------------------------------------------------------------------
+    def _refresh_versions_from_bundle(self, versions: list) -> bool:
+        """Replace the stored content of *versions* with the bundled DB's (delete-then-insert).
+
+        The self-heal for stale/pre-versioning processed indexes: unlike the add-only merge,
+        this overwrites existing rows so content older than the running index schema is
+        actually replaced. Versions not present in the bundle are left untouched. Clears the
+        affected in-memory index cache so the next read reflects the refreshed content.
+        """
+        if not versions:
+            return False
+        ok = self._merge_from_bundled_db(list(versions), replace=True)
+        if ok:
+            self.__load_versions()
+            for key in [k for k in _metaschema_index_cache if k[0] in set(versions)]:
+                _metaschema_index_cache.pop(key, None)
+            logger.info(f"Refreshed {', '.join(versions)} from the bundled support database.")
+        return ok
 
     # -------------------------------------------------------------------------
     def startup(self, check_for_updates=False, refresh_all=False):
@@ -749,18 +798,17 @@ class OSCALSupport:
         field list in :data:`OSCAL_SUPPORT_TABLES` is compared against the live columns and
         any missing ones are added via ``ALTER TABLE``.
 
-        ``oscal_versions.index_version`` is then backfilled to :data:`METASCHEMA_INDEX_VERSION`
-        for every row still holding ``NULL``. This must run whether the column was just added
-        (a legacy DB predating it) **or** it was already present but left ``NULL`` for rows the
-        build never stamped — notably OSCAL versions below :data:`METASCHEMA_MIN_VERSION`
-        (``v1.1.1``), which have no NIST-published resolved metaschema and so never get an
-        index built (``set_version_index_version`` is only called for versions that are
-        indexed). Because ``index_version`` is part of the base schema, freshly built/bundled
-        databases create the column up front, so the add-time backfill alone would leave those
-        rows ``NULL`` in the shipped artifact. Stamping is uniform and idempotent: a DB built
-        by any compatible library conforms to the current index schema, and
-        :meth:`resolve_index_version` only reads non-NULL rows, so a uniform value keeps the
-        invariant without affecting resolution.
+        Any ``oscal_versions`` row still holding ``NULL`` is then backfilled to the
+        :data:`PRE_VERSIONING_INDEX_SENTINEL` (``"0.0.0"``) — **not** to the current version.
+        A NULL here means the row was never stamped by a build: either an un-indexed OSCAL
+        version below :data:`METASCHEMA_MIN_VERSION` (``v1.1.1``, no NIST-published resolved
+        metaschema, so no processed index and nothing to serve) **or** a *pre-versioning*
+        database whose processed indexes predate index-version stamping. Fabricating the
+        current version here was the bug behind silent staleness: it made a stale DB's
+        content look fresh, so neither :meth:`resolve_index_version` nor
+        :meth:`get_metaschema_index` would refuse it. The sentinel sorts below every real
+        version, so resolve excludes it (triggering a heal) and per-version reconciliation
+        refreshes any stale processed content from the bundle instead of trusting it.
         """
         if self.db_type != "sqlite3":
             return
@@ -776,12 +824,13 @@ class OSCALSupport:
                 self.db.db_execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {field['type']}")
                 existing.add(col)
 
-            # Uniformly backfill index_version — runs regardless of whether the column was
-            # just added, so a bundled/pulled DB with NULL rows (e.g. un-indexed versions
-            # below METASCHEMA_MIN_VERSION) is self-healed rather than shipped with holes.
+            # Backfill NULL index_version rows to the pre-versioning sentinel (NOT the
+            # current version — that masked stale content as fresh). Versions actually
+            # indexed by a build carry their real stamp via set_version_index_version and
+            # are untouched here.
             if table_name == "oscal_versions" and "index_version" in existing:
                 self.db.db_execute(
-                    f"UPDATE oscal_versions SET index_version = '{METASCHEMA_INDEX_VERSION}' "
+                    f"UPDATE oscal_versions SET index_version = '{PRE_VERSIONING_INDEX_SENTINEL}' "
                     "WHERE index_version IS NULL"
                 )
 
@@ -812,7 +861,16 @@ class OSCALSupport:
                 "Support DB holds no metaschema index compatible with this library "
                 f"(need {target} <= index_version < {next_major}); healing from the bundled database."
             )
+            # No in-range index => the DB is empty, stale, or pre-versioning. Any version that
+            # already holds processed content must be REPLACED from the bundle (an add-only
+            # merge would keep the stale rows); then add any versions absent locally.
+            staled = [r.get("version") for r in (self.db.query(
+                "SELECT DISTINCT version FROM oscal_support WHERE type = 'processed'") or [])
+                if r.get("version")]
+            healed = self._refresh_versions_from_bundle(staled) if staled else False
             if self._merge_from_bundled_db():
+                healed = True
+            if healed:
                 self.__load_versions()
                 candidates = _in_range_versions()
 
@@ -827,6 +885,192 @@ class OSCALSupport:
             )
         logger.debug(f"Active metaschema index version: {self.active_index_version}")
         return self.active_index_version
+
+    # -------------------------------------------------------------------------
+    def _coverage_for_model(self, version: str, model: str) -> dict:
+        """Collect validation-coverage stats for one model from its metaschema index.
+
+        Returns ``{"structural": {...}, "constraints": [ {id,type,target,tier,note}, … ]}``
+        where ``tier`` is ``"L2"`` (the library evaluates it) or ``"unhandled"`` (deferred —
+        includes everything slated for the not-yet-built L3 engine). Constraints are
+        de-duplicated by id across the recursive node tree.
+        """
+        idx = self.get_metaschema_index(version, model)
+        structural = {"required": 0, "cardinality": 0, "choice": 0, "datatype": 0}
+        cons: dict = {}
+        if not idx or not idx.get("nodes"):
+            return {"structural": structural, "constraints": []}
+
+        def _tier(c):
+            if c.get("type") == "allowed-values":
+                return "L2" if c.get("validation-level") == "valid" else "unhandled"
+            return "L2" if c.get("handled") else "unhandled"
+
+        def _note(c):
+            t = c.get("type")
+            if _tier(c) == "L2":
+                return {"allowed-values": "native / context- or element-gated",
+                        "matches": "regex / datatype", "has-cardinality": "count vs min/max",
+                        "expect": "completeness boolean test"}.get(t, "")
+            if t == "allowed-values":
+                return "ancestor / cross-path scoped → L3"
+            if t in ("is-unique", "index", "index-has-key"):
+                return "referential integrity / uniqueness → L3 (Phase 3)"
+            if t == "expect":
+                return "prohibition or XPath-function test → L3"
+            return "complex target / function → L3"
+
+        seen: set = set()
+
+        def walk(n):
+            if not isinstance(n, dict) or id(n) in seen:
+                return
+            seen.add(id(n))
+            st = n.get("structure-type")
+            if st == "choice":
+                structural["choice"] += 1
+            if n.get("min-occurs") == "1":
+                structural["required"] += 1
+            if st != "flag":
+                mn, mx = n.get("min-occurs"), n.get("max-occurs")
+                if (mn not in (None, "0")) or (mx not in (None, "unbounded")):
+                    structural["cardinality"] += 1
+            if n.get("datatype"):
+                structural["datatype"] += 1
+            for c in n.get("constraints", []) or []:
+                cid = c.get("id") or f"({c.get('type')}:{c.get('target')})"
+                cons.setdefault(cid, {"id": cid, "type": c.get("type"),
+                                      "target": c.get("target"), "tier": _tier(c), "note": _note(c)})
+            for ch in n.get("children", []) or []:
+                walk(ch)
+
+        nodes = idx["nodes"]
+        if isinstance(nodes, dict):
+            walk(nodes)
+        else:
+            for n in nodes:
+                walk(n)
+        return {"structural": structural, "constraints": sorted(cons.values(), key=lambda x: (x["tier"] != "unhandled", x["type"], x["id"]))}
+
+    # -------------------------------------------------------------------------
+    def coverage_report_html(self, version: str | None = None) -> str:
+        """Return a self-contained HTML report of validation coverage from the metaschema
+        index: what the library enforces at **L1** (structure) and **L2** (value-quality),
+        and what remains **unhandled** (the constraints slated for the not-yet-built L3
+        engine — ancestor/cross-path allowed-values, ``is-unique``/``index``/
+        ``index-has-key``, prohibition/function ``expect``, complex ``matches`` /
+        ``has-cardinality``). L3 is folded into *unhandled* until that engine lands.
+        """
+        import html as _html
+        from datetime import datetime, timezone
+        try:
+            from . import __version__ as _lib_version
+        except Exception:
+            _lib_version = "?"
+
+        version = version or sorted(self.versions.keys())[-1] if self.versions else version
+        models = [m for m in self.enumerate_models(version) if m != "complete"]
+        per_model = {m: self._coverage_for_model(version, m) for m in models}
+
+        # Totals. Structural (L1) and datatype (L2) are *baseline* checks derived from the
+        # skeleton and counted per node-occurrence; the headline coverage ratio is over the
+        # declared metaschema <constraint> rules (de-duplicated by id): L2-handled vs
+        # unhandled. The two bases are reported separately so neither is misread.
+        tot = {"struct": 0, "dtype": 0, "c_l2": 0, "c_un": 0}
+        for m, data in per_model.items():
+            s = data["structural"]
+            tot["struct"] += s["required"] + s["cardinality"] + s["choice"]
+            tot["dtype"] += s["datatype"]
+            tot["c_l2"] += sum(1 for c in data["constraints"] if c["tier"] == "L2")
+            tot["c_un"] += sum(1 for c in data["constraints"] if c["tier"] == "unhandled")
+        tot_c = tot["c_l2"] + tot["c_un"]
+        pct = f"{100 * tot['c_l2'] / tot_c:.0f}%" if tot_c else "n/a"
+
+        def esc(x):
+            return _html.escape("" if x is None else str(x))
+
+        def bar(l2, un):
+            total = max(1, l2 + un)
+
+            def seg(n, cls):
+                return (f'<span class="seg {cls}" style="width:{100 * n / total:.1f}%" '
+                        f'title="{cls}: {n}"></span>') if n else ""
+            return f'<span class="bar">{seg(l2, "t2")}{seg(un, "t3")}</span>'
+
+        gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        rows = []
+        for m in models:
+            s = per_model[m]["structural"]
+            cs = per_model[m]["constraints"]
+            struct = s["required"] + s["cardinality"] + s["choice"]
+            c_l2 = sum(1 for c in cs if c["tier"] == "L2")
+            c_un = sum(1 for c in cs if c["tier"] == "unhandled")
+            rows.append(f"<tr><td><a href='#{esc(m)}'>{esc(m)}</a></td>"
+                        f"<td class='num'>{struct}</td><td class='num'>{s['datatype']}</td>"
+                        f"<td class='num'>{c_l2}</td><td class='num'>{c_un}</td>"
+                        f"<td>{bar(c_l2, c_un)}</td></tr>")
+
+        details = []
+        for m in models:
+            cs = per_model[m]["constraints"]
+            s = per_model[m]["structural"]
+            crows = "".join(
+                f"<tr class='{c['tier']}'><td>{esc(c['id'])}</td><td>{esc(c['type'])}</td>"
+                f"<td><code>{esc(c['target'])}</code></td>"
+                f"<td class='badge {c['tier']}'>{'L2' if c['tier']=='L2' else 'unhandled'}</td>"
+                f"<td>{esc(c['note'])}</td></tr>"
+                for c in cs) or "<tr><td colspan='5' class='muted'>(no declared constraints)</td></tr>"
+            details.append(
+                f"<section id='{esc(m)}'><h3>{esc(m)}</h3>"
+                f"<p class='muted'>L1 structural checks: required={s['required']}, "
+                f"cardinality={s['cardinality']}, choice={s['choice']} &middot; "
+                f"L2 datatype checks: {s['datatype']}</p>"
+                f"<table class='detail'><thead><tr><th>constraint id</th><th>type</th>"
+                f"<th>target</th><th>tier</th><th>note</th></tr></thead><tbody>{crows}</tbody></table></section>")
+
+        return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>OSCAL validation coverage — {esc(version)}</title>
+<style>
+  body{{font:14px/1.5 system-ui,Segoe UI,Arial,sans-serif;margin:2rem;color:#1b1f24;max-width:1100px}}
+  h1{{margin:0 0 .25rem}} .sub{{color:#596273;margin:0 0 1.5rem}}
+  table{{border-collapse:collapse;width:100%;margin:.5rem 0 2rem}}
+  th,td{{border:1px solid #e1e4e8;padding:.4rem .6rem;text-align:left;vertical-align:top}}
+  th{{background:#f6f8fa}} td.num{{text-align:right;font-variant-numeric:tabular-nums}}
+  .muted{{color:#6a737d}} code{{font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;word-break:break-all}}
+  .bar{{display:inline-flex;width:220px;height:14px;border-radius:7px;overflow:hidden;background:#eef1f4}}
+  .seg{{display:inline-block;height:100%}} .seg.t1{{background:#2e7d32}} .seg.t2{{background:#1976d2}} .seg.t3{{background:#c9ad2a}}
+  .legend span{{margin-right:1rem}} .dot{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}}
+  .badge{{font-size:11px;padding:1px 7px;border-radius:10px;color:#fff;white-space:nowrap}}
+  .badge.L2{{background:#1976d2}} .badge.unhandled{{background:#c9ad2a;color:#3a3100}}
+  tr.unhandled td{{background:#fffdf3}}
+  .cards{{display:flex;gap:1rem;margin:1rem 0 2rem}} .card{{flex:1;border:1px solid #e1e4e8;border-radius:8px;padding:.8rem 1rem}}
+  .card .n{{font-size:1.6rem;font-weight:700}} .card.t1 .n{{color:#2e7d32}} .card.t2 .n{{color:#1976d2}} .card.t3 .n{{color:#b89b13}}
+  h3{{margin:1.5rem 0 .25rem;border-top:1px solid #eee;padding-top:1rem}}
+</style></head><body>
+<h1>OSCAL Validation Coverage</h1>
+<p class="sub">Model set <b>{esc(version)}</b> &middot; metaschema index <b>{esc(self.active_index_version)}</b>
+ &middot; oscal library <b>{esc(_lib_version)}</b> &middot; generated {esc(gen)}</p>
+<div class="cards">
+  <div class="card t2"><div class="n">{pct}</div>of declared constraints handled at L2
+    <div class="muted">{tot['c_l2']} of {tot_c} metaschema <code>&lt;constraint&gt;</code> rules</div></div>
+  <div class="card t3"><div class="n">{tot['c_un']}</div>constraints unhandled &mdash; deferred to L3</div>
+  <div class="card t1"><div class="n">&#10003;</div>L1 structural ({tot['struct']}) &amp; L2 datatype ({tot['dtype']}) checks
+    <div class="muted">baseline, always enforced (per node-occurrence)</div></div>
+</div>
+<p class="legend"><span><span class="dot" style="background:#1976d2"></span>L2 &mdash; constraint handled</span>
+<span><span class="dot" style="background:#c9ad2a"></span>unhandled / L3</span></p>
+<p class="muted">Headline ratio is over declared <code>&lt;constraint&gt;</code> rules (de-duplicated by id).
+Structural (L1) and datatype (L2) columns are baseline checks counted per node-occurrence &mdash; a different basis, shown for context.</p>
+<table><thead><tr><th>model</th><th>L1 struct</th><th>L2 datatype</th><th>L2 constraints</th><th>unhandled</th><th>constraint coverage</th></tr></thead>
+<tbody>{''.join(rows)}</tbody></table>
+<h2>Per-model constraints</h2>
+{''.join(details)}
+<p class="muted">L1 structural checks and L2 datatype checks are derived from the model skeleton
+(required flags/fields, min/max-occurs bounds, choices, declared datatypes); the per-constraint
+rows list the metaschema <code>&lt;constraint&gt;</code> rules. &ldquo;unhandled&rdquo; currently includes every
+constraint awaiting the L3 Metapath/XPath engine.</p>
+</body></html>"""
 
     # -------------------------------------------------------------------------
     def update(self, mode="new", fetch=None, save_to_fs=False): # , backend=None):
@@ -1093,24 +1337,41 @@ class OSCALSupport:
             logger.error(f"Empty metaschema index for {version}/{model}.")
             return None
 
-        # Reconcile the stored index's schema version against the one requested. A
-        # different major is incompatible — rebuild from the raw metaschema so the fresh
-        # index conforms to (and is stamped with) the current index schema. A missing
-        # index_version predates index versioning and is handled by the format-specific
-        # migrations below; a same-major difference is trusted as backward compatible.
+        # Reconcile the stored index's schema version against the one required. The stored
+        # index is trusted only when its embedded ``index_version`` is the **same major and
+        # not older** than the required version — our minor bumps add consumer-required data
+        # (validation-level, l2b-spec, …), so an older same-major index is NOT safe, and a
+        # *missing* embedded version means pre-versioning content that must never be trusted.
+        # On incompatibility: rebuild from the raw metaschema when present; otherwise REFRESH
+        # this version from the bundled DB (replacing the stale rows) and re-read.
         stored_iv = model_index.get("index_version")
-        if stored_iv and self._semver_major(stored_iv) != self._semver_major(resolved_iv):
+        compatible = (
+            bool(stored_iv)
+            and self._semver_major(stored_iv) == self._semver_major(resolved_iv)
+            and compare_semver(stored_iv, resolved_iv) >= 0
+        )
+        if not compatible:
             logger.info(
                 f"Metaschema index for {version}/{model} was built with index schema "
-                f"{stored_iv}, incompatible with requested {resolved_iv} — rebuilding."
+                f"{stored_iv or '(pre-versioning)'}, incompatible with required {resolved_iv} "
+                "— rebuilding/refreshing."
             )
             from .metaschema_parser import _rebuild_model_index
-            fresh_index = _rebuild_model_index(self, version, model)
+            fresh_index = (_rebuild_model_index(self, version, model)
+                           if self.get_asset(version, model, "metaschema") else None)
             if fresh_index is not None:
                 model_index = fresh_index
+            elif self._refresh_versions_from_bundle([version]):
+                refreshed = self.get_asset(version, model, "processed")
+                if refreshed:
+                    try:
+                        model_index = json.loads(refreshed) or model_index
+                    except json.JSONDecodeError:
+                        pass
             else:
                 logger.warning(
-                    f"Rebuild failed for {version}/{model}; continuing with index schema {stored_iv}."
+                    f"Could not rebuild or refresh {version}/{model} (stale index "
+                    f"{stored_iv or '(pre-versioning)'}); continuing with the stored index."
                 )
 
         # Ensure json-path (node-level) and condition (constraint-level) are present.
