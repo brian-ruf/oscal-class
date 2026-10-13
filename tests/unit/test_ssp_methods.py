@@ -10,11 +10,11 @@ Unit tests for SSP and implementation-specific methods:
     - append_impl_requirement() (oscal_implementation module fn; delegates to the method)
     - _append_responsible_role() (internal cross-model helper; returns a safe copy)
 
-Note: SSP.new() produces a minimal SSP template that does NOT contain
-system-implementation or control-implementation sections. Methods that
-require those sections return None on a fresh SSP. These tests verify
-the documented behavior: no exception is raised and the return value
-signals failure via None.
+Note: SSP.new() produces a minimally-valid SSP template that DOES contain
+system-implementation and control-implementation sections, so append_* methods
+succeed on a fresh SSP. The None-return contract (methods signal failure via
+None rather than raising when a required section is absent) is exercised with
+the ``ssp_without_sections`` fixture, which strips those sections.
 """
 import os
 
@@ -37,8 +37,20 @@ _SSP_FIXTURE = os.path.join(_HERE, "..", "test-data", "sanitized_ssp_oscal.json"
 # ===========================================================================
 @pytest.fixture
 def fresh_ssp():
-    """Minimal SSP from SSP.new() — no system-implementation or control-implementation."""
+    """Minimally-valid SSP from SSP.new() — includes system-implementation and
+    control-implementation sections (the template is L2-valid)."""
     return SSP.new("Test SSP")
+
+
+@pytest.fixture
+def ssp_without_sections():
+    """A fresh SSP with its system-implementation and control-implementation sections
+    removed, to exercise the None-return contract when a required section is absent."""
+    ssp = SSP.new("Test SSP")
+    body = ssp._dict.get("system-security-plan", {})
+    body.pop("system-implementation", None)
+    body.pop("control-implementation", None)
+    return ssp
 
 
 @pytest.fixture
@@ -64,9 +76,16 @@ class TestSSPAppendComponent:
         except Exception:
             pytest.fail("SSP.append_component() raised unexpectedly on a fresh SSP")
 
-    def test_returns_none_without_system_implementation(self, fresh_ssp):
-        """SSP.append_component() returns None when system-implementation section is missing."""
+    def test_appends_on_fresh_ssp(self, fresh_ssp):
+        """SSP.append_component() succeeds on a fresh SSP (template has system-implementation)."""
         result = fresh_ssp.append_component("software", "My Component", "A test component")
+        assert isinstance(result, dict)
+        assert result["type"] == "software"
+        assert result["title"] == "My Component"
+
+    def test_returns_none_without_system_implementation(self, ssp_without_sections):
+        """SSP.append_component() returns None when the system-implementation section is absent."""
+        result = ssp_without_sections.append_component("software", "My Component", "A test component")
         assert result is None
 
     def test_accepts_op_status(self, fresh_ssp):
@@ -122,9 +141,15 @@ class TestModuleAppendComponent:
         except Exception:
             pytest.fail("Module-level append_component() raised unexpectedly")
 
-    def test_returns_none_without_system_implementation(self, fresh_ssp):
-        """Module-level append_component() returns None when system-implementation is absent."""
+    def test_appends_on_fresh_ssp(self, fresh_ssp):
+        """Module-level append_component() succeeds on a fresh SSP (template has the section)."""
         result = append_component(fresh_ssp, "software", "My Component", "Desc")
+        assert isinstance(result, dict)
+        assert result["type"] == "software"
+
+    def test_returns_none_without_system_implementation(self, ssp_without_sections):
+        """Module-level append_component() returns None when system-implementation is absent."""
+        result = append_component(ssp_without_sections, "software", "My Component", "Desc")
         assert result is None
 
     def test_accepts_op_status_argument(self, fresh_ssp):

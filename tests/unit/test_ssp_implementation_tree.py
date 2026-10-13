@@ -26,6 +26,7 @@ to its multiply-scoped allowed-values constraint.
 import json
 import os
 import tempfile
+from unittest import mock
 
 import pytest
 
@@ -691,6 +692,53 @@ class TestLeveragedAuthorizationGetter:
         again = ssp_la.leveraged_authorization(_LA_UUID)
         assert again["title"] == "AWS GovCloud"
         assert "injected" not in again["component-uuids"]
+
+    def test_components_omitted_by_default(self, ssp_la):
+        assert "components" not in ssp_la.leveraged_authorization(_LA_UUID)
+
+    def test_include_components_resolved_in_order(self, ssp_la):
+        la = ssp_la.leveraged_authorization(_LA_UUID, include_components=True)
+        # Pure array of real component objects, in component-uuids order. In valid content
+        # every collected uuid resolves, so here the arrays match.
+        assert None not in la["components"]
+        assert [c["uuid"] for c in la["components"]] == la["component-uuids"]
+
+    def test_include_components_skips_unresolvable_uuid(self, ssp_la):
+        # If a collected uuid does not resolve, it is dropped (no None padding), so
+        # `components` is shorter than `component-uuids` rather than carrying a gap.
+        uuids = ssp_la.leveraged_authorization(_LA_UUID)["component-uuids"]
+        assert len(uuids) >= 2
+        drop = uuids[0]
+        real = ssp_la.component
+        with mock.patch.object(ssp_la, "component",
+                               side_effect=lambda u: None if u == drop else real(u)):
+            la = ssp_la.leveraged_authorization(_LA_UUID, include_components=True)
+        assert None not in la["components"]
+        assert len(la["components"]) == len(uuids) - 1
+        assert drop not in [c["uuid"] for c in la["components"]]
+
+    def test_include_components_are_annotated_objects(self, ssp_la):
+        # component() enriches with implemented-controls + relationships; confirm the full
+        # object (not just a stub) is embedded.
+        la = ssp_la.leveraged_authorization(_LA_UUID, include_components=True)
+        comp = la["components"][0]
+        assert comp["title"] in ("S3", "EC2")
+        assert "implemented-controls" in comp
+        assert "relationships" in comp
+
+    def test_include_components_empty_when_no_uuids(self):
+        with tempfile.TemporaryDirectory() as d:
+            doc = _ssp_doc_for_la()
+            for c in doc["system-security-plan"]["system-implementation"]["components"]:
+                c.pop("props", None)   # nothing references the LA
+            for name, o in [("catalog.json", _catalog()), ("profile.json", _profile()),
+                            ("ssp.json", doc)]:
+                with open(os.path.join(d, name), "w") as fh:
+                    json.dump(o, fh)
+            ssp = SSP.load(os.path.join(d, "ssp.json"))
+            la = ssp.leveraged_authorization(_LA_UUID, include_components=True)
+            assert la["component-uuids"] == []
+            assert la["components"] == []
 
 
 # ===========================================================================

@@ -2653,6 +2653,41 @@ def _parse_expect(target: str, test: str):
     return {"applies": applies, "test": test_ast}
 
 
+# --- referential integrity / uniqueness: simple JSON-native targets (Phase 3) -------------
+def _parse_ref_target(target: str):
+    """Parse an ``is-unique``/``index``/``index-has-key`` target into a forward step list for
+    JSON-native evaluation, else ``None``.
+
+    Reuses the expect-path grammar (:func:`_parse_test_path`): simple forward element/flag
+    steps with ``@name``/``has-oscal-namespace`` predicates only. Rejects ``//``, ``|``,
+    axes, functions and other predicates (``@type`` gates, ``href`` fragments, …) — those
+    stay ``fully-compliant`` for the Phase-4 XPath engine. At least one element step is
+    required (a bare ``.`` self target is not a collection to index/check).
+    """
+    steps = _parse_test_path(target or "")
+    if steps is None:
+        return None
+    if not any(s.get("kind") == "elem" for s in steps):
+        return None
+    return steps
+
+
+def _parse_key_fields(key_fields):
+    """Parse each ``<key-field>`` target into a forward step list (via
+    :func:`_parse_test_path`); return the list of step-lists, or ``None`` if the list is
+    empty/missing or any key-field is unsupported (→ the constraint stays ``fully-compliant``).
+    """
+    if not key_fields:
+        return None
+    parsed = []
+    for kf in key_fields:
+        steps = _parse_test_path(kf or "")
+        if steps is None:
+            return None
+        parsed.append(steps)
+    return parsed
+
+
 # OSCAL Metaschema constraint rule element names. ``allowed-values`` is parsed
 # structurally; the rest are captured verbatim (raw XML) until their handling is built.
 _CONSTRAINT_RULE_TAGS = {
@@ -2756,6 +2791,29 @@ def _classify_allowed_values_levels(node: dict, _seen: set | None = None) -> Non
             c["validation-level"] = "valid"
             c["handled"] = True
             c["expect-spec"] = espec
+
+    # is-unique / index / index-has-key — JSON-native referential integrity + uniqueness
+    # (Phase 3, tier "references"). Promoted per-constraint when the target and every
+    # key-field fit the simple forward-path grammar. Complex targets (href-fragment patterns,
+    # alternation, descendant //, @type gates) stay fully-compliant for the Phase-4 XPath
+    # engine. Unlike the matches/expect families this is promoted at every severity level
+    # (ERROR/WARNING/INFORMATIONAL): referential results report on their own status and never
+    # feed is_valid, so the level is carried onto the finding rather than gating promotion.
+    for c in node.get("constraints", []):
+        if c.get("type") not in ("is-unique", "index", "index-has-key"):
+            continue
+        tgt_steps = _parse_ref_target(c.get("target", "."))
+        key_steps = _parse_key_fields(c.get("key-fields"))
+        if tgt_steps is None or key_steps is None:
+            continue
+        c["validation-level"] = "references"
+        c["handled"] = True
+        c["ref-spec"] = {
+            "family": c["type"],
+            "name": c.get("name"),
+            "target": tgt_steps,
+            "keys": key_steps,
+        }
 
     for child in node.get("children", []):
         _classify_allowed_values_levels(child, _seen)

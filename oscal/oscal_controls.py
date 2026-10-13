@@ -2258,7 +2258,12 @@ class Profile(OSCAL):
             self.controls_tree = []
             self._tree_dirty = False
             return
-        if not self.imports_resolved:
+        # Resolve only when imports have never been attempted (empty list). If import_list is
+        # already populated we build from it as-is: re-running resolve_imports() wipes the list
+        # and re-acquires from the declared hrefs, which would discard any retry_import fix (a
+        # located replacement for a relative href that cannot be re-derived). This matters when
+        # the tree is rebuilt mid-way through fixing imports (some still INVALID).
+        if not self.import_list:
             self.resolve_imports()
 
         sources, blocking = self._resolution_sources()
@@ -2615,6 +2620,24 @@ class Profile(OSCAL):
         reflects the changed import set.
         """
         super()._after_imports_changed()
+        self._tree_dirty = True
+        self._ensure_controls_tree()
+
+    # -------------------------------------------------------------------------
+    def _after_import_resolution_changed(self) -> None:
+        """Rebuild profile-derived state after an import's resolution changed (e.g.
+        :meth:`retry_import` located a previously-failed source, or :meth:`ignore_import`).
+
+        Unlike :meth:`_after_imports_changed` this does not re-stamp the revision (the
+        document's ``imports`` were not edited — only which source each resolves to). It
+        recomputes ``content_state`` (base), drops any now-stale resolved catalog, and
+        rebuilds the ``controls_tree`` from the updated ``import_list`` so a located import's
+        controls become visible without requiring a full :meth:`resolve`. The rebuild reuses
+        the already-resolved ``import_list`` (``imports_resolved`` stays True), so a prior
+        retry fix is preserved rather than re-acquired from the declared href.
+        """
+        super()._after_import_resolution_changed()   # recompute content_state
+        self._invalidate_resolution()                # effective import set changed → drop stale catalog
         self._tree_dirty = True
         self._ensure_controls_tree()
 

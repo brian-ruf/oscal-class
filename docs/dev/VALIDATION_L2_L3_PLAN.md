@@ -162,22 +162,41 @@ completeness `expect`.
 
 ---
 
-## Phase 3 — Referential integrity + uniqueness (is-unique / index / index-has-key)
+## Phase 3 — Referential integrity + uniqueness, JSON-native ✅ DONE (2026-10-08, index 2.8.0)
 
-3.1 Generalize the existing `_id_index`/`_uuid_index` into a scoped, key-field-driven
-    index built during the walk (keyed by the `<key-field>`s from 0.5), per `index`
-    definition scope.
-3.2 **is-unique (14, all L2):** flag duplicate keys within scope.
-3.3 **index-has-key (6 simple, L2):** referential integrity — a reference resolves to an
-    index entry (same-document). Complex `href`-fragment ones → L3.
-3.4 Tree-wide `//` indexes (`//part`, `//prop`) → L3 (or a dedicated full-tree index pass).
+A **separate validation dimension** (`validation_status["references"]`) that does NOT feed
+`is_valid` (decision: referential integrity is its own queryable signal). Findings carry a
+standard `level` (ERROR/WARNING/INFORMATIONAL) and a `rule-source` (`metaschema` vs `library`);
+new error-types `unresolved-reference` / `duplicate-key`, both import-non-blocking. A new third
+tier `references` sits beside `valid` (L2) and `fully-compliant` (L3) — the simple JSON-native
+subset, mirroring how simple allowed-values targets were promoted while complex ones deferred.
+
+3.1 ✅ **Parser tiering.** `_parse_ref_target`/`_parse_key_fields` (reuse the expect-path
+    grammar) promote `is-unique`/`index`/`index-has-key` to tier `references` with a `ref-spec`
+    (parsed target steps + key-field steps) when the target+key-fields are simple forward paths
+    (no `//`, `|`, `doc()`, predicates beyond `@name`, functions). Complex ones (href-fragment
+    patterns, `@type` gates, alternation, descendant) stay `fully-compliant` → Phase 4.
+3.2 ✅ **Evaluator** (`OSCAL._eval_references`, run in `validate()` after the walk): a parallel
+    index/instance walk (`_walk_references`, reusing `_resolve_path_pairs`/`_find_child_index`)
+    builds named indexes, checks simple `index-has-key` against them (`unresolved-reference`),
+    and flags `is-unique` duplicates per definition scope (`duplicate-key`).
+3.3 ✅ **Library-defined rules** (`oscal_references.py`, `rule-source="library"`) for references
+    OSCAL documents but does NOT machine-encode — seeded with SSP + cDef
+    `by-component/@component-uuid → component/@uuid` (the reported bug). Follow-ups noted in-file
+    (implemented-component, set-parameter param-id, cross-document control-id).
+3.4 ✅ **Coverage report** gains a `references` tier + a per-model library-rules table.
+
+Deferred to Phase 4 (XPath): `//`-tree indexes (`//part`, `//prop`), alternation, href-fragment
+`index-has-key`, `@type`/predicate-gated indexes.
 
 ---
 
 ## Phase 4 — L3 engine (`validate_full`) — DISCUSS TARGETS FIRST
 
-Only the genuine remainder: ungated `//`, alternation `|`, cross-path, XPath-function
-tests, tree-wide indexes.
+The genuine remainder, evaluated with real Metapath/XPath over the XML projection: ancestor/
+cross-path allowed-values, complex `matches`/`has-cardinality`/`expect`, and the complex
+referential targets Phase 3 deferred (ungated `//`, alternation `|`, href-fragment, predicate-
+gated indexes, tree-wide indexes).
 
 4.1 Project `_dict` → XML (reuse the converter).
 4.2 Evaluate each L3 target/test with **`elementpath`** (`XPath3Parser` + `XPathContext`
@@ -196,8 +215,10 @@ HTML report from the index: headline **constraint coverage** (L2-handled vs unha
 by id) plus per-model constraint tables with tier + note, and an L1-structural / L2-datatype
 baseline (per node-occurrence, labelled). **L3 is folded into `unhandled`** until that engine
 lands (to be re-split later). Generated artifact: `docs/validation_coverage_report.html`.
-v1.2.3 snapshot: 532/929 (57%) constraints at L2; 397 unhandled (is-unique 115, matches 66,
-index 69, index-has-key 53, expect 34, has-cardinality 32, allowed-values 28). Tests in
+v1.2.3 snapshot (index 2.8.0, after Phase 3): **719/929 (77%) handled** — L2 532 + references
+187 (is-unique 115, index 43, index-has-key 29); 210 unhandled → Phase 4 (XPath). Plus per-model
+**library-defined** rules (not in the metaschema), e.g. `by-component/@component-uuid → component`.
+The report now splits L2 / references / unhandled and shows a library-rules table. Tests in
 `test_support_index_version.py::TestCoverageReport`.
 
 ---

@@ -14,8 +14,12 @@ import tempfile
 
 import pytest
 
+import copy as _copy
+
 from oscal import OSCAL, Catalog, Profile
+from oscal.oscal_implementation import SSP
 from oscal.oscal_content import _constraint_conditions_met
+from oscal.oscal_references import evaluate_library_reference_rules
 
 # ---------------------------------------------------------------------------
 # Fixtures — schema-valid structure but missing required fields
@@ -1040,3 +1044,93 @@ class TestValidationTiers:
         cat.validate()                    # a fresh L2 walk must invalidate it
         assert cat._fully_compliant is None
         assert cat.full_validation_errors == []
+
+
+# ===========================================================================
+# Phase 3 — referential integrity + uniqueness (separate `references` dimension)
+# ===========================================================================
+class TestReferences:
+    """Phase-3 JSON-native referential integrity + uniqueness. This is a SEPARATE dimension:
+    findings report on ``validation_status['references']`` and via ``reference_findings`` but
+    NEVER affect :attr:`is_valid`. Each finding carries ``level`` (ERROR/WARNING/INFO) and
+    ``rule-source`` (``metaschema`` vs ``library``)."""
+
+    @staticmethod
+    def _fresh_ssp():
+        # SSP.new()'s template declares one 'this-system' component and a by-component that
+        # references it, so a fresh SSP is referentially clean.
+        return SSP.new("Ref Test")
+
+    @staticmethod
+    def _first_by_component(doc):
+        body = doc._dict["system-security-plan"]
+        stmt = body["control-implementation"]["implemented-requirements"][0]["statements"][0]
+        return stmt, stmt["by-components"][0]
+
+    def test_fresh_ssp_is_referentially_clean(self):
+        doc = self._fresh_ssp()
+        assert doc.is_valid is True
+        assert doc.validation_status["references"] is True
+        assert doc.reference_findings == []
+
+    def test_dangling_by_component_flagged_library_error(self):
+        doc = self._fresh_ssp()
+        _, bc = self._first_by_component(doc)
+        bc["component-uuid"] = "99999999-9999-4999-8999-999999999999"
+        doc.validate()
+        refs = [e for e in doc.reference_findings if e["error-type"] == "unresolved-reference"]
+        assert refs, doc.reference_findings
+        assert refs[0]["rule-source"] == "library"
+        assert refs[0]["level"] == "ERROR"
+        assert refs[0]["value"] == "99999999-9999-4999-8999-999999999999"
+        assert refs[0]["rule-id"] == "lib-ssp-by-component-component-uuid"
+        # Separate dimension: is_valid is untouched; the references status reports the problem.
+        assert doc.is_valid is True
+        assert doc.validation_status["references"] is False
+
+    def test_valid_by_component_not_flagged(self):
+        doc = self._fresh_ssp()
+        doc.validate()
+        assert [e for e in doc.reference_findings
+                if e["error-type"] == "unresolved-reference"] == []
+
+    def test_duplicate_by_component_is_unique_metaschema(self):
+        doc = self._fresh_ssp()
+        stmt, bc = self._first_by_component(doc)
+        stmt["by-components"].append(_copy.deepcopy(bc))   # duplicate the (valid) by-component
+        doc.validate()
+        dups = [e for e in doc.reference_findings if e["error-type"] == "duplicate-key"]
+        assert dups, doc.reference_findings
+        assert dups[0]["rule-source"] == "metaschema"
+        assert dups[0]["level"] == "ERROR"
+        # Uniqueness is referential, not structural: is_valid stays True.
+        assert doc.is_valid is True
+        assert doc.validation_status["references"] is False
+
+    def test_rule_source_on_plain_errors_defaults_metaschema(self):
+        doc = self._fresh_ssp()
+        doc.validate()
+        assert all(e.get("rule-source") in ("metaschema", "library")
+                   for e in doc.validation_errors)
+
+    def test_library_rule_component_definition_direct(self):
+        # Exercises the component-definition library rule via the evaluator directly (a fully
+        # valid cDef is heavy to build; the deep-collect logic is model-agnostic).
+        body = {"components": [{"uuid": "c1", "control-implementations": [
+            {"implemented-requirements": [
+                {"statements": [{"by-components": [
+                    {"component-uuid": "c1"}, {"component-uuid": "missing"}]}]}]}]}]}
+        findings = evaluate_library_reference_rules(
+            "component-definition", body, "/component-definition")
+        vals = {f["value"] for f in findings}
+        assert "missing" in vals and "c1" not in vals
+        assert all(f["rule-source"] == "library" for f in findings)
+
+    def test_index_tiers_simple_referential(self):
+        # The regenerated index must tag simple referential constraints at the `references`
+        # tier and attach a ref-spec (complex ones stay fully-compliant for Phase 4).
+        from oscal.oscal_content import get_support
+        idx = get_support().get_metaschema_index("v1.1.3", "system-security-plan")
+        blob = json.dumps(idx)
+        assert '"validation-level": "references"' in blob
+        assert '"ref-spec"' in blob

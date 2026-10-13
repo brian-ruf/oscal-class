@@ -89,7 +89,7 @@ INDEX_REFRESH = 86400  # Seconds before a cached metaschema index entry is consi
 # additions. Every index built by this library is stamped with this value, and each
 # oscal_versions row records the index version its stored indexes were built with, so a
 # library and a shared support database can detect and reconcile index-schema mismatches.
-METASCHEMA_INDEX_VERSION = "2.7.0"
+METASCHEMA_INDEX_VERSION = "2.8.0"
 
 # Sentinel index_version for rows whose stored content predates index-version stamping (a
 # pre-versioning support DB). It sorts below every real version, so resolve_index_version
@@ -902,20 +902,25 @@ class OSCALSupport:
             return {"structural": structural, "constraints": []}
 
         def _tier(c):
+            if c.get("validation-level") == "references":
+                return "references"
             if c.get("type") == "allowed-values":
                 return "L2" if c.get("validation-level") == "valid" else "unhandled"
             return "L2" if c.get("handled") else "unhandled"
 
         def _note(c):
             t = c.get("type")
-            if _tier(c) == "L2":
+            tier = _tier(c)
+            if tier == "L2":
                 return {"allowed-values": "native / context- or element-gated",
                         "matches": "regex / datatype", "has-cardinality": "count vs min/max",
                         "expect": "completeness boolean test"}.get(t, "")
+            if tier == "references":
+                return "referential integrity / uniqueness (JSON-native, Phase 3)"
             if t == "allowed-values":
                 return "ancestor / cross-path scoped → L3"
             if t in ("is-unique", "index", "index-has-key"):
-                return "referential integrity / uniqueness → L3 (Phase 3)"
+                return "complex target (predicate / // / | / fragment) → L3 (XPath)"
             if t == "expect":
                 return "prohibition or XPath-function test → L3"
             return "complex target / function → L3"
@@ -963,6 +968,7 @@ class OSCALSupport:
         """
         import html as _html
         from datetime import datetime, timezone
+        from .oscal_references import library_reference_rules
         try:
             from . import __version__ as _lib_version
         except Exception:
@@ -976,27 +982,34 @@ class OSCALSupport:
         # skeleton and counted per node-occurrence; the headline coverage ratio is over the
         # declared metaschema <constraint> rules (de-duplicated by id): L2-handled vs
         # unhandled. The two bases are reported separately so neither is misread.
-        tot = {"struct": 0, "dtype": 0, "c_l2": 0, "c_un": 0}
+        tot = {"struct": 0, "dtype": 0, "c_l2": 0, "c_ref": 0, "c_un": 0}
         for m, data in per_model.items():
             s = data["structural"]
             tot["struct"] += s["required"] + s["cardinality"] + s["choice"]
             tot["dtype"] += s["datatype"]
             tot["c_l2"] += sum(1 for c in data["constraints"] if c["tier"] == "L2")
+            tot["c_ref"] += sum(1 for c in data["constraints"] if c["tier"] == "references")
             tot["c_un"] += sum(1 for c in data["constraints"] if c["tier"] == "unhandled")
-        tot_c = tot["c_l2"] + tot["c_un"]
-        pct = f"{100 * tot['c_l2'] / tot_c:.0f}%" if tot_c else "n/a"
+        tot_c = tot["c_l2"] + tot["c_ref"] + tot["c_un"]
+        # Headline "handled" = L2 (value-quality) + references (Phase-3 referential integrity).
+        handled = tot["c_l2"] + tot["c_ref"]
+        pct = f"{100 * handled / tot_c:.0f}%" if tot_c else "n/a"
+        # Library-defined rules (not in the metaschema index) — counted separately.
+        lib_rules = {m: library_reference_rules(m) for m in models}
+        tot_lib = sum(len(v) for v in lib_rules.values())
 
         def esc(x):
             return _html.escape("" if x is None else str(x))
 
-        def bar(l2, un):
-            total = max(1, l2 + un)
+        def bar(l2, ref, un):
+            total = max(1, l2 + ref + un)
 
             def seg(n, cls):
                 return (f'<span class="seg {cls}" style="width:{100 * n / total:.1f}%" '
                         f'title="{cls}: {n}"></span>') if n else ""
-            return f'<span class="bar">{seg(l2, "t2")}{seg(un, "t3")}</span>'
+            return f'<span class="bar">{seg(l2, "t2")}{seg(ref, "tref")}{seg(un, "t3")}</span>'
 
+        _badge = {"L2": "L2", "references": "refs", "unhandled": "unhandled"}
         gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         rows = []
         for m in models:
@@ -1004,11 +1017,13 @@ class OSCALSupport:
             cs = per_model[m]["constraints"]
             struct = s["required"] + s["cardinality"] + s["choice"]
             c_l2 = sum(1 for c in cs if c["tier"] == "L2")
+            c_ref = sum(1 for c in cs if c["tier"] == "references")
             c_un = sum(1 for c in cs if c["tier"] == "unhandled")
             rows.append(f"<tr><td><a href='#{esc(m)}'>{esc(m)}</a></td>"
                         f"<td class='num'>{struct}</td><td class='num'>{s['datatype']}</td>"
-                        f"<td class='num'>{c_l2}</td><td class='num'>{c_un}</td>"
-                        f"<td>{bar(c_l2, c_un)}</td></tr>")
+                        f"<td class='num'>{c_l2}</td><td class='num'>{c_ref}</td>"
+                        f"<td class='num'>{c_un}</td><td class='num'>{len(lib_rules.get(m, []))}</td>"
+                        f"<td>{bar(c_l2, c_ref, c_un)}</td></tr>")
 
         details = []
         for m in models:
@@ -1017,16 +1032,30 @@ class OSCALSupport:
             crows = "".join(
                 f"<tr class='{c['tier']}'><td>{esc(c['id'])}</td><td>{esc(c['type'])}</td>"
                 f"<td><code>{esc(c['target'])}</code></td>"
-                f"<td class='badge {c['tier']}'>{'L2' if c['tier']=='L2' else 'unhandled'}</td>"
+                f"<td class='badge {c['tier']}'>{_badge.get(c['tier'], c['tier'])}</td>"
                 f"<td>{esc(c['note'])}</td></tr>"
                 for c in cs) or "<tr><td colspan='5' class='muted'>(no declared constraints)</td></tr>"
+            lrows = "".join(
+                f"<tr class='references'><td>{esc(r['id'])}</td>"
+                f"<td class='badge references'>{esc(r['level'])}</td>"
+                f"<td><code>{esc(r['ref']['collection'])}/@{esc(r['ref']['key'])}</code> &rarr; "
+                f"<code>{esc(r['target']['collection'])}/@{esc(r['target']['key'])}</code></td>"
+                f"<td>{esc(r['description'])}</td></tr>"
+                for r in lib_rules.get(m, []))
+            lib_section = (
+                f"<p class='muted'>Library-defined reference rules (not in the metaschema; "
+                f"rule-source=<code>library</code>):</p>"
+                f"<table class='detail'><thead><tr><th>rule id</th><th>level</th>"
+                f"<th>reference &rarr; target</th><th>invariant</th></tr></thead>"
+                f"<tbody>{lrows}</tbody></table>") if lrows else ""
             details.append(
                 f"<section id='{esc(m)}'><h3>{esc(m)}</h3>"
                 f"<p class='muted'>L1 structural checks: required={s['required']}, "
                 f"cardinality={s['cardinality']}, choice={s['choice']} &middot; "
                 f"L2 datatype checks: {s['datatype']}</p>"
                 f"<table class='detail'><thead><tr><th>constraint id</th><th>type</th>"
-                f"<th>target</th><th>tier</th><th>note</th></tr></thead><tbody>{crows}</tbody></table></section>")
+                f"<th>target</th><th>tier</th><th>note</th></tr></thead><tbody>{crows}</tbody></table>"
+                f"{lib_section}</section>")
 
         return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1039,30 +1068,36 @@ class OSCALSupport:
   th{{background:#f6f8fa}} td.num{{text-align:right;font-variant-numeric:tabular-nums}}
   .muted{{color:#6a737d}} code{{font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;word-break:break-all}}
   .bar{{display:inline-flex;width:220px;height:14px;border-radius:7px;overflow:hidden;background:#eef1f4}}
-  .seg{{display:inline-block;height:100%}} .seg.t1{{background:#2e7d32}} .seg.t2{{background:#1976d2}} .seg.t3{{background:#c9ad2a}}
+  .seg{{display:inline-block;height:100%}} .seg.t1{{background:#2e7d32}} .seg.t2{{background:#1976d2}} .seg.tref{{background:#6a3dbb}} .seg.t3{{background:#c9ad2a}}
   .legend span{{margin-right:1rem}} .dot{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}}
   .badge{{font-size:11px;padding:1px 7px;border-radius:10px;color:#fff;white-space:nowrap}}
-  .badge.L2{{background:#1976d2}} .badge.unhandled{{background:#c9ad2a;color:#3a3100}}
-  tr.unhandled td{{background:#fffdf3}}
-  .cards{{display:flex;gap:1rem;margin:1rem 0 2rem}} .card{{flex:1;border:1px solid #e1e4e8;border-radius:8px;padding:.8rem 1rem}}
-  .card .n{{font-size:1.6rem;font-weight:700}} .card.t1 .n{{color:#2e7d32}} .card.t2 .n{{color:#1976d2}} .card.t3 .n{{color:#b89b13}}
+  .badge.L2{{background:#1976d2}} .badge.references{{background:#6a3dbb}} .badge.unhandled{{background:#c9ad2a;color:#3a3100}}
+  tr.unhandled td{{background:#fffdf3}} tr.references td{{background:#f7f4fd}}
+  .cards{{display:flex;gap:1rem;margin:1rem 0 2rem;flex-wrap:wrap}} .card{{flex:1;min-width:180px;border:1px solid #e1e4e8;border-radius:8px;padding:.8rem 1rem}}
+  .card .n{{font-size:1.6rem;font-weight:700}} .card.t1 .n{{color:#2e7d32}} .card.t2 .n{{color:#1976d2}} .card.tref .n{{color:#6a3dbb}} .card.t3 .n{{color:#b89b13}}
   h3{{margin:1.5rem 0 .25rem;border-top:1px solid #eee;padding-top:1rem}}
 </style></head><body>
 <h1>OSCAL Validation Coverage</h1>
 <p class="sub">Model set <b>{esc(version)}</b> &middot; metaschema index <b>{esc(self.active_index_version)}</b>
  &middot; oscal library <b>{esc(_lib_version)}</b> &middot; generated {esc(gen)}</p>
 <div class="cards">
-  <div class="card t2"><div class="n">{pct}</div>of declared constraints handled at L2
-    <div class="muted">{tot['c_l2']} of {tot_c} metaschema <code>&lt;constraint&gt;</code> rules</div></div>
-  <div class="card t3"><div class="n">{tot['c_un']}</div>constraints unhandled &mdash; deferred to L3</div>
+  <div class="card t2"><div class="n">{pct}</div>of declared constraints handled (L2 + references)
+    <div class="muted">{handled} of {tot_c} metaschema <code>&lt;constraint&gt;</code> rules</div></div>
+  <div class="card tref"><div class="n">{tot['c_ref']}</div>referential / uniqueness at <b>references</b> (Phase 3, JSON-native)
+    <div class="muted">+ {tot_lib} library-defined rule(s) not in the metaschema</div></div>
+  <div class="card t3"><div class="n">{tot['c_un']}</div>constraints unhandled &mdash; deferred to L3 (XPath)</div>
   <div class="card t1"><div class="n">&#10003;</div>L1 structural ({tot['struct']}) &amp; L2 datatype ({tot['dtype']}) checks
     <div class="muted">baseline, always enforced (per node-occurrence)</div></div>
 </div>
-<p class="legend"><span><span class="dot" style="background:#1976d2"></span>L2 &mdash; constraint handled</span>
+<p class="legend"><span><span class="dot" style="background:#1976d2"></span>L2 &mdash; value quality</span>
+<span><span class="dot" style="background:#6a3dbb"></span>references &mdash; referential integrity</span>
 <span><span class="dot" style="background:#c9ad2a"></span>unhandled / L3</span></p>
-<p class="muted">Headline ratio is over declared <code>&lt;constraint&gt;</code> rules (de-duplicated by id).
-Structural (L1) and datatype (L2) columns are baseline checks counted per node-occurrence &mdash; a different basis, shown for context.</p>
-<table><thead><tr><th>model</th><th>L1 struct</th><th>L2 datatype</th><th>L2 constraints</th><th>unhandled</th><th>constraint coverage</th></tr></thead>
+<p class="muted">Headline ratio is over declared <code>&lt;constraint&gt;</code> rules (de-duplicated by id);
+&ldquo;handled&rdquo; = L2 value-quality + references (Phase-3 referential integrity). Library-defined
+rules are the library's own referential checks for cross-references OSCAL does not encode in the
+metaschema (counted separately). Structural (L1) and datatype (L2) columns are baseline checks
+counted per node-occurrence &mdash; a different basis, shown for context.</p>
+<table><thead><tr><th>model</th><th>L1 struct</th><th>L2 datatype</th><th>L2 constraints</th><th>references</th><th>unhandled</th><th>library rules</th><th>constraint coverage</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 <h2>Per-model constraints</h2>
 {''.join(details)}

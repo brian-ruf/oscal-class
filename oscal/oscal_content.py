@@ -35,6 +35,8 @@ import os
 import re
 import json
 import copy
+import base64
+import hashlib
 import contextvars
 from contextlib         import contextmanager
 import yaml
@@ -71,12 +73,15 @@ from .oscal_helpers     import (  # noqa: F401  (re-exported for callers)
 # modules, workspace, and tests keep working after the extraction.
 from .oscal_source      import (  # noqa: F401  (re-exported for callers)
     OscalRef, _normalize_refs, ImportState, ImportFailureCode, ImportLoadError,
-    ImportFailure, load_content, load_source, classify_source, _resolve_href,
-    _canonicalize_ref, _oscal_format_variants, _find_import_candidates,
+    ImportFailure, load_content, load_source, load_source_bytes, classify_source,
+    _resolve_href, _canonicalize_ref, _oscal_format_variants, _find_import_candidates,
     _pick_import_target, _remove_import_from_dict, _hrefs_from_dict_spec,
     _backmatter_resource,
 )
 from .oscal_resequence  import resequence_oscal
+from .oscal_references   import (  # noqa: F401  (re-exported for callers)
+    evaluate_library_reference_rules, library_reference_rules,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +269,108 @@ _OSCAL_NS = "http://csrc.nist.gov/ns/oscal" # OSCAL default namespace for props,
 # tree ambiguous or incomplete, so they still block. See docs/VALIDATION.md and the
 # ``oscal_import_nonblocking_errors`` memory note. Tune via ``OSCAL.import_nonblocking_error_types``.
 IMPORT_NONBLOCKING_ERROR_TYPES: frozenset = frozenset(
-    {"allowed-values", "invalid-type", "matches", "has-cardinality", "constraint-violation"})
+    {"allowed-values", "invalid-type", "matches", "has-cardinality", "constraint-violation",
+     "unresolved-reference", "duplicate-key"})
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Link / back-matter-resource content acquisition
+# ---------------------------------------------------------------------------
+# OSCAL ``hash/@algorithm`` values mapped to the hashlib constructor that verifies them.
+# A hash whose algorithm is absent from this map is treated as unsupported (never a silent
+# pass). Covers the SHA-2 and SHA-3 families the OSCAL metaschema enumerates.
+_HASH_ALGORITHMS: dict = {
+    "SHA-224": hashlib.sha224, "SHA-256": hashlib.sha256,
+    "SHA-384": hashlib.sha384, "SHA-512": hashlib.sha512,
+    "SHA3-224": hashlib.sha3_224, "SHA3-256": hashlib.sha3_256,
+    "SHA3-384": hashlib.sha3_384, "SHA3-512": hashlib.sha3_512,
+}
+
+# ``integrity-verification-status`` values on an acquisition result. Non-gating: a failed or
+# absent check never blocks content delivery, it only reports.
+INTEGRITY_VALID                  = "valid"                    # a supported hash matched
+INTEGRITY_NOT_VALID              = "not-valid"                # a supported hash mismatched
+INTEGRITY_NO_SUPPORTED_ALGORITHMS = "no-supported-algorithms"  # hashes present, none supported
+INTEGRITY_NO_HASH                = "no-hash"                   # no hash to check (incl. base64)
+INTEGRITY_NOT_APPLICABLE         = "not-applicable"            # nothing acquired (failure)
+
+
+def _media_type_tokens(media_type: "str | None") -> "list[str] | None":
+    """Parse the ``media_type`` acquisition argument into a list of lowercased patterns.
+
+    Returns None when no *constraint* is expressed: the argument is empty, or any token is a
+    total wildcard (``*`` or ``*/*``) — a total wildcard means "no preference", so it must
+    behave exactly like omitting the argument (never a preference for typed sources). Otherwise
+    returns the comma-separated patterns (whitespace-trimmed, lowercased, empties dropped).
+    """
+    if not media_type:
+        return None
+    tokens = [t.strip().lower() for t in media_type.split(",")]
+    tokens = [t for t in tokens if t]
+    if not tokens or any(t in ("*", "*/*") for t in tokens):
+        return None
+    return tokens
+
+
+def _media_type_matches(tokens: "list[str] | None", candidate: "str | None") -> bool:
+    """True when *candidate*'s media type satisfies any pattern in *tokens*.
+
+    Matching is case-insensitive on the type essence (parameters after ``;`` are ignored).
+    A ``type/*`` subtype wildcard matches any candidate of that type family. ``tokens`` of
+    None means "no constraint" (see :func:`_media_type_tokens`) and always matches; a
+    candidate with no declared media type matches only the no-constraint case (a concrete or
+    subtype-wildcard pattern requires a declared type to match against).
+    """
+    if tokens is None:
+        return True
+    if not candidate:
+        return False
+    essence = candidate.split(";", 1)[0].strip().lower()
+    for pat in tokens:
+        if pat == essence:
+            return True
+        if pat.endswith("/*") and essence.startswith(pat[:-1]):  # "image/*" -> prefix "image/"
+            return True
+    return False
+
+
+def _embed_link_resources(doc: "OSCAL", obj: Any) -> Any:
+    """Embed referenced back-matter resources into ``links`` anywhere within *obj*, in place.
+
+    Walks *obj* and, for every ``links`` entry whose ``href`` is a ``#uuid`` fragment that
+    resolves to a ``back-matter.resource`` (in scope, via :meth:`OSCAL.get_resource_by_uuid`
+    — so an imported resource resolves too), inserts a ``resource`` key holding that resource.
+    The embedded copy has its ``base64.value`` stripped (the ``base64`` element is kept as a
+    *stub* — ``filename`` / ``media-type`` retained — so the caller knows embedded content
+    exists and its type without carrying a potentially huge payload; the bytes are obtained
+    separately via :meth:`OSCAL.link_content`).
+
+    Fragments that do not resolve to a resource (dangling, or naming a non-resource object)
+    are left untouched — no ``resource`` key is added. Mutates *obj* in place (callers pass a
+    safe copy) and returns it.
+    """
+    if isinstance(obj, dict):
+        for value in obj.values():            # recurse first; the embedded resource isn't re-walked
+            _embed_link_resources(doc, value)
+        links = obj.get("links")
+        if isinstance(links, list):
+            for link in links:
+                if not isinstance(link, dict) or "resource" in link:
+                    continue
+                href = str(link.get("href", ""))
+                if not href.startswith("#"):
+                    continue
+                resource = doc.get_resource_by_uuid(href[1:])
+                if resource is None:
+                    continue
+                b64 = resource.get("base64")
+                if isinstance(b64, dict):
+                    b64.pop("value", None)     # keep filename/media-type stub, drop the payload
+                link["resource"] = resource
+    elif isinstance(obj, list):
+        for item in obj:
+            _embed_link_resources(doc, item)
+    return obj
 
 
 def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
@@ -525,10 +631,11 @@ def _count_cardinality_target(node_index: dict, instance: Any, spec: dict):
                if names is None or (isinstance(it, dict) and str(it.get("name")) in names))
 
 
-def _resolve_test_path(node_index: dict, instance: Any, steps: list) -> list:
-    """Resolve an expect-test path (list of step dicts) forward from *instance*, returning
-    the reached values/nodes. Element steps use the index for JSON keys; flag steps read the
-    flag off the current dict(s); ``self`` stays put."""
+def _resolve_path_pairs(node_index: dict, instance: Any, steps: list) -> list:
+    """Resolve a forward path (list of step dicts) from *instance*, returning the reached
+    ``(index_node, value)`` pairs. Element steps use the index for JSON keys (so a collection's
+    ``group-as`` plural key is honoured); flag steps read the flag off the current dict(s);
+    ``self`` stays put. Shared by the expect evaluator and the referential-integrity pass."""
     frontier = [(node_index, instance)]
     for st in steps:
         nf = []
@@ -553,7 +660,13 @@ def _resolve_test_path(node_index: dict, instance: Any, steps: list) -> list:
                     if names is None or (isinstance(it, dict) and str(it.get("name")) in names):
                         nf.append((child_idx, it))
         frontier = nf
-    return [v for _, v in frontier]
+    return frontier
+
+
+def _resolve_test_path(node_index: dict, instance: Any, steps: list) -> list:
+    """Resolve a forward path and return just the reached values (see
+    :func:`_resolve_path_pairs`)."""
+    return [v for _, v in _resolve_path_pairs(node_index, instance, steps)]
 
 
 def _eval_test_bool(ast: dict, node_index: dict, instance: Any) -> bool:
@@ -1385,6 +1498,7 @@ class OSCAL:
             "cardinality":    None,  # all arrays satisfy their min-occurs/max-occurs bounds
             "choice":         None,  # every choice is mutually exclusive (at most one member) and has a member when one is required
             "constraints":    None,  # L2 metaschema constraint families: matches / has-cardinality / expect
+            "references":     None,  # Phase-3 referential integrity + uniqueness (separate dimension; NOT in is_valid)
         }
         self.validation_errors: list[dict] = []  # structured errors from the most recent validate() call
         # L3 (full-compliance) result, set only by validate_full(): None = not yet
@@ -1595,6 +1709,17 @@ class OSCAL:
         if not self.is_valid:
             return False
         return self._fully_compliant
+
+    # -------------------------------------------------------------------------
+    @property
+    def reference_findings(self) -> list[dict]:
+        """list[dict]: Phase-3 referential-integrity / uniqueness findings from the most recent
+        :meth:`validate` — the ``unresolved-reference`` / ``duplicate-key`` subset of
+        :attr:`validation_errors`. Each carries ``level`` (ERROR/WARNING/INFORMATIONAL) and
+        ``rule-source`` (``metaschema``/``library``). These form a separate dimension reported by
+        ``validation_status['references']`` and do **not** affect :attr:`is_valid`."""
+        return [e for e in self.validation_errors
+                if e.get("error-type") in ("unresolved-reference", "duplicate-key")]
 
     # -------------------------------------------------------------------------
     @property
@@ -1832,7 +1957,12 @@ class OSCAL:
                 "OSCAL.new() requires a specific model class. "
                 "Use Catalog.new(), Profile.new(), etc."
             )
-        model    = cls.__name__.lower()
+        # The OSCAL model name rarely equals the lowercased class name (e.g. SSP ->
+        # system-security-plan, Mapping -> mapping-collection). Use the authoritative
+        # class->name mapping from the model registry; only catalog/profile coincide with
+        # the lowercased class name, so a bare .lower() silently stubbed the other six.
+        model    = next((name for name, kls in _MODEL_REGISTRY.items() if kls is cls),
+                        cls.__name__.lower())
         instance = create_new_oscal_content(model, title, version, published)
         if instance is None:
             instance = cls.__new__(cls)
@@ -2099,7 +2229,7 @@ class OSCAL:
             )
             target_entry.setdefault("href_list", []).append(retry_item)
             self._import_tree = None
-            self._refresh_content_state()
+            self._after_import_resolution_changed()
             return False
 
         retry_item: dict = {"href": resolved, "original": False}
@@ -2141,7 +2271,7 @@ class OSCAL:
             )
         target_entry.setdefault("href_list", []).append(retry_item)
         self._import_tree = None
-        self._refresh_content_state()
+        self._after_import_resolution_changed()
         return target_entry["status"] == ImportState.READY
 
     # -------------------------------------------------------------------------
@@ -2213,7 +2343,7 @@ class OSCAL:
                 tree_imports[idx]["status"]  = ImportState.IGNORED
                 tree_imports[idx]["failure"] = None
 
-        self._refresh_content_state()
+        self._after_import_resolution_changed()
         logger.info(f"ignore_import: '{href}' marked as IGNORED.")
         return True
 
@@ -2831,6 +2961,22 @@ class OSCAL:
         """
         self._refresh_content_state()
         self._on_content_mutated()
+
+    # -------------------------------------------------------------------------
+    def _after_import_resolution_changed(self) -> None:
+        """Refresh derived state after an import's *resolution* changed without editing the
+        document (e.g. :meth:`retry_import` supplied a replacement source, or
+        :meth:`ignore_import` marked an entry ignored).
+
+        Distinct from :meth:`_after_imports_changed`: that hook is for structural edits to the
+        document's own ``imports`` (add/remove), so it re-stamps the revision via
+        :meth:`_on_content_mutated`. Resolution changes do **not** edit ``_dict`` — the same
+        document now simply points at a located/ignored source — so this hook must NOT re-stamp
+        the root uuid/last-modified. Base behavior is just to recompute ``content_state``;
+        subclasses with derived structures (e.g. :class:`~oscal.oscal_controls.Profile` with its
+        ``controls_tree``) override this to rebuild them from the updated ``import_list``.
+        """
+        self._refresh_content_state()
 
     # -------------------------------------------------------------------------
     def _identity_key(self) -> tuple | None:
@@ -3720,7 +3866,7 @@ class OSCAL:
 
         Returns True only when every phase passes (content_state reaches VALID).
         """
-        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints"):
+        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints", "references"):
             self.validation_status[phase] = None
         self.validation_errors = []
         # Any prior L3 result is invalidated by re-running the L2 walk.
@@ -3741,7 +3887,7 @@ class OSCAL:
         index = self._support.get_metaschema_index(self.oscal_version, self.model)
         if index is None:
             logger.warning("Metaschema index unavailable; treating all validation phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints", "references"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -3753,7 +3899,7 @@ class OSCAL:
 
         if not isinstance(model_instance, dict) or model_nodes is None:
             logger.warning("Cannot locate model root or index nodes; treating all phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints", "references"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -3763,6 +3909,13 @@ class OSCAL:
         logger.debug("Validating content against metaschema index (all phases)...")
         errors: list[dict] = []
         self._walk_instance(model_instance, model_nodes, errors, f"/{self.model}")
+
+        # Phase 3 — JSON-native referential integrity + uniqueness. A separate dimension:
+        # its findings are appended to validation_errors (so consumers surface them, each
+        # tagged with `level` and `rule-source`) but their error-types are NOT in any
+        # is_valid-gating phase, so is_valid is unaffected (see `_phases` below).
+        reference_findings = self._eval_references(model_instance, model_nodes, f"/{self.model}")
+        errors.extend(reference_findings)
 
         struct_errors      = [e for e in errors if e["error-type"] == "missing-required"]
         dtype_errors       = [e for e in errors if e["error-type"] == "invalid-type"]
@@ -3781,6 +3934,14 @@ class OSCAL:
         self.validation_status["cardinality"]    = (len(cardinality_errors) == 0)
         self.validation_status["choice"]         = (len(choice_errors)      == 0)
         self.validation_status["constraints"]    = (len(constraint_errors)  == 0)
+        # Referential dimension: fails only on ERROR-level findings; WARNING/INFORMATIONAL
+        # are advisory and leave the status True. Excluded from the is_valid `_phases` gate.
+        ref_errors = [e for e in reference_findings if e.get("level", "ERROR") == "ERROR"]
+        self.validation_status["references"]     = (len(ref_errors)         == 0)
+        # Differentiate rule origin uniformly: metaschema-walk errors are metaschema-defined;
+        # library findings already set rule-source="library".
+        for e in errors:
+            e.setdefault("rule-source", "metaschema")
         self.validation_errors = errors
 
         for e in errors:
@@ -3955,6 +4116,127 @@ class OSCAL:
                     "test":          con.get("test"),
                     "constraint-id": con.get("id"),
                 })
+
+    # -------------------------------------------------------------------------
+    # Phase 3 — JSON-native referential integrity + uniqueness
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _ref_key_tuple(idx: dict, item: Any, key_steps: list) -> tuple | None:
+        """Resolve a referential key tuple (one component per ``<key-field>``) from *item*.
+
+        Each key-field must resolve to exactly one scalar; returns ``None`` when any key-field
+        is missing or multi-valued (the node is then skipped — never a false positive)."""
+        parts: list[str] = []
+        for steps in key_steps:
+            vals = [v for v in _resolve_test_path(idx, item, steps)
+                    if isinstance(v, (str, int, float, bool))]
+            if len(vals) != 1:
+                return None
+            parts.append(str(vals[0]))
+        return tuple(parts)
+
+    def _walk_reference_specs(self, node: dict, instance: Any, location: str,
+                              named_index: dict, pending: list, findings: list) -> None:
+        """Walk the metaschema index *node* alongside *instance*, evaluating ``references``-tier
+        specs. ``index`` specs populate *named_index*; ``index-has-key`` specs queue checks into
+        *pending* (resolved after all indexes are built); ``is-unique`` specs emit
+        ``duplicate-key`` findings in place (uniqueness is scoped to each definition instance)."""
+        if isinstance(instance, list):
+            for i, it in enumerate(instance):
+                self._walk_reference_specs(node, it, f"{location}[{i}]", named_index, pending, findings)
+            return
+        if not isinstance(instance, dict):
+            return
+
+        for con in node.get("constraints", []) or []:
+            if con.get("validation-level") != "references":
+                continue
+            spec = con.get("ref-spec")
+            if not spec:
+                continue
+            family = spec.get("family")
+            target_pairs = _resolve_path_pairs(node, instance, spec["target"])
+            local_seen: dict = {}
+            for i, (tidx, titem) in enumerate(target_pairs):
+                if not isinstance(titem, dict):
+                    continue
+                key = self._ref_key_tuple(tidx, titem, spec["keys"])
+                if key is None:
+                    continue
+                loc = f"{location}[{i}]"
+                if family == "index":
+                    named_index.setdefault(spec.get("name"), set()).add(key)
+                elif family == "index-has-key":
+                    pending.append((spec.get("name"), key, loc, con))
+                elif family == "is-unique":
+                    if key in local_seen:
+                        findings.append({
+                            "error-type":    "duplicate-key",
+                            "level":         con.get("level", "ERROR"),
+                            "rule-source":   "metaschema",
+                            "rule-id":       con.get("id"),
+                            "location":      loc,
+                            "field":         ",".join(f.get("flag", f.get("elem", "?"))
+                                                      for s in spec["keys"] for f in s[-1:]),
+                            "value":         ",".join(key),
+                            "identifier":    ",".join(key),
+                            "detail":        (f"duplicate key {list(key)} (is-unique"
+                                              f"{(' ' + spec['name']) if spec.get('name') else ''})"),
+                        })
+                    else:
+                        local_seen[key] = loc
+
+        # Recurse into element children, honouring choice groupings and JSON collection keys.
+        def _descend(child: dict) -> None:
+            if child.get("structure-type") == "choice":
+                for member in child.get("children", []) or []:
+                    _descend(member)
+                return
+            if child.get("structure-type") == "flag":
+                return
+            jkey = child.get("group-as") or child.get("use-name") or child.get("name")
+            if not jkey or jkey not in instance:
+                return
+            self._walk_reference_specs(child, instance[jkey], f"{location}/{jkey}",
+                                  named_index, pending, findings)
+
+        for child in node.get("children", []) or []:
+            _descend(child)
+
+    def _eval_references(self, model_instance: dict, model_nodes: dict, base_location: str) -> list[dict]:
+        """Run the Phase-3 referential/uniqueness pass and return normalized findings.
+
+        Covers (1) metaschema-derived simple ``index``/``index-has-key``/``is-unique`` specs
+        (tier ``references``) evaluated JSON-natively, and (2) library-defined rules for
+        references OSCAL does not machine-enforce. Findings carry ``level`` (ERROR/WARNING/
+        INFORMATIONAL) and ``rule-source`` (``metaschema``/``library``). This dimension reports
+        on ``validation_status['references']`` and never feeds :attr:`is_valid`."""
+        findings: list[dict] = []
+        named_index: dict = {}
+        pending: list = []
+        self._walk_reference_specs(model_nodes, model_instance, base_location,
+                              named_index, pending, findings)
+        # index-has-key: the referenced value must exist in its named index. Skip when no
+        # simple `index` populated that name (all its definitions were complex → Phase 4).
+        for name, key, loc, con in pending:
+            if name not in named_index:
+                continue
+            if key not in named_index[name]:
+                findings.append({
+                    "error-type":    "unresolved-reference",
+                    "level":         con.get("level", "ERROR"),
+                    "rule-source":   "metaschema",
+                    "rule-id":       con.get("id"),
+                    "location":      loc,
+                    "field":         con.get("target"),
+                    "value":         ",".join(key),
+                    "identifier":    ",".join(key),
+                    "detail":        f"reference {list(key)} not found in index '{name}'",
+                })
+        # Library-defined rules (by-component → component, …).
+        findings.extend(
+            evaluate_library_reference_rules(self.model, model_instance, base_location))
+        return findings
 
     def _walk_instance(
         self,
@@ -5376,6 +5658,252 @@ class OSCAL:
         return self._lookup_in_scope(resource_uuid, "resource", with_source, local_only)
 
     # -------------------------------------------------------------------------
+    # Content acquisition — links and back-matter resources
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _acquisition_result(success: bool, *, source: "str | None" = None,
+                            media_type: "str | None" = None, content: "bytes | None" = None,
+                            original_href: "str | None" = None, href: "str | None" = None,
+                            filename: "str | None" = None,
+                            integrity: str = INTEGRITY_NOT_APPLICABLE,
+                            failure: "dict | None" = None) -> dict:
+        """Assemble the normalized content-acquisition result dict (see :meth:`link_content`)."""
+        return {
+            "success": success,
+            "source": source,                                 # "href" | "rlink" | "base64" | None
+            "media-type": media_type,                         # effective media type, if known
+            "content": content,                               # raw bytes, or None on failure
+            "original-href": original_href,                   # as authored (href/rlink)
+            "href": href,                                     # resolved/absolute (href/rlink)
+            "filename": filename,                             # base64 filename, if present
+            "integrity-verification-status": integrity,
+            "failure": failure,                               # {code, message, uri} when not success
+        }
+
+    @staticmethod
+    def _verify_hashes(content: bytes, hashes: "list[dict] | None") -> str:
+        """Verify *content* against a resource/rlink ``hashes`` list; return an integrity status.
+
+        Picks the FIRST hash whose ``algorithm`` the library supports (:data:`_HASH_ALGORITHMS`)
+        and checks it: ``valid`` on match, ``not-valid`` on mismatch. If hashes are present but
+        none use a supported algorithm → ``no-supported-algorithms``; if none are present →
+        ``no-hash``. Never raises and never gates delivery — integrity is reported, not enforced.
+        """
+        if not hashes:
+            return INTEGRITY_NO_HASH
+        for h in hashes:
+            algo = _HASH_ALGORITHMS.get(str(h.get("algorithm", "")).upper())
+            if algo is None:
+                continue
+            expected = str(h.get("value", "")).strip().lower()
+            actual = algo(content).hexdigest().lower()
+            return INTEGRITY_VALID if actual == expected else INTEGRITY_NOT_VALID
+        return INTEGRITY_NO_SUPPORTED_ALGORITHMS
+
+    @staticmethod
+    def _ordered_resource_candidates(resource: dict, prefer_embedded: bool,
+                                     tokens: "list[str] | None") -> list:
+        """Order a resource's content sources for the acquisition cascade.
+
+        Builds the base64 + rlink candidates, orders them by *prefer_embedded* (base64 first
+        when True, else rlinks first in document order), then stable-partitions so sources
+        matching the *tokens* media-type preference come first — media type is a preference,
+        not a filter, so non-matching sources remain as fallbacks. Each candidate is
+        ``{"source": "base64"|"rlink", "media-type", "obj"}``.
+        """
+        candidates: list = []
+        b64 = resource.get("base64")
+        base64_cand = ([{"source": "base64", "media-type": b64.get("media-type"), "obj": b64}]
+                       if isinstance(b64, dict) and b64.get("value") else [])
+        rlink_cands = [{"source": "rlink", "media-type": rl.get("media-type"), "obj": rl}
+                       for rl in resource.get("rlinks", []) or [] if isinstance(rl, dict)]
+        candidates = base64_cand + rlink_cands if prefer_embedded else rlink_cands + base64_cand
+        if tokens is None:
+            return candidates
+        matches = [c for c in candidates if _media_type_matches(tokens, c.get("media-type"))]
+        rest = [c for c in candidates if c not in matches]
+        return matches + rest
+
+    def resource_content(self, resource_uuid: str, media_type: "str | None" = None,
+                         prefer_embedded: bool = True) -> dict:
+        """Acquire the binary content of a back-matter ``resource`` by uuid.
+
+        Resolves the resource in scope (this document, then the import tree, via
+        :meth:`get_resource_by_uuid`), chooses among its content sources — inline ``base64``
+        and any ``rlinks`` — and returns the first that successfully yields bytes, as a
+        normalized result dict (see :meth:`link_content` for the shape).
+
+        Source selection:
+          * ``prefer_embedded`` (default True) orders ``base64`` ahead of ``rlinks``; False
+            reverses it (rlinks first, in document order).
+          * ``media_type`` is an optional preference — a comma-separated list, case-insensitive,
+            supporting ``type/*`` subtype wildcards; a total wildcard (``*``/``*/*``) means no
+            preference. Sources matching any listed type are tried first; non-matching sources
+            remain as fallbacks (preference, not filter).
+          * Acquisition cascades: a source that fails to yield bytes is skipped and the next is
+            tried; only when *every* source fails is the result a failure.
+
+        Integrity: when the chosen source is an ``rlink`` carrying ``hashes``, the content is
+        hash-verified (first supported algorithm) and the outcome recorded in
+        ``integrity-verification-status`` — never gating delivery. ``base64`` content has no
+        OSCAL hash, so it reports ``no-hash``.
+
+        Args:
+            resource_uuid (str, required): The bare resource UUID (no ``#``).
+            media_type (str | None, optional): Preferred media type(s). Defaults to None.
+            prefer_embedded (bool, optional): Prefer ``base64`` over ``rlinks``. Defaults to True.
+
+        Returns:
+            dict: The acquisition result (``success`` True/False; see :meth:`link_content`).
+        """
+        locator = self.get_resource_by_uuid(resource_uuid, with_source=True)
+        if locator is None:
+            return self._acquisition_result(
+                False, failure={"code": ImportFailureCode.RESOURCE_NOT_FOUND,
+                                "message": f"No back-matter resource with uuid '{resource_uuid}'.",
+                                "uri": f"#{resource_uuid}"})
+        resource = locator.get("element", {}) or {}
+        owner_href = locator.get("href", "") or ""      # owning doc location (for relative rlinks)
+        base_path = os.path.dirname(owner_href) if owner_href else ""
+
+        tokens = _media_type_tokens(media_type)
+        candidates = self._ordered_resource_candidates(resource, prefer_embedded, tokens)
+        if not candidates:
+            return self._acquisition_result(
+                False, failure={"code": ImportFailureCode.RESOURCE_NO_VIABLE_CONTENT,
+                                "message": "Resource has neither base64 content nor rlinks.",
+                                "uri": f"#{resource_uuid}"})
+
+        last_failure: "dict | None" = None
+        for cand in candidates:
+            if cand["source"] == "base64":
+                b64 = cand["obj"]
+                try:
+                    content = base64.b64decode(str(b64.get("value", "")), validate=False)
+                except (ValueError, TypeError) as exc:
+                    last_failure = {"code": ImportFailureCode.CONTENT_INVALID,
+                                    "message": f"base64 decode failed: {exc}", "uri": f"#{resource_uuid}"}
+                    continue
+                if not content:
+                    last_failure = {"code": ImportFailureCode.CONTENT_EMPTY,
+                                    "message": "base64 value decoded to empty content.",
+                                    "uri": f"#{resource_uuid}"}
+                    continue
+                return self._acquisition_result(
+                    True, source="base64", media_type=b64.get("media-type"), content=content,
+                    filename=b64.get("filename"), integrity=INTEGRITY_NO_HASH)
+            else:  # rlink
+                rlink = cand["obj"]
+                original = str(rlink.get("href", ""))
+                resolved = _resolve_href(base_path, original) if base_path else original
+                try:
+                    content = self._fetch_href_bytes(resolved)
+                except ImportLoadError as exc:
+                    last_failure = {"code": exc.code, "message": str(exc), "uri": resolved}
+                    continue
+                return self._acquisition_result(
+                    True, source="rlink", media_type=rlink.get("media-type"), content=content,
+                    original_href=original, href=resolved,
+                    integrity=self._verify_hashes(content, rlink.get("hashes")))
+
+        return self._acquisition_result(False, failure=last_failure or {
+            "code": ImportFailureCode.CONTENT_EMPTY,
+            "message": "No resource content source could be acquired.",
+            "uri": f"#{resource_uuid}"})
+
+    def link_content(self, href: str, media_type: "str | None" = None,
+                     prefer_embedded: bool = True) -> dict:
+        """Acquire the content a link's ``href`` points at — the universal link resolver.
+
+        Handles all three link content scenarios behind one call:
+
+        1. **Full URI** (``href`` is not a fragment) — fetched directly as external content
+           (``source="href"``).
+        2. **Fragment → resource → rlink** (``href="#uuid"`` resolving to a back-matter
+           resource with ``rlinks``) — fetched from the chosen rlink (``source="rlink"``).
+        3. **Fragment → resource → base64** (resource with inline ``base64``) — decoded in
+           memory (``source="base64"``).
+
+        Fragment cases (2 and 3) delegate to :meth:`resource_content`, so ``media_type`` and
+        ``prefer_embedded`` select among a resource's multiple sources exactly as described
+        there. For a full-URI href those arguments do not apply (there is a single source).
+
+        Scope note: only fragments that resolve to a ``back-matter.resource`` are supported;
+        a fragment naming any other object kind — or no match at all — returns a failure
+        result (it is not guessed at).
+
+        Args:
+            href (str, required): The link's ``href`` — a full URI/path or a ``#uuid`` fragment.
+            media_type (str | None, optional): Preferred media type(s) for resource sources.
+            prefer_embedded (bool, optional): Prefer ``base64`` over ``rlinks``. Defaults to True.
+
+        Returns:
+            dict: A normalized acquisition result with keys: ``success`` (bool), ``source``
+                (``"href"``/``"rlink"``/``"base64"``/None), ``media-type`` (effective),
+                ``content`` (bytes or None), ``original-href`` / ``href`` (for href/rlink
+                sources; ``href`` is the resolved/absolute form), ``filename`` (base64),
+                ``integrity-verification-status`` (see the module ``INTEGRITY_*`` values), and
+                ``failure`` ({``code``, ``message``, ``uri``} when ``success`` is False).
+        """
+        if not href:
+            return self._acquisition_result(
+                False, failure={"code": ImportFailureCode.CONTENT_EMPTY,
+                                "message": "Empty href.", "uri": ""})
+        target = href.strip()
+        if target.startswith("#"):
+            fragment = target[1:]
+            if self.get_resource_by_uuid(fragment) is None:
+                # Either a dangling fragment or one naming a non-resource object (out of scope).
+                return self._acquisition_result(
+                    False, source=None, original_href=href,
+                    failure={"code": ImportFailureCode.RESOURCE_NOT_FOUND,
+                             "message": (f"Fragment '{href}' does not resolve to a back-matter "
+                                         "resource (dangling or non-resource reference)."),
+                             "uri": href})
+            return self.resource_content(fragment, media_type=media_type,
+                                         prefer_embedded=prefer_embedded)
+        # Full URI / path (scenario 1): a single direct source, no resource indirection.
+        resolved = self._resolve_against_self(target)
+        try:
+            content = self._fetch_href_bytes(resolved)
+        except ImportLoadError as exc:
+            return self._acquisition_result(
+                False, source="href", original_href=href, href=resolved,
+                failure={"code": exc.code, "message": str(exc), "uri": resolved})
+        return self._acquisition_result(
+            True, source="href", media_type=media_type, content=content,
+            original_href=href, href=resolved, integrity=INTEGRITY_NO_HASH)
+
+    def _resolve_against_self(self, href: str) -> str:
+        """Resolve a possibly-relative *href* against this document's own location.
+
+        Absolute URIs/paths are returned unchanged; a relative href is resolved against the
+        directory of this document's href (so a link relative to the OSCAL content loads from
+        the right place). Falls back to the href as-is when this document has no known location.
+        """
+        src = self.href or self.href_original
+        if not src:
+            return href
+        parsed = urlparse(href)
+        if parsed.scheme and len(parsed.scheme) > 1:
+            return href                       # already absolute URI
+        if os.path.isabs(href):
+            return href
+        parsed_src = urlparse(src)
+        if parsed_src.scheme and len(parsed_src.scheme) > 1:
+            base = src.rsplit("/", 1)[0] + "/"
+        else:
+            base = os.path.dirname(os.path.abspath(src))
+        return _resolve_href(base, href)
+
+    @staticmethod
+    def _fetch_href_bytes(href: str) -> bytes:
+        """Fetch *href* (absolute URI or local path) as raw bytes via the source layer."""
+        ref = OscalRef(href=href)
+        classify_source(ref)
+        return load_source_bytes(ref)
+
+    # -------------------------------------------------------------------------
     def get_role_by_id(self, role_id: str, with_source: bool = False,
                        local_only: bool = False) -> Optional[dict]:
         """Return a metadata ``role`` (by id) defined anywhere in scope, or None.
@@ -5741,6 +6269,10 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
                             meta["version"] = version
                         if published:
                             meta["published"] = published
+                        # Refresh the cached summary attributes (self.title/version/…),
+                        # which were populated from the template default during
+                        # initial_validation and would otherwise ignore these overrides.
+                        oscal._populate_summary_from_dict()
                 return oscal
             logger.error(f"Template content failed validation for model: {model_name}")
             return None

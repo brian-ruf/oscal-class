@@ -326,12 +326,15 @@ class TestConstraintCapture:
             assert isinstance(c.get("raw"), str) and c["raw"].strip().startswith("<")
             assert "target" in c  # may be None, but the key is always present
             lvl = c.get("validation-level")
-            assert lvl in ("valid", "fully-compliant")
-            assert c.get("handled") is (lvl == "valid")   # handled iff promoted to L2
-        # matches are now evaluated at L2 (some handled); the index/uniqueness families are not
+            assert lvl in ("valid", "references", "fully-compliant")
+            # handled iff promoted to L2 (valid) or the JSON-native references tier (Phase 3)
+            assert c.get("handled") is (lvl in ("valid", "references"))
+        # matches are evaluated at L2 (some handled); referential families, when simple, are
+        # promoted to the `references` tier (Phase 3) and never to `valid`.
         assert any(c.get("type") == "matches" and c.get("handled") for c in raw)
-        assert all(not c.get("handled") for c in raw
-                   if c.get("type") in ("index", "index-has-key", "is-unique", "has-cardinality"))
+        for c in raw:
+            if c.get("type") in ("index", "index-has-key", "is-unique") and c.get("handled"):
+                assert c.get("validation-level") == "references"
 
     def test_expected_rule_types_present(self, support):
         types = {c.get("type") for _, c in self._all_constraints(support)}
@@ -366,16 +369,21 @@ class TestCoverageReport:
         assert set(data) == {"structural", "constraints"}
         assert data["constraints"], "catalog should declare constraints"
         for c in data["constraints"]:
-            assert c["tier"] in ("L2", "unhandled")
+            assert c["tier"] in ("L2", "references", "unhandled")
             assert {"id", "type", "target", "tier", "note"} <= set(c)
-        # both tiers are represented in the catalog model
-        assert {c["tier"] for c in data["constraints"]} == {"L2", "unhandled"}
+        # the L2 and unhandled tiers are both represented in the catalog model
+        tiers = {c["tier"] for c in data["constraints"]}
+        assert {"L2", "unhandled"} <= tiers
 
-    def test_referential_families_are_unhandled(self, support):
-        data = support._coverage_for_model("v1.2.3", "catalog")
-        for c in data["constraints"]:
-            if c["type"] in ("is-unique", "index", "index-has-key"):
-                assert c["tier"] == "unhandled"   # deferred to the L3 engine (Phase 3)
+    def test_referential_families_tiered(self, support):
+        # Simple referential constraints are now the JSON-native `references` tier (Phase 3);
+        # complex ones (predicate / // / | / href-fragment) stay unhandled → Phase 4 XPath.
+        data = support._coverage_for_model("v1.2.3", "system-security-plan")
+        ref_tiers = {c["tier"] for c in data["constraints"]
+                     if c["type"] in ("is-unique", "index", "index-has-key")}
+        assert ref_tiers, "SSP should declare referential constraints"
+        assert ref_tiers <= {"references", "unhandled"}
+        assert "references" in ref_tiers   # at least the simple is-unique by-component set
 
     def test_html_is_self_contained(self, support):
         html = support.coverage_report_html("v1.2.3")
@@ -385,6 +393,9 @@ class TestCoverageReport:
         # every document model appears as a section
         for m in ("catalog", "system-security-plan", "profile"):
             assert f"id='{m}'" in html
+        # the references tier and the library-defined rules table are present
+        assert "references" in html
+        assert "lib-ssp-by-component-component-uuid" in html
 
 
 # ===========================================================================

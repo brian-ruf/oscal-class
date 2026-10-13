@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from .oscal_content import (OSCAL, requires, if_update_successful, new_uuid, append_props,
                             append_links, register_model, get_props, ImportState,
-                            _find_import_candidates)
+                            _find_import_candidates, _embed_link_resources)
 from .oscal_controls import _apply_set_parameters_to_control
 
 logger = logging.getLogger(__name__)
@@ -680,14 +680,33 @@ class ComponentDefinition(OSCAL):
                     return result
         return None
 
+# The ``system-characteristics`` children that are NOT part of the scalar/summary view
+# returned by :meth:`SSP.system_characteristics` — each has a dedicated getter instead
+# (diagrams via :meth:`SSP.diagram`, system information via :meth:`SSP.system_information`).
+_SYSTEM_CHARACTERISTICS_EXCLUDE = (
+    "system-information", "authorization-boundary", "network-architecture", "data-flow",
+)
+
+# The three ``system-characteristics`` diagram-bearing assemblies :meth:`SSP.diagram` serves.
+_DIAGRAM_TYPES = ("authorization-boundary", "network-architecture", "data-flow")
+
+# OSCAL-default-namespace inventory-item ``props`` promoted to flat key/value pairs in the
+# :meth:`SSP.inventory_items` index (keyed by the prop ``name``).
+_INVENTORY_INDEX_PROPS = (
+    "asset-type", "ipv4-address", "ipv6-address", "fqdn", "uri",
+    "serial-number", "netbios-name", "mac-address", "asset-id",
+)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class SSP(OSCAL):
-    """OSCAL System Security Plan (SSP) model.
+    """
+        OSCAL System Security Plan (SSP) model.
 
-    Subclasses ``OSCAL`` and adds SSP-specific methods for managing system
-    components, implemented requirements, and by-component statements.
+        Subclasses ``OSCAL`` and adds SSP-specific methods for managing system
+        components, implemented requirements, and by-component statements.
 
-    Attributes:
+        Attributes:
         implementation_tree (dict): A lightweight, UI-oriented view of the SSP's
             implementation surface with three array-valued keys:
 
@@ -1055,7 +1074,7 @@ class SSP(OSCAL):
         _apply(control)
 
     # -------------------------------------------------------------------------
-    def leveraged_authorization(self, uuid: str) -> Optional[dict]:
+    def leveraged_authorization(self, uuid: str, include_components: bool = False) -> Optional[dict]:
         """Retrieve a ``system-implementation.leveraged-authorizations`` entry by uuid, as a safe copy.
 
         The returned copy is annotated with:
@@ -1066,14 +1085,22 @@ class SSP(OSCAL):
         * ``component-uuids`` — the ``uuid`` of every ``system-implementation.components``
           entry carrying a ``leveraged-authorization-uuid`` prop (OSCAL default namespace)
           whose value equals this authorization's ``uuid``. Always present; empty when none.
+        * ``components`` — present only when ``include_components`` is True: the fully
+          annotated component object (via :meth:`component`) for each uuid in
+          ``component-uuids`` that resolves, in order. Only real component objects are
+          included — a uuid that fails to resolve is skipped rather than contributing
+          ``None`` — so this array may be shorter than ``component-uuids`` (they match in
+          length in valid content, where every collected uuid names an existing component).
 
         Args:
             uuid (str, required): The ``uuid`` of the leveraged authorization.
+            include_components (bool, optional): When True, also populate a ``components``
+                array parallel to ``component-uuids``. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the leveraged authorization with ``name``,
-                ``short-name`` and ``component-uuids`` inserted, or None when no
-                authorization has that uuid.
+                ``short-name`` and ``component-uuids`` inserted (and ``components`` when
+                requested), or None when no authorization has that uuid.
         """
         sys_impl = self._ssp_root().get("system-implementation", {}) or {}
         for la in sys_impl.get("leveraged-authorizations", []) or []:
@@ -1090,6 +1117,229 @@ class SSP(OSCAL):
                 if any(p.get("value") == uuid
                        for p in get_props(comp, name="leveraged-authorization-uuid")):
                     result["component-uuids"].append(comp.get("uuid", ""))
+
+            if include_components:
+                # Fully annotated component objects (self.component() safe copies), in
+                # component-uuids order. Only resolved components are kept — a uuid that
+                # fails to resolve is skipped, so the array stays pure (no None entries).
+                result["components"] = [
+                    comp for cu in result["component-uuids"]
+                    if (comp := self.component(cu)) is not None
+                ]
+            return result
+        return None
+
+    # -------------------------------------------------------------------------
+    def system_characteristics(self) -> Optional[dict]:
+        """
+            Return the SSP's ``system-characteristics``, as a safe copy, excluding the four
+            child assemblies that have dedicated getters: ``system-information`` (see
+            :meth:`system_information`) and the diagram-bearing ``authorization-boundary`` /
+            ``network-architecture`` / ``data-flow`` (see :meth:`diagram`). Everything else
+            (``system-ids``, ``system-name``, ``description``, ``security-sensitivity-level``,
+            ``security-impact-level``, ``status``, ``props``, ``links``, ``remarks``, …) is
+            returned in full.
+
+            Any ``responsible-parties`` here (the OSCAL schema allows the construct under
+            ``system-characteristics``) are enriched the same way as in :meth:`component` /
+            :meth:`inventory_item`: each entry gains the role ``title`` and a ``parties`` array
+            of full metadata party objects (see :func:`_enrich_responsibilities`), with
+            ``role-id`` / ``party-uuids`` left intact.
+
+            Returns:
+                Optional[dict]: A detached copy of ``system-characteristics`` without the excluded
+                    children, or None when the section is absent.
+        """
+        sc = self._ssp_root().get("system-characteristics")
+        if not isinstance(sc, dict):
+            return None
+        result = {k: copy.deepcopy(v) for k, v in sc.items()
+                  if k not in _SYSTEM_CHARACTERISTICS_EXCLUDE}
+        return _enrich_responsibilities(self, result)
+
+    # -------------------------------------------------------------------------
+    def diagrams(self, type: str, include_resources: bool = False) -> Optional[dict]:
+        """Return a ``system-characteristics`` diagram-bearing assembly, as a safe copy.
+
+        Args:
+            type (str, required): One of ``"authorization-boundary"``,
+                ``"network-architecture"`` or ``"data-flow"``.
+            include_resources (bool, optional): When True, every ``link`` (on the assembly and
+                on each diagram) whose ``href`` is a ``#uuid`` fragment resolving to a
+                ``back-matter.resource`` gains a ``resource`` key holding that resource, with
+                its ``base64.value`` stripped to a stub (``filename`` / ``media-type`` kept) —
+                see :func:`~oscal.oscal_content._embed_link_resources`. The large binary itself
+                is never inlined here; fetch it separately with :meth:`link_content` (or
+                :meth:`resource_content`). Defaults to False.
+
+        Returns:
+            Optional[dict]: A detached copy of that assembly's content (its ``description``,
+                ``props``, ``links``, ``diagrams`` and ``remarks`` children), or None for an
+                unrecognized ``type`` or when the assembly is absent.
+        """
+        if type not in _DIAGRAM_TYPES:
+            logger.warning(f"diagram: unrecognized type '{type}'; expected one of {_DIAGRAM_TYPES}.")
+            return None
+        sc = self._ssp_root().get("system-characteristics", {}) or {}
+        node = sc.get(type)
+        if not isinstance(node, dict):
+            return None
+        result = copy.deepcopy(node)
+        if include_resources:
+            _embed_link_resources(self, result)
+        return result
+
+    # -------------------------------------------------------------------------
+    def system_information(self) -> Optional[dict]:
+        """Return the SSP's ``system-characteristics.system-information``, as a safe copy
+        (the entire assembly, including its ``information-types``), or None when absent.
+        """
+        sc = self._ssp_root().get("system-characteristics", {}) or {}
+        si = sc.get("system-information")
+        return copy.deepcopy(si) if isinstance(si, dict) else None
+
+    # -------------------------------------------------------------------------
+    def inventory_items(self) -> list[dict]:
+        """Return a simplified index of every ``system-implementation.inventory-items`` entry.
+
+        Each index entry carries:
+
+        * ``uuid`` and ``description``;
+        * every recognized OSCAL-default-namespace prop (see :data:`_INVENTORY_INDEX_PROPS`
+          — ``asset-type``, ``ipv4-address``, ``fqdn``, ``mac-address``, …) that is present,
+          flattened to ``name: value`` (a scalar, or a list when the prop repeats); and
+        * ``implemented-components`` — one ``{"component-uuid", "title", "type"}`` per
+          ``implemented-components`` entry whose ``component-uuid`` resolves to a
+          ``system-implementation.components`` object (unresolved references are omitted from
+          the index). Present only when at least one reference resolves.
+
+        Returns:
+            list[dict]: One summary dict per inventory item (empty when there are none). For
+                the full item use :meth:`inventory_item`.
+        """
+        sys_impl = self._ssp_root().get("system-implementation", {}) or {}
+        comps_by_uuid = {c.get("uuid"): c for c in sys_impl.get("components", []) or []
+                         if isinstance(c, dict)}
+        index: list[dict] = []
+        for item in sys_impl.get("inventory-items", []) or []:
+            if not isinstance(item, dict):
+                continue
+            entry: dict[str, Any] = {
+                "uuid": item.get("uuid", ""),
+                "description": item.get("description", ""),
+            }
+            for name in _INVENTORY_INDEX_PROPS:
+                values = [p.get("value", "") for p in get_props(item, name=name)]
+                if values:
+                    entry[name] = values[0] if len(values) == 1 else values
+            implemented = []
+            for ic in item.get("implemented-components", []) or []:
+                if not isinstance(ic, dict):
+                    continue
+                comp = comps_by_uuid.get(ic.get("component-uuid"))
+                if comp is not None:
+                    implemented.append({
+                        "component-uuid": ic.get("component-uuid", ""),
+                        "title": comp.get("title", ""),
+                        "type": comp.get("type", ""),
+                    })
+            if implemented:
+                entry["implemented-components"] = implemented
+            index.append(entry)
+        return index
+
+    # -------------------------------------------------------------------------
+    def inventory_item(self, uuid: str) -> Optional[dict]:
+        """Return a single ``system-implementation.inventory-items`` entry by uuid, as a safe
+        copy of the entire object.
+
+        Each ``implemented-components`` entry is enriched in place with a ``component`` child:
+
+        * when its ``component-uuid`` resolves to a ``system-implementation.components``
+          object, that entire component object (a copy); otherwise
+        * a placeholder ``{"title": "[Invalid Component Reference]", "type": "unknown"}`` so a
+          dangling reference is visible rather than silently missing.
+
+        The responsibility construct is then resolved everywhere it nests in the result — the
+        inventory item's own ``responsible-parties`` and any ``responsible-roles`` on an
+        embedded component — adding the role ``title`` and a ``parties`` array of full metadata
+        party objects (see :func:`_enrich_responsibilities`).
+
+        Args:
+            uuid (str, required): The ``uuid`` of the inventory item.
+
+        Returns:
+            Optional[dict]: A safe copy of the inventory item (with each implemented-component's
+                ``component`` resolved and responsibilities annotated), or None when no item has
+                that uuid.
+        """
+        sys_impl = self._ssp_root().get("system-implementation", {}) or {}
+        comps_by_uuid = {c.get("uuid"): c for c in sys_impl.get("components", []) or []
+                         if isinstance(c, dict)}
+        for item in sys_impl.get("inventory-items", []) or []:
+            if not isinstance(item, dict) or item.get("uuid") != uuid:
+                continue
+            result = copy.deepcopy(item)
+            for ic in result.get("implemented-components", []) or []:
+                if not isinstance(ic, dict):
+                    continue
+                comp = comps_by_uuid.get(ic.get("component-uuid"))
+                if comp is not None:
+                    ic["component"] = copy.deepcopy(comp)
+                else:
+                    ic["component"] = {"title": "[Invalid Component Reference]", "type": "unknown"}
+            _enrich_responsibilities(self, result)
+            return result
+        return None
+
+    # -------------------------------------------------------------------------
+    def users(self) -> list[dict]:
+        """Return ``system-implementation.users`` as a safe copy (the entire array).
+
+        Returns:
+            list[dict]: A detached copy of every user (empty when there are none). For a
+                single user with resolved roles use :meth:`user`.
+        """
+        sys_impl = self._ssp_root().get("system-implementation", {}) or {}
+        return copy.deepcopy(sys_impl.get("users", []) or [])
+
+    # -------------------------------------------------------------------------
+    def user(self, uuid: str) -> Optional[dict]:
+        """Return a single ``system-implementation.users`` entry by uuid, as a safe copy.
+
+        When the user carries a ``role-ids`` array (OSCAL stores these as plain strings), a
+        sibling ``roles`` array is inserted: one ``{"id", "title", "short-name"}`` per
+        ``role-id``, resolved from ``metadata.roles`` via the in-scope cascade
+        (:meth:`get_role_by_id` — this document first, then through the import tree). An
+        unresolved ``role-id`` yields ``{"id": <role-id>, "title": "", "short-name": ""}``.
+
+        The ``roles`` array is added as a **sibling** of ``role-ids`` (rather than replacing
+        the string entries) so ``role-ids`` keeps its OSCAL shape — a list of strings —
+        unchanged.
+
+        Args:
+            uuid (str, required): The ``uuid`` of the user.
+
+        Returns:
+            Optional[dict]: A safe copy of the user (with a resolved ``roles`` sibling when
+                ``role-ids`` is present), or None when no user has that uuid.
+        """
+        sys_impl = self._ssp_root().get("system-implementation", {}) or {}
+        for u in sys_impl.get("users", []) or []:
+            if not isinstance(u, dict) or u.get("uuid") != uuid:
+                continue
+            result = copy.deepcopy(u)
+            role_ids = result.get("role-ids")
+            if role_ids:
+                roles = []
+                for role_id in role_ids:
+                    role = self.get_role_by_id(role_id)
+                    roles.append({
+                        "id": role.get("id", role_id) if role is not None else role_id,
+                        "title": role.get("title", "") if role is not None else "",
+                        "short-name": role.get("short-name", "") if role is not None else "",
+                    })
+                result["roles"] = roles
             return result
         return None
 
