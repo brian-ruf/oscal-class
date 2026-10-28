@@ -2,12 +2,15 @@
 Unit tests for the SSP system-characteristics / system-implementation getters:
 
     system_characteristics()  -> system-characteristics minus the 4 dedicated-getter children
-    diagram(type)             -> an authorization-boundary / network-architecture / data-flow assembly
+    authorization_boundary()  -> system-characteristics.authorization-boundary assembly
+    network_architecture()    -> system-characteristics.network-architecture assembly
+    data_flow()               -> system-characteristics.data-flow assembly
     system_information()      -> system-characteristics.system-information
     inventory_items()         -> a simplified index of all inventory-items
     inventory_item(uuid)      -> one inventory-item, implemented-components enriched with .component
     users()                   -> system-implementation.users (whole array)
     user(uuid)                -> one user, with a resolved `roles` sibling of `role-ids`
+    protocols()               -> index of components declaring `protocols`
 
 All are read-only getters that must return detached (safe) copies: mutating a result must
 not change the document. They operate on the loaded `_dict` directly and do not require a
@@ -64,8 +67,21 @@ def _ssp_dict():
         "system-implementation": {
             "users": [{"uuid": _USER_UUID, "title": "U",
                        "role-ids": ["admin", "owner", "ghost"]}],
-            "components": [{"uuid": _COMP_UUID, "type": "software", "title": "App",
-                            "description": "d", "status": {"state": "operational"}}],
+            "components": [
+                # App: no protocols -> excluded from protocols()
+                {"uuid": _COMP_UUID, "type": "software", "title": "App",
+                 "description": "d", "status": {"state": "operational"}},
+                # Web: protocols + asset-type prop (OSCAL default ns)
+                {"uuid": "aaaaaaaa-0000-4000-8000-000000000001", "type": "software",
+                 "title": "Web", "description": "d", "status": {"state": "operational"},
+                 "props": [{"name": "asset-type", "value": "web-server"}],
+                 "protocols": [{"uuid": "p1", "name": "https",
+                                "port-ranges": [{"start": 443, "end": 443, "transport": "TCP"}]}]},
+                # DB: protocols, no asset-type prop
+                {"uuid": "aaaaaaaa-0000-4000-8000-000000000002", "type": "service",
+                 "title": "DB", "description": "d", "status": {"state": "operational"},
+                 "protocols": [{"name": "postgres", "port-ranges": [{"start": 5432, "end": 5432}]}]},
+            ],
             "inventory-items": [{
                 "uuid": _INV_UUID, "description": "server one",
                 "props": [
@@ -138,32 +154,28 @@ class TestSystemCharacteristics:
 
 
 # ===========================================================================
-class TestDiagram:
-    @pytest.mark.parametrize("dtype,desc", [
-        ("authorization-boundary", "AB"),
-        ("network-architecture", "NA"),
-        ("data-flow", "DF"),
+class TestDiagramAssemblies:
+    @pytest.mark.parametrize("getter,desc", [
+        ("authorization_boundary", "AB"),
+        ("network_architecture", "NA"),
+        ("data_flow", "DF"),
     ])
-    def test_returns_assembly(self, ssp, dtype, desc):
-        node = ssp.diagrams(dtype)
+    def test_returns_assembly(self, ssp, getter, desc):
+        node = getattr(ssp, getter)()
         assert node["description"] == desc
         assert isinstance(node["diagrams"], list) and node["diagrams"]
-
-    def test_unrecognized_type_returns_none(self, ssp):
-        assert ssp.diagrams("bogus") is None
-        assert ssp.diagrams("") is None
 
     def test_absent_assembly_returns_none(self):
         d = _ssp_dict()
         d["system-security-plan"]["system-characteristics"].pop("data-flow")
         doc = OSCAL.loads(json.dumps(d))
-        assert doc.diagrams("data-flow") is None
-        assert doc.diagrams("authorization-boundary") is not None
+        assert doc.data_flow() is None
+        assert doc.authorization_boundary() is not None
 
     def test_returns_safe_copy(self, ssp):
-        node = ssp.diagrams("authorization-boundary")
+        node = ssp.authorization_boundary()
         node["diagrams"][0]["description"] = "MUTATED"
-        assert ssp.diagrams("authorization-boundary")["diagrams"][0]["description"] == "d"
+        assert ssp.authorization_boundary()["diagrams"][0]["description"] == "d"
 
 
 # ===========================================================================
@@ -300,3 +312,37 @@ class TestUser:
         # re-getting resolves fresh; the document's user has no `roles` key at all
         assert ssp.users()[0].get("roles") is None
         assert ssp.user(_USER_UUID)["roles"][0]["title"] == "Administrator"
+
+
+# ===========================================================================
+class TestProtocols:
+    _WEB = "aaaaaaaa-0000-4000-8000-000000000001"
+    _DB = "aaaaaaaa-0000-4000-8000-000000000002"
+
+    def test_only_protocol_bearing_components(self, ssp):
+        pp = ssp.protocols()
+        assert {e["uuid"] for e in pp} == {self._WEB, self._DB}   # App (no protocols) excluded
+
+    def test_entry_fields(self, ssp):
+        web = next(e for e in ssp.protocols() if e["uuid"] == self._WEB)
+        assert web["title"] == "Web"
+        assert web["type"] == "software"
+        assert web["asset-type"] == "web-server"            # from OSCAL-ns asset-type prop
+        assert web["protocols"][0]["name"] == "https"
+        assert web["protocols"][0]["port-ranges"][0]["start"] == 443
+
+    def test_asset_type_empty_when_absent(self, ssp):
+        db = next(e for e in ssp.protocols() if e["uuid"] == self._DB)
+        assert db["asset-type"] == ""                        # no asset-type prop on this component
+        assert db["protocols"][0]["name"] == "postgres"
+
+    def test_empty_when_no_components(self):
+        d = _ssp_dict()
+        d["system-security-plan"]["system-implementation"].pop("components")
+        assert OSCAL.loads(json.dumps(d)).protocols() == []
+
+    def test_returns_safe_copy(self, ssp):
+        pp = ssp.protocols()
+        pp[0]["protocols"][0]["name"] = "MUTATED"
+        again = next(e for e in ssp.protocols() if e["uuid"] == pp[0]["uuid"])
+        assert again["protocols"][0]["name"] != "MUTATED"

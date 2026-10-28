@@ -1158,36 +1158,52 @@ class SSP(OSCAL):
         return _enrich_responsibilities(self, result)
 
     # -------------------------------------------------------------------------
-    def diagrams(self, type: str, include_resources: bool = False) -> Optional[dict]:
+    def _diagram_assembly(self, assembly: str, include_resources: bool) -> Optional[dict]:
         """Return a ``system-characteristics`` diagram-bearing assembly, as a safe copy.
 
-        Args:
-            type (str, required): One of ``"authorization-boundary"``,
-                ``"network-architecture"`` or ``"data-flow"``.
-            include_resources (bool, optional): When True, every ``link`` (on the assembly and
-                on each diagram) whose ``href`` is a ``#uuid`` fragment resolving to a
-                ``back-matter.resource`` gains a ``resource`` key holding that resource, with
-                its ``base64.value`` stripped to a stub (``filename`` / ``media-type`` kept) —
-                see :func:`~oscal.oscal_content._embed_link_resources`. The large binary itself
-                is never inlined here; fetch it separately with :meth:`link_content` (or
-                :meth:`resource_content`). Defaults to False.
+        Shared implementation behind :meth:`authorization_boundary`,
+        :meth:`network_architecture` and :meth:`data_flow` — each a thin pass-through naming
+        its OSCAL key. *assembly* is that key (one of :data:`_DIAGRAM_TYPES`).
 
-        Returns:
-            Optional[dict]: A detached copy of that assembly's content (its ``description``,
-                ``props``, ``links``, ``diagrams`` and ``remarks`` children), or None for an
-                unrecognized ``type`` or when the assembly is absent.
+        When *include_resources* is True, every ``link`` (on the assembly and on each diagram)
+        whose ``href`` is a ``#uuid`` fragment resolving to a ``back-matter.resource`` gains a
+        ``resource`` key holding that resource, with its ``base64.value`` stripped to a stub
+        (``filename`` / ``media-type`` kept) — see
+        :func:`~oscal.oscal_content._embed_link_resources`. The large binary itself is never
+        inlined here; fetch it separately with :meth:`link_content` / :meth:`resource_content`.
+
+        Returns a detached copy of the assembly (its ``description``, ``props``, ``links``,
+        ``diagrams`` and ``remarks`` children), or None when the assembly is absent.
         """
-        if type not in _DIAGRAM_TYPES:
-            logger.warning(f"diagram: unrecognized type '{type}'; expected one of {_DIAGRAM_TYPES}.")
-            return None
         sc = self._ssp_root().get("system-characteristics", {}) or {}
-        node = sc.get(type)
+        node = sc.get(assembly)
         if not isinstance(node, dict):
             return None
         result = copy.deepcopy(node)
         if include_resources:
             _embed_link_resources(self, result)
         return result
+
+    def authorization_boundary(self, include_resources: bool = False) -> Optional[dict]:
+        """Return ``system-characteristics.authorization-boundary`` as a safe copy, or None.
+
+        See :meth:`_diagram_assembly` for the ``include_resources`` link-resource embedding.
+        """
+        return self._diagram_assembly("authorization-boundary", include_resources)
+
+    def network_architecture(self, include_resources: bool = False) -> Optional[dict]:
+        """Return ``system-characteristics.network-architecture`` as a safe copy, or None.
+
+        See :meth:`_diagram_assembly` for the ``include_resources`` link-resource embedding.
+        """
+        return self._diagram_assembly("network-architecture", include_resources)
+
+    def data_flow(self, include_resources: bool = False) -> Optional[dict]:
+        """Return ``system-characteristics.data-flow`` as a safe copy, or None.
+
+        See :meth:`_diagram_assembly` for the ``include_resources`` link-resource embedding.
+        """
+        return self._diagram_assembly("data-flow", include_resources)
 
     # -------------------------------------------------------------------------
     def system_information(self) -> Optional[dict]:
@@ -1342,6 +1358,35 @@ class SSP(OSCAL):
                 result["roles"] = roles
             return result
         return None
+
+    # -------------------------------------------------------------------------
+    def protocols(self) -> list[dict]:
+        """Return the service protocols declared across system components, as an index.
+
+        Traverses ``system-implementation.components`` and, for every component that declares
+        a ``protocols`` child, emits one entry carrying that component's ``uuid``, ``title``
+        and ``type``, a safe copy of its ``protocols``, and ``asset-type`` — the value of the
+        component's ``asset-type`` prop in the OSCAL default namespace (``""`` when absent).
+        Components without a ``protocols`` child contribute nothing.
+
+        Returns:
+            list[dict]: One ``{"uuid", "title", "type", "asset-type", "protocols"}`` entry per
+                protocol-bearing component (empty when none declare protocols).
+        """
+        sys_impl = self._ssp_root().get("system-implementation", {}) or {}
+        index: list[dict] = []
+        for comp in sys_impl.get("components", []) or []:
+            if not isinstance(comp, dict) or not comp.get("protocols"):
+                continue
+            asset_props = get_props(comp, name="asset-type")
+            index.append({
+                "uuid":       comp.get("uuid", ""),
+                "title":      comp.get("title", ""),
+                "type":       comp.get("type", ""),
+                "asset-type": asset_props[0].get("value", "") if asset_props else "",
+                "protocols":  copy.deepcopy(comp.get("protocols")),
+            })
+        return index
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)

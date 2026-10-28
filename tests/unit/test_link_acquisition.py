@@ -4,7 +4,7 @@ Unit tests for link / back-matter-resource content acquisition and link-resource
     OSCAL.link_content(href, media_type=, prefer_embedded=)   — universal link resolver
     OSCAL.resource_content(uuid, media_type=, prefer_embedded=) — resource sub-handler
     _media_type_tokens / _media_type_matches                  — media-type preference parsing
-    _embed_link_resources (via SSP.diagrams(include_resources=True))
+    _embed_link_resources (via SSP.authorization_boundary(include_resources=True))
 
 Covers the three content scenarios (full URI, fragment→rlink, fragment→base64), the
 prefer_embedded ordering, media-type preference (list / wildcard / total-wildcard / fallback),
@@ -261,12 +261,11 @@ class TestDiagramsIncludeResources:
         }}))
 
     def test_off_by_default(self, img_file):
-        ab = self._ssp_with_diagram_links(img_file).diagrams("authorization-boundary")
+        ab = self._ssp_with_diagram_links(img_file).authorization_boundary()
         assert "resource" not in ab["links"][0]
 
     def test_embeds_resource_with_base64_stub(self, img_file):
-        ab = self._ssp_with_diagram_links(img_file).diagrams(
-            "authorization-boundary", include_resources=True)
+        ab = self._ssp_with_diagram_links(img_file).authorization_boundary(include_resources=True)
         res = ab["links"][0]["resource"]
         assert res["uuid"] == "res-embedded"
         # base64 kept as a stub: filename/media-type retained, value stripped
@@ -275,13 +274,11 @@ class TestDiagramsIncludeResources:
         assert "value" not in res["base64"]
 
     def test_embeds_into_nested_diagram_links(self, img_file):
-        ab = self._ssp_with_diagram_links(img_file).diagrams(
-            "authorization-boundary", include_resources=True)
+        ab = self._ssp_with_diagram_links(img_file).authorization_boundary(include_resources=True)
         assert "resource" in ab["diagrams"][0]["links"][0]
 
     def test_non_fragment_and_dangling_links_untouched(self, img_file):
-        ab = self._ssp_with_diagram_links(img_file).diagrams(
-            "authorization-boundary", include_resources=True)
+        ab = self._ssp_with_diagram_links(img_file).authorization_boundary(include_resources=True)
         http_link, dangling_link = ab["diagrams"][0]["links"][1], ab["diagrams"][0]["links"][2]
         assert "resource" not in http_link       # full URI, not a resource fragment
         assert "resource" not in dangling_link    # fragment resolves to no resource
