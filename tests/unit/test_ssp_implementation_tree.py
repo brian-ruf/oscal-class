@@ -360,6 +360,125 @@ class TestComponentGetter:
 
 
 # ===========================================================================
+# controls_by_component(uuid) — the controls tree filtered to one component
+# ===========================================================================
+class TestControlsByComponent:
+
+    def _ids(self, nodes):
+        """Flatten (id, is_group) over the filtered tree."""
+        out = []
+        for n in nodes:
+            out.append((n.get("id"), bool(n.get("group"))))
+            out.extend(self._ids(n.get("children", []) or []))
+        return out
+
+    def test_filters_to_requirement_level_citation(self, ssp_bc):
+        # CU1 implements ac-1 (requirement-level by-component).
+        tree = ssp_bc.controls_by_component(_CU1)
+        assert self._ids(tree) == [("ac", True), ("ac-1", False)]
+
+    def test_filters_to_statement_level_citation(self, ssp_bc):
+        # CU2 implements ac-2 (statement-level by-component).
+        tree = ssp_bc.controls_by_component(_CU2)
+        assert self._ids(tree) == [("ac", True), ("ac-2", False)]
+
+    def test_empty_when_component_implements_nothing(self, ssp_bc):
+        assert ssp_bc.controls_by_component(_CU3) == []
+
+    def test_empty_for_unknown_component(self, ssp_bc):
+        assert ssp_bc.controls_by_component("00000000-0000-4000-8000-000000000000") == []
+
+    def test_shape_matches_implementation_tree_nodes(self, ssp_bc):
+        # Retained control node is copied verbatim from implementation_tree['controls'].
+        full = ssp_bc.implementation_tree["controls"][0]["children"]
+        ac1_full = next(c for c in full if c["id"] == "ac-1")
+        ac1_filtered = ssp_bc.controls_by_component(_CU1)[0]["children"][0]
+        assert ac1_filtered == ac1_full
+        assert ac1_filtered["implemented"] is True
+        assert ac1_filtered["implemented-requirement-uuid"] == \
+            "80000000-0000-4000-8000-000000000001"
+
+    def test_group_container_retained_without_implemented_flag(self, ssp_bc):
+        grp = ssp_bc.controls_by_component(_CU1)[0]
+        assert grp["id"] == "ac" and grp["group"] is True
+        assert "implemented" not in grp          # group kept purely as a container
+
+    def test_returns_detached_copy(self, ssp_bc):
+        tree = ssp_bc.controls_by_component(_CU1)
+        tree[0]["children"][0]["implemented"] = "MUTATED"
+        # the live implementation_tree is untouched
+        assert ssp_bc.implementation_tree["controls"][0]["children"][0]["implemented"] is True
+
+
+# ===========================================================================
+# component(uuid, include_controls=True) — attaches the filtered controls tree
+# ===========================================================================
+class TestComponentIncludeControls:
+
+    def test_absent_by_default(self, ssp_bc):
+        assert "controls" not in ssp_bc.component(_CU1)
+
+    def test_present_and_filtered_when_requested(self, ssp_bc):
+        comp = ssp_bc.component(_CU1, include_controls=True)
+        assert comp["controls"] == ssp_bc.controls_by_component(_CU1)
+        assert [c["id"] for c in comp["controls"][0]["children"]] == ["ac-1"]
+        # flat implemented-controls stays alongside the nested tree
+        assert comp["implemented-controls"] == ["ac-1"]
+
+    def test_empty_controls_for_component_without_citations(self, ssp_bc):
+        comp = ssp_bc.component(_CU3, include_controls=True)
+        assert comp["controls"] == []
+
+
+# ===========================================================================
+# control(..., by_component_uuid=...) — restrict by-components to one component
+# ===========================================================================
+class TestControlByComponentFilter:
+
+    def test_keeps_only_matching_requirement_level(self, ssp_bc):
+        req = ssp_bc.control("ac-1", with_control=False, by_component_uuids=[_CU1])
+        assert [bc["component-uuid"] for bc in req["by-components"]] == [_CU1]
+
+    def test_drops_non_matching_requirement_level(self, ssp_bc):
+        req = ssp_bc.control("ac-1", with_control=False, by_component_uuids=[_CU2])
+        assert req["by-components"] == []            # emptied, key preserved
+
+    def test_keeps_only_matching_statement_level(self, ssp_bc):
+        req = ssp_bc.control("ac-2", with_control=False, by_component_uuids=[_CU2])
+        assert [bc["component-uuid"]
+                for bc in req["statements"][0]["by-components"]] == [_CU2]
+
+    def test_drops_non_matching_statement_level(self, ssp_bc):
+        req = ssp_bc.control("ac-2", with_control=False, by_component_uuids=[_CU1])
+        assert req["statements"][0]["by-components"] == []
+
+    def test_multiple_uuids_keep_any_match(self, ssp_bc):
+        # Add a second by-component (CU2) to ac-1 alongside the existing CU1.
+        ci = ssp_bc._dict["system-security-plan"]["control-implementation"]
+        ci["implemented-requirements"][0]["by-components"].append(
+            {"component-uuid": _CU2, "uuid": "c0000000-0000-4000-8000-000000000001",
+             "description": "second"})
+        # Both listed -> both kept; CU3 (not present) contributes nothing.
+        req = ssp_bc.control("ac-1", with_control=False, by_component_uuids=[_CU1, _CU3, _CU2])
+        assert sorted(bc["component-uuid"] for bc in req["by-components"]) == sorted([_CU1, _CU2])
+        # Only one listed -> only that one kept.
+        req1 = ssp_bc.control("ac-1", with_control=False, by_component_uuids=[_CU2])
+        assert [bc["component-uuid"] for bc in req1["by-components"]] == [_CU2]
+
+    def test_empty_list_keeps_all(self, ssp_bc):
+        req = ssp_bc.control("ac-1", with_control=False)                 # default []
+        assert [bc["component-uuid"] for bc in req["by-components"]] == [_CU1]
+        req2 = ssp_bc.control("ac-1", with_control=False, by_component_uuids=[])
+        assert [bc["component-uuid"] for bc in req2["by-components"]] == [_CU1]
+
+    def test_does_not_mutate_stored(self, ssp_bc):
+        ssp_bc.control("ac-1", with_control=False, by_component_uuids=[_CU2])
+        stored = ssp_bc._dict["system-security-plan"]["control-implementation"][
+            "implemented-requirements"][0]
+        assert [bc["component-uuid"] for bc in stored["by-components"]] == [_CU1]
+
+
+# ===========================================================================
 # component() responsible-roles enrichment (role title + full party objects)
 # ===========================================================================
 _RP1 = "eeeeeeee-0000-4000-8000-000000000001"  # person Alice

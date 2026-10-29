@@ -8,11 +8,16 @@ it to ``system-implementation/component/@uuid``. So neither a metaschema-driven 
 oscal-cli flags a dangling ``component-uuid``.
 
 This module supplies those missing rules as **library-defined** checks, evaluated JSON-natively
-alongside the metaschema-derived referential specs. Every finding they produce is tagged
-``rule-source="library"`` (vs ``"metaschema"``) and carries a standard severity ``level``
-(ERROR/WARNING/INFORMATIONAL), so callers can tell spec-mandated errors from the library's own
-additions and filter by severity. These checks report on the separate ``references`` validation
-dimension and never affect :attr:`OSCAL.is_valid`.
+alongside the metaschema-derived referential specs. Two kinds live here: per-model *reference*
+rules (:func:`evaluate_library_reference_rules`, e.g. ``by-component/@component-uuid`` →
+``component``) and a model-agnostic *global identifier uniqueness* check
+(:func:`evaluate_global_identifier_uniqueness`) that flags duplicate bare ``id`` / ``uuid``
+values within a single document — another invariant OSCAL documents in prose (and in the UUID
+datatype) but does not encode as a machine-checkable ``is-unique`` constraint. Every finding
+they produce is tagged ``rule-source="library"`` (vs ``"metaschema"``) and carries a standard
+severity ``level`` (ERROR/WARNING/INFORMATIONAL), so callers can tell spec-mandated errors from
+the library's own additions and filter by severity. These checks report on the separate
+``references`` validation dimension and never affect :attr:`OSCAL.is_valid`.
 
 A rule is a dict:
     id          — stable identifier for the rule (appears on the finding as ``rule-id``)
@@ -144,4 +149,73 @@ def evaluate_library_reference_rules(model: str, body: dict, base_location: str)
                     "identifier": value,
                     "detail": rule["description"],
                 })
+    return findings
+
+
+# The bare identifier flags whose value must be unique within a single document. Scoped
+# *reference* flags (``party-uuid``, ``component-uuid``, ``role-id``, ``control-id``,
+# ``param-id``, …) are intentionally excluded — they repeat legitimately and may recur
+# across imported files. Each field is pooled on its own (an ``id`` never collides with a
+# ``uuid``).
+_GLOBAL_UNIQUE_FIELDS = ("id", "uuid")
+
+
+def evaluate_global_identifier_uniqueness(body: Any, base_location: str) -> list[dict]:
+    """Flag duplicate ``id`` / ``uuid`` values within a single document body.
+
+    OSCAL expects every ``@id`` and every ``@uuid`` to be unique within a document, but the
+    published metaschema does not encode that as an ``is-unique`` / ``index`` constraint, so
+    no metaschema-driven validator (this library or oscal-cli) catches a collision. This
+    library-defined check fills that gap, evaluated JSON-natively as a ``references``-tier
+    finding (``rule-source="library"``) that never gates :attr:`OSCAL.is_valid`.
+
+    Only the bare ``id`` and ``uuid`` flags are considered, each pooled separately; the
+    scoped reference flags in :data:`_GLOBAL_UNIQUE_FIELDS`'s exclusion note are not. Scope
+    is **this one document only**: *body* is a single file's model instance, so the same
+    party / resource / component appearing in more than one file of an import collection is
+    expected and never reported — only a repeat within the same file is.
+
+    Each occurrence after the first emits one ``duplicate-key`` finding (``level="ERROR"``)
+    locating the repeat and naming where the value was first seen.
+
+    Args:
+        body (Any, required): The model instance (``_dict[model]``) to scan.
+        base_location (str, required): Location prefix for findings (e.g. ``/catalog``).
+
+    Returns:
+        list[dict]: One normalized finding per duplicate occurrence (empty when all unique).
+    """
+    findings: list[dict] = []
+    if not isinstance(body, dict):
+        return findings
+    seen: dict[str, dict[str, str]] = {field: {} for field in _GLOBAL_UNIQUE_FIELDS}
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{path}/{key}"
+                if key in _GLOBAL_UNIQUE_FIELDS and isinstance(value, str) and value:
+                    first = seen[key].get(value)
+                    if first is None:
+                        seen[key][value] = child
+                    else:
+                        findings.append({
+                            "error-type":  "duplicate-key",
+                            "level":       "ERROR",
+                            "rule-source": "library",
+                            "rule-id":     f"lib-global-unique-{key}",
+                            "location":    child,
+                            "field":       key,
+                            "value":       value,
+                            "identifier":  value,
+                            "detail":      (f"duplicate {key} '{value}' (first seen at "
+                                            f"{first}); every {key} must be unique within a "
+                                            "single OSCAL document."),
+                        })
+                _walk(value, child)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                _walk(item, f"{path}[{i}]")
+
+    _walk(body, base_location)
     return findings

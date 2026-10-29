@@ -6,7 +6,10 @@ The sequencing of releases may change in response to client needs and other exte
 
 ## CURRENT: Version 4.0.0 
 
-
+- Revised metaschema index
+- increased coverage of metascha validation
+- established validation levels (minimally valid, valid, fully compliant)
+- complete SSP getters
 
 
 

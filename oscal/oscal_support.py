@@ -1358,7 +1358,22 @@ constraint awaiting the L3 Metapath/XPath engine.</p>
             if fresh is not None:
                 raw = json.dumps(fresh)
 
+        # Still nothing — the requested version has no processed index and none could be
+        # built (NIST did not publish machine-readable metaschema for early OSCAL releases,
+        # so 1.0.x / 1.1.0 content has no index of its own). Rather than fail validation
+        # open, substitute the closest version that *does* have a processed index for this
+        # model and serve that, caching it under the requested key so the choice is stable.
         if not raw:
+            substitute = self._closest_processed_version(version, model)
+            if substitute and substitute != version:
+                logger.warning(
+                    f"No metaschema index for {version}/{model}; falling back to the closest "
+                    f"available version {substitute}."
+                )
+                idx = self.get_metaschema_index(substitute, model, index_version=index_version)
+                if idx is not None:
+                    _metaschema_index_cache[key] = {"index": idx, "last_retrieved": now}
+                    return idx
             logger.error(f"No processed metaschema index found for {version}/{model}. Run the metaschema parser to populate support assets.")
             return None
 
@@ -1948,6 +1963,40 @@ constraint awaiting the L3 Metapath/XPath engine.</p>
         if at_or_below:
             return at_or_below[-1]
         return sorted(same_major, key=cmp_to_key(compare_semver))[0]
+
+    # -------------------------------------------------------------------------
+    def _closest_processed_version(self, version: str, model: str) -> Optional[str]:
+        """Return the version with a processed index for *model* closest to *version*.
+
+        Unlike :meth:`_closest_same_major`, which ranks the *version registry*, this ranks
+        only versions that actually carry a ``processed`` index for *model* — so it never
+        substitutes a version whose index is itself missing. Preference mirrors
+        :meth:`_closest_same_major`: within the same OSCAL major, the highest version at or
+        below the requested one (a slightly older release is the safest substitute), else
+        the lowest available above it. Returns None when no version has a processed index
+        for *model* (or when no usable database connection is available, so the caller simply
+        gets no substitute rather than an error).
+        """
+        db = getattr(self, "db", None)
+        if db is None:
+            return None
+        try:
+            rows = db.query(
+                "SELECT DISTINCT version FROM oscal_support "
+                f"WHERE model = '{model}' AND type = 'processed'") or []
+        except Exception as exc:  # a half-initialized or unavailable DB yields no substitute
+            logger.debug(f"_closest_processed_version: DB query failed ({exc}); no substitute.")
+            return None
+        available = [r.get("version") for r in rows if r.get("version")]
+        if not available:
+            return None
+        target_major = self._semver_major(version)
+        pool = [v for v in available if self._semver_major(v) == target_major] or available
+        at_or_below = sorted((v for v in pool if compare_semver(v, version) <= 0),
+                             key=cmp_to_key(compare_semver))
+        if at_or_below:
+            return at_or_below[-1]
+        return sorted(pool, key=cmp_to_key(compare_semver))[0]
 
     # -------------------------------------------------------------------------
     def __get_oscal_versions(self, fetch="latest", save_to_fs=False):

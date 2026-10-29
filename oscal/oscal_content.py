@@ -81,6 +81,7 @@ from .oscal_source      import (  # noqa: F401  (re-exported for callers)
 from .oscal_resequence  import resequence_oscal
 from .oscal_references   import (  # noqa: F401  (re-exported for callers)
     evaluate_library_reference_rules, library_reference_rules,
+    evaluate_global_identifier_uniqueness,
 )
 
 logger = logging.getLogger(__name__)
@@ -4207,10 +4208,12 @@ class OSCAL:
         """Run the Phase-3 referential/uniqueness pass and return normalized findings.
 
         Covers (1) metaschema-derived simple ``index``/``index-has-key``/``is-unique`` specs
-        (tier ``references``) evaluated JSON-natively, and (2) library-defined rules for
-        references OSCAL does not machine-enforce. Findings carry ``level`` (ERROR/WARNING/
-        INFORMATIONAL) and ``rule-source`` (``metaschema``/``library``). This dimension reports
-        on ``validation_status['references']`` and never feeds :attr:`is_valid`."""
+        (tier ``references``) evaluated JSON-natively, (2) library-defined reference rules for
+        references OSCAL does not machine-enforce, and (3) a library-defined global uniqueness
+        check on bare ``id`` / ``uuid`` within this one document (collisions OSCAL expects but
+        does not encode as a constraint). Findings carry ``level`` (ERROR/WARNING/INFORMATIONAL)
+        and ``rule-source`` (``metaschema``/``library``). This dimension reports on
+        ``validation_status['references']`` and never feeds :attr:`is_valid`."""
         findings: list[dict] = []
         named_index: dict = {}
         pending: list = []
@@ -4236,6 +4239,9 @@ class OSCAL:
         # Library-defined rules (by-component → component, …).
         findings.extend(
             evaluate_library_reference_rules(self.model, model_instance, base_location))
+        # Library-defined global uniqueness of bare id / uuid within this one document.
+        findings.extend(
+            evaluate_global_identifier_uniqueness(model_instance, base_location))
         return findings
 
     def _walk_instance(

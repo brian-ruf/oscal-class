@@ -2,7 +2,6 @@
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
-
 [project]
 name = "oscal"
 version = "4.0.0"

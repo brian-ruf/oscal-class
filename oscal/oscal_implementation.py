@@ -15,6 +15,14 @@ Both models expose:
       object (forward relationship links plus the reverse relationships discovered by
       scanning every component in scope). ``ComponentDefinition`` adds a ``capability(uuid)``
       getter and ``incorporates-components`` resolution; ``SSP`` adds ``implemented-controls``.
+    * enumeration and control-centric getters on ``ComponentDefinition``:
+      ``components(...)`` / ``capabilities(...)`` return filterable, lightweight summaries
+      (pair with the ``component(uuid)`` / ``capability(uuid)`` detail getters), and
+      ``control(control_id)`` reverse-maps a control to every component/capability that
+      implements it — the cDef analog of ``SSP.control(identifier)``. ``control_implementation(uuid)``
+      returns a whole control-implementation; ``implemented_requirement(uuid)`` returns a single
+      implemented-requirement (its child) by its own uuid, augmented with its parent's uuid /
+      source / description and the referenced control.
 
 Module-level helpers shared by both classes build the responsible-role annotation
 (:func:`_enrich_responsibilities`) and the relationships object
@@ -236,6 +244,45 @@ def _overlay_implemented(nodes: list, impl_by_id: dict) -> None:
         _overlay_implemented(node.get("children", []) or [], impl_by_id)
 
 
+def _apply_requirement_set_parameters(control: dict, req: dict) -> None:
+    """Apply an implemented-requirement's ``set-parameters`` to a fetched control, in place.
+
+    Groups the requirement's ``set-parameters`` by ``param-id`` and applies every setting
+    to each matching parameter defined anywhere in the control subtree (the control and its
+    nested enhancements, walked via each control's ``controls``) through the shared
+    :func:`~oscal.oscal_controls._apply_set_parameters_to_control` — the same routine
+    profile resolution uses, so SSP, cDef and profile set-parameter semantics match. Settings
+    without a ``param-id``, and parameters with no matching setting, are left untouched.
+    No-op when the requirement carries no ``set-parameters``.
+
+    Shared by :meth:`SSP.control` (via its :meth:`SSP._apply_requirement_set_parameters`
+    forwarder) and :meth:`ComponentDefinition.control`.
+
+    Args:
+        control (dict, required): The fetched control (a mutable copy); mutated in place,
+            including its nested enhancements.
+        req (dict, required): The implemented-requirement whose ``set-parameters`` are applied.
+
+    Returns:
+        None: ``control`` is modified in place.
+    """
+    set_params = req.get("set-parameters") or []
+    if not set_params:
+        return
+    by_id: dict[str, list] = {}
+    for setp in set_params:
+        if isinstance(setp, dict) and setp.get("param-id"):
+            by_id.setdefault(setp["param-id"], []).append(setp)
+
+    def _apply(node: dict) -> None:
+        _apply_set_parameters_to_control(node, by_id)
+        for child in node.get("controls", []) or []:
+            if isinstance(child, dict):
+                _apply(child)
+
+    _apply(control)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class ComponentDefinition(OSCAL):
     """OSCAL Component Definition (cDef) model.
@@ -251,7 +298,7 @@ class ComponentDefinition(OSCAL):
               capability, followed by the nodes contributed by each imported component
               definition's own ``implementation_tree['components']`` (no import-driven
               nesting). Each node is
-              ``{"uuid", "title", "type", "asset-type", "incorporates"}`` where:
+              ``{"uuid", "title", "type", "asset-type", "incorporates", "children"}`` where:
 
               - ``type`` is the defined-component's ``type`` flag, or the literal
                 ``"capability"`` for a capability.
@@ -261,6 +308,19 @@ class ComponentDefinition(OSCAL):
                 and capabilities (capabilities have no such prop today, but may gain one).
               - ``incorporates`` lists ``{"uuid", "description"}`` for each entry in an
                 ``incorporates-components`` collection, when present, else ``[]``.
+              - ``children`` is the node's control-implementation subtree: one node per
+                ``control-implementations`` entry, each
+                ``{"uuid", "source", "title", "version", "published", "children"}`` —
+                ``title`` / ``version`` / ``published`` are resolved from the source
+                catalog/profile through the import tree, except an unresolvable source
+                yields ``title`` ``"**Import Error**"`` and omits ``version`` / ``published``.
+                That node's own ``children`` are one
+                ``{"uuid", "control-id", "label", "title"}`` per ``implemented-requirement``
+                (``uuid`` is the requirement's own OSCAL uuid; ``label`` / ``title`` are
+                looked up in the source's ``controls_tree``, ``""`` when the source is
+                unresolvable or the control is absent). ``children`` is ``[]`` when the
+                component/capability declares no ``control-implementations``. See
+                :meth:`_control_implementation_nodes`.
 
             The ``components`` key is intentionally named to align with
             :attr:`SSP.implementation_tree`; an SSP's tree adds further top-level keys
@@ -366,10 +426,12 @@ class ComponentDefinition(OSCAL):
         (from the import tree — :meth:`_control_implementation_source`); an unresolvable
         source (missing, or not a catalog/profile) yields ``title`` ``"**Import Error**"``
         and no version/published. Each control-implementation node's own ``children`` are
-        one node per ``implemented-requirement``, carrying its ``control-id`` plus the
-        control's ``label`` and ``title`` looked up in the source's ``controls_tree``
-        index (never materializing the full control). ``source_index_cache`` (keyed by
-        source object id) ensures each source is indexed once per build.
+        one node per ``implemented-requirement``, carrying its own ``uuid`` and ``control-id``
+        plus the control's ``label`` and ``title`` looked up in the source's ``controls_tree``
+        index (never materializing the full control). The requirement ``uuid`` — not the
+        ``control-id``, which repeats across components — is the stable key a navigation UI
+        uses to retrieve the clicked requirement. ``source_index_cache`` (keyed by source
+        object id) ensures each source is indexed once per build.
         """
         nodes: list[dict[str, Any]] = []
         for ci in obj.get("control-implementations", []) or []:
@@ -394,6 +456,7 @@ class ComponentDefinition(OSCAL):
                 control_id = req.get("control-id", "")
                 ctl = index.get(control_id)
                 requirements.append({
+                    "uuid": req.get("uuid", ""),
                     "control-id": control_id,
                     "label": ctl.get("label", "") if ctl else "",
                     "title": ctl.get("title", "") if ctl else "",
@@ -680,6 +743,306 @@ class ComponentDefinition(OSCAL):
                     return result
         return None
 
+    # -------------------------------------------------------------------------
+    def implemented_requirement(self, uuid: str, with_control: bool = True,
+                                depth: Optional[int] = 0) -> Optional[dict]:
+        """Retrieve a single ``implemented-requirement`` by its own ``uuid``, as a safe copy.
+
+        An ``implemented-requirement`` is the child of a ``control-implementation`` (which
+        :meth:`control_implementation` returns in full). This getter resolves one requirement
+        directly by its own ``uuid`` — the identifier a navigation UI carries on the clicked
+        tree leaf — searching every component and capability in this cDef. The returned copy
+        is the whole requirement (its ``uuid``, ``control-id``, ``description``, and any
+        ``set-parameters`` / ``statements`` / ``by-components`` / ``responsible-roles``),
+        with the responsibility construct resolved (role ``title`` + full ``parties`` — see
+        :func:`_enrich_responsibilities`), augmented with:
+
+        * ``control-implementation-uuid`` — the parent control-implementation's ``uuid``;
+        * ``source`` — the parent's ``source`` (the catalog/profile href);
+        * ``control-implementation-description`` — the parent's ``description`` (surfaced
+          under a distinct key so the requirement's own ``description`` is not clobbered);
+        * ``control-implementation-props`` / ``control-implementation-links`` — the parent's
+          ``props`` / ``links`` (each ``[]`` when absent), under distinct keys so the
+          requirement's own ``props`` / ``links`` are not clobbered;
+        * ``control`` — the control named by the requirement's ``control-id``, fetched from
+          the resolved ``source`` through the import tree (see
+          :meth:`_control_implementation_source`). Present only when ``with_control`` is True;
+          ``None`` when the source is not a resolvable catalog/profile or the control is not
+          found. Fetched at ``depth`` (default ``0`` — the control alone, no child controls).
+
+        The returned ``set-parameters`` are an **overlay**: the parent control-implementation's
+        ``set-parameters`` merged with the requirement's own, keyed by ``param-id``, with the
+        requirement's entry winning on a collision (parent order preserved, child-only entries
+        appended). This is **opinionated** — OSCAL does not specify how a ``param-id`` present
+        at both levels is reconciled; this library resolves it child-wins, the more specific
+        scope prevailing. The key is omitted entirely when neither level sets a parameter.
+
+        Args:
+            uuid (str, required): The ``uuid`` of the implemented-requirement.
+            with_control (bool, optional): Fetch and attach the ``control``. Defaults to True.
+            depth (int | None, optional): Enhancement depth of the attached control
+                (``0`` the control alone, ``None`` the full subtree, ``N`` N levels),
+                following the library-wide convention. Ignored when ``with_control`` is False.
+
+        Returns:
+            Optional[dict]: A safe copy of the implemented-requirement augmented as above, or
+                None when no requirement has that uuid. When a malformed document repeats a
+                requirement ``uuid``, the first match is returned.
+        """
+        root = self._cdef_root()
+        holders = (root.get("components", []) or []) + (root.get("capabilities", []) or [])
+        for holder in holders:
+            for ci in holder.get("control-implementations", []) or []:
+                for req in ci.get("implemented-requirements", []) or []:
+                    if req.get("uuid") != uuid:
+                        continue
+                    result = copy.deepcopy(req)
+                    # Resolve the responsibility construct before the control is attached
+                    # (the catalog control carries no such construct).
+                    _enrich_responsibilities(self, result)
+                    result["control-implementation-uuid"]        = ci.get("uuid", "")
+                    result["source"]                             = ci.get("source", "")
+                    result["control-implementation-description"] = ci.get("description", "")
+                    result["control-implementation-props"]       = copy.deepcopy(ci.get("props", []) or [])
+                    result["control-implementation-links"]       = copy.deepcopy(ci.get("links", []) or [])
+
+                    # set-parameters overlay: the parent control-implementation's
+                    # set-parameters brought in as-is, then the requirement's own overlaid on
+                    # top — a child set-parameter REPLACES a parent one with the same
+                    # param-id, parent order preserved, child-only entries appended.
+                    # OPINIONATED: OSCAL is silent on how a param-id present at BOTH the
+                    # control-implementation and its implemented-requirement should be
+                    # reconciled; this library resolves the collision child-wins (the more
+                    # specific scope prevails). Revisit if NIST specifies different semantics.
+                    merged = [copy.deepcopy(sp) for sp in (ci.get("set-parameters") or [])
+                              if isinstance(sp, dict)]
+                    pos = {sp.get("param-id"): i for i, sp in enumerate(merged) if sp.get("param-id")}
+                    for sp in req.get("set-parameters") or []:
+                        if not isinstance(sp, dict):
+                            continue
+                        pid = sp.get("param-id")
+                        if pid and pid in pos:
+                            merged[pos[pid]] = copy.deepcopy(sp)
+                        else:
+                            if pid:
+                                pos[pid] = len(merged)
+                            merged.append(copy.deepcopy(sp))
+                    if merged:
+                        result["set-parameters"] = merged
+                    else:
+                        result.pop("set-parameters", None)
+
+                    if with_control:
+                        control_id = req.get("control-id", "")
+                        source_obj = self._control_implementation_source(ci.get("source", ""))
+                        result["control"] = (
+                            source_obj.get_control_by_id(control_id, depth=depth)
+                            if source_obj is not None and control_id else None
+                        )
+                    return result
+        return None
+
+    # -------------------------------------------------------------------------
+    def _summarize_defined_object(self, obj: dict, title: str, node_type: str) -> dict[str, Any]:
+        """Build a lightweight enumeration summary for a component or capability.
+
+        Args:
+            obj (dict, required): The defined-component or capability dict to summarize.
+            title (str, required): The node title (a component's ``title`` or a
+                capability's ``name``).
+            node_type (str, required): The node ``type`` (a component's ``type`` flag or
+                the literal ``"capability"``).
+
+        Returns:
+            dict: ``{"uuid", "type", "title", "description", "asset-type",
+                "control-implementations-count"}`` — ``asset-type`` is the value of the
+                ``asset-type`` prop in the OSCAL default namespace (``""`` when absent) and
+                ``control-implementations-count`` is the number of ``control-implementations``
+                the object carries.
+        """
+        asset_props = get_props(obj, name="asset-type")
+        return {
+            "uuid":        obj.get("uuid", ""),
+            "type":        node_type,
+            "title":       title,
+            "description": obj.get("description", ""),
+            "asset-type":  asset_props[0].get("value", "") if asset_props else "",
+            "control-implementations-count": len(obj.get("control-implementations", []) or []),
+        }
+
+    # -------------------------------------------------------------------------
+    def _collect_defined(self, kind: str, local_only: bool,
+                         _seen: Optional[set] = None) -> list[tuple]:
+        """Collect ``(obj, title, node_type)`` tuples for a defined-object kind.
+
+        Args:
+            kind (str, required): ``"components"`` or ``"capabilities"`` — the root
+                collection to walk.
+            local_only (bool, required): When False, also walk every imported component
+                definition reachable through the import tree (depth-first, cycle-guarded),
+                appending their defined objects after this cDef's own.
+            _seen (set, optional): Internal cycle guard (object ids already visited).
+
+        Returns:
+            list[tuple]: One ``(obj, title, node_type)`` per defined object, where ``title``
+                is a component's ``title`` / a capability's ``name`` and ``node_type`` is a
+                component's ``type`` flag / the literal ``"capability"``.
+        """
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return []
+        _seen.add(id(self))
+        out: list[tuple] = []
+        for obj in self._cdef_root().get(kind, []) or []:
+            if not isinstance(obj, dict):
+                continue
+            if kind == "capabilities":
+                out.append((obj, obj.get("name", ""), "capability"))
+            else:
+                out.append((obj, obj.get("title", ""), obj.get("type", "")))
+        if not local_only:
+            for source in self._imported_cdef_sources():
+                out.extend(source._collect_defined(kind, local_only=False, _seen=_seen))
+        return out
+
+    # -------------------------------------------------------------------------
+    def components(self, component_type: str = "", title: str = "",
+                   local_only: bool = True) -> list[dict]:
+        """Enumerate defined components as lightweight summaries, optionally filtered.
+
+        Each summary is ``{"uuid", "type", "title", "description", "asset-type",
+        "control-implementations-count"}`` (see :meth:`_summarize_defined_object`) — enough
+        to discover and triage components; fetch the full annotated object with
+        :meth:`component`. The list is detached from ``_dict`` (safe to mutate).
+
+        Args:
+            component_type (str, optional): Keep only components whose ``type`` flag equals
+                this value (exact match, e.g. ``"software"``). Empty (default) keeps all.
+            title (str, optional): Keep only components whose ``title`` equals this value
+                (case-insensitive). Empty (default) keeps all.
+            local_only (bool, optional): When True (default) enumerate only this cDef's own
+                components. When False, also include the components contributed by every
+                imported component definition in the import tree (after the local ones).
+
+        Returns:
+            list[dict]: One summary per matching component (empty when none match). Capabilities
+                are excluded — use :meth:`capabilities`.
+        """
+        result: list[dict] = []
+        for obj, obj_title, node_type in self._collect_defined("components", local_only):
+            if component_type and node_type != component_type:
+                continue
+            if title and obj_title.lower() != title.lower():
+                continue
+            result.append(self._summarize_defined_object(obj, obj_title, node_type))
+        return result
+
+    # -------------------------------------------------------------------------
+    def capabilities(self, name: str = "", local_only: bool = True) -> list[dict]:
+        """Enumerate defined capabilities as lightweight summaries, optionally filtered.
+
+        Each summary is ``{"uuid", "type", "title", "description", "asset-type",
+        "control-implementations-count"}`` (see :meth:`_summarize_defined_object`), with
+        ``type`` the literal ``"capability"`` and ``title`` the capability's ``name``. Fetch
+        the full annotated object with :meth:`capability`. The list is detached from ``_dict``.
+
+        Args:
+            name (str, optional): Keep only capabilities whose ``name`` equals this value
+                (case-insensitive). Empty (default) keeps all.
+            local_only (bool, optional): When True (default) enumerate only this cDef's own
+                capabilities. When False, also include those contributed by every imported
+                component definition in the import tree (after the local ones).
+
+        Returns:
+            list[dict]: One summary per matching capability (empty when none match).
+        """
+        result: list[dict] = []
+        for obj, obj_name, node_type in self._collect_defined("capabilities", local_only):
+            if name and obj_name.lower() != name.lower():
+                continue
+            result.append(self._summarize_defined_object(obj, obj_name, node_type))
+        return result
+
+    # -------------------------------------------------------------------------
+    def control(self, control_id: str, with_control: bool = True,
+                depth: Optional[int] = None) -> Optional[dict]:
+        """Reverse-map a ``control-id`` to every component/capability that implements it.
+
+        The cDef analog of :meth:`SSP.control`: rather than looking up one
+        implemented-requirement, this scans every defined component and capability (local
+        to this cDef) for ``control-implementations`` whose ``implemented-requirements``
+        cite *control_id*, and returns one entry per implementing component/capability.
+
+        Args:
+            control_id (str, required): The control token to reverse-map (e.g. ``"ac-2"``).
+            with_control (bool, optional): Fetch the control from each entry's resolved
+                source and insert it under the implemented-requirement's ``control`` key,
+                with that requirement's ``set-parameters`` applied (see
+                :func:`_apply_requirement_set_parameters`). Defaults to True. ``control`` is
+                ``None`` when the source is not a resolvable catalog/profile or the control
+                is not found there.
+            depth (int | None, optional): Enhancement depth of each inserted control
+                (``None`` full subtree, ``0`` control only, ``N`` N levels), following the
+                library-wide convention. Ignored when ``with_control`` is False.
+
+        Returns:
+            Optional[dict]: ``{"control-id", "components"}`` where ``components`` is one
+                entry per implementing component/capability — ``{"component-uuid", "title",
+                "type", "asset-type" (when non-empty), "source", "control-implementation-uuid",
+                "implemented-requirement"}``. The ``implemented-requirement`` is a safe copy
+                with its responsibility construct resolved (and a ``control`` child when
+                ``with_control``). Returns None when no component/capability implements
+                *control_id*.
+        """
+        root = self._cdef_root()
+        # Tag each holder with its origin list ("component" / "capability") rather than
+        # inferring the kind from which fields are present, so classification can't be fooled
+        # by malformed content or a future field addition.
+        holders = ([(c, "component") for c in root.get("components", []) or []]
+                   + [(cap, "capability") for cap in root.get("capabilities", []) or []])
+        tree_by_uuid = {n.get("uuid"): n for n in self.implementation_tree["components"]}
+        source_cache: dict[str, Optional[OSCAL]] = {}
+        entries: list[dict[str, Any]] = []
+        for holder, kind in holders:
+            if not isinstance(holder, dict):
+                continue
+            is_capability = kind == "capability"
+            node_type = "capability" if is_capability else holder.get("type", "")
+            node_title = holder.get("name", "") if is_capability else holder.get("title", "")
+            holder_uuid = holder.get("uuid", "")
+            for ci in holder.get("control-implementations", []) or []:
+                source = ci.get("source", "")
+                for req in ci.get("implemented-requirements", []) or []:
+                    if req.get("control-id") != control_id:
+                        continue
+                    entry: dict[str, Any] = {
+                        "component-uuid": holder_uuid,
+                        "title":          node_title,
+                        "type":           node_type,
+                    }
+                    node = tree_by_uuid.get(holder_uuid)
+                    if node and node.get("asset-type"):
+                        entry["asset-type"] = node["asset-type"]
+                    entry["source"] = source
+                    entry["control-implementation-uuid"] = ci.get("uuid", "")
+                    ir = copy.deepcopy(req)
+                    _enrich_responsibilities(self, ir)
+                    if with_control:
+                        if source not in source_cache:
+                            source_cache[source] = self._control_implementation_source(source)
+                        source_obj = source_cache[source]
+                        control = (source_obj.get_control_by_id(control_id, depth=depth)
+                                   if source_obj is not None and control_id else None)
+                        if control is not None:
+                            _apply_requirement_set_parameters(control, req)
+                        ir["control"] = control
+                    entry["implemented-requirement"] = ir
+                    entries.append(entry)
+        if not entries:
+            return None
+        return {"control-id": control_id, "components": entries}
+
 # The ``system-characteristics`` children that are NOT part of the scalar/summary view
 # returned by :meth:`SSP.system_characteristics` — each has a dedicated getter instead
 # (diagrams via :meth:`SSP.diagram`, system information via :meth:`SSP.system_information`).
@@ -917,7 +1280,60 @@ class SSP(OSCAL):
         return controls
 
     # -------------------------------------------------------------------------
-    def component(self, uuid: str) -> Optional[dict]:
+    def controls_by_component(self, uuid: str) -> list[dict]:
+        """Return the ``implementation_tree['controls']`` tree filtered to one component.
+
+        Keeps exactly the controls this component implements — those whose ``control-id`` is
+        cited (via a ``by-component`` carrying this ``component-uuid``) in an
+        ``implemented-requirement``'s own ``by-components`` or any of its
+        ``statements[].by-components`` (the same rule as :meth:`_implemented_controls_for`).
+
+        The result has the **same shape** as :attr:`implementation_tree`'s ``controls`` array
+        (the nested baseline tree: groups → controls → enhancement ``children``, each node
+        carrying ``id`` / ``label`` / ``title`` / ``implemented`` / ``implemented-requirement-uuid``).
+        Rather than rebuild nodes, each retained node is copied straight from that tree — every
+        field except ``children`` verbatim — so the two stay structurally identical even if the
+        tree's node shape changes later; only ``children`` is rebuilt from the kept descendants.
+        A group or parent control is retained solely as a container on the path to a matching
+        control (keeping its own ``implemented`` flag — typically ``false`` for a pure container),
+        with its ``children`` pruned to the matches.
+
+        Args:
+            uuid (str, required): The ``uuid`` of the system-implementation component.
+
+        Returns:
+            list[dict]: A filtered copy of the controls tree (empty when the component is
+                unknown or implements nothing). Detached from ``_dict`` — safe to mutate.
+        """
+        implemented = set(self._implemented_controls_for(uuid))
+        if not implemented:
+            return []
+
+        def _prune(node: dict) -> Optional[dict]:
+            kept_children: list[dict] = []
+            for child in node.get("children", []) or []:
+                pruned = _prune(child)
+                if pruned is not None:
+                    kept_children.append(pruned)
+            matches = (not node.get("group")) and node.get("id") in implemented
+            if not matches and not kept_children:
+                return None
+            # Copy every field EXCEPT children verbatim (carries any future node fields);
+            # rebuild children from the filtered set, preserving the key's presence/absence.
+            copied = {k: copy.deepcopy(v) for k, v in node.items() if k != "children"}
+            if "children" in node:
+                copied["children"] = kept_children
+            return copied
+
+        result: list[dict] = []
+        for node in self.implementation_tree.get("controls", []) or []:
+            pruned = _prune(node)
+            if pruned is not None:
+                result.append(pruned)
+        return result
+
+    # -------------------------------------------------------------------------
+    def component(self, uuid: str, include_controls: bool = False) -> Optional[dict]:
         """Retrieve a system-implementation component by its ``uuid``, as a safe copy.
 
         The returned copy carries an added ``implemented-controls`` array: every
@@ -932,13 +1348,21 @@ class SSP(OSCAL):
         relationships discovered by scanning the SSP's other components — see
         :func:`_build_component_relationships`.
 
+        When ``include_controls`` is True, a ``controls`` key is also added holding the
+        component's filtered control tree (see :meth:`controls_by_component`) — the baseline
+        controls tree pruned to just those this component implements, shaped identically to
+        ``implementation_tree['controls']``. (``implemented-controls`` remains the flat list
+        of control-ids; ``controls`` is the full nested tree for those same controls.)
+
         Args:
             uuid (str, required): The ``uuid`` of the system-implementation component.
+            include_controls (bool, optional): Also attach the component's filtered control
+                tree under ``controls`` (via :meth:`controls_by_component`). Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the component with ``implemented-controls``
-                appended (and responsible-roles and relationships annotated), or None
-                when no component has that uuid.
+                appended (and responsible-roles and relationships annotated, plus ``controls``
+                when ``include_controls``), or None when no component has that uuid.
         """
         sys_impl = self._ssp_root().get("system-implementation", {}) or {}
         for comp in sys_impl.get("components", []) or []:
@@ -949,12 +1373,14 @@ class SSP(OSCAL):
                 tree_by_uuid = {n.get("uuid"): n for n in self.implementation_tree["components"]}
                 result["relationships"] = _build_component_relationships(
                     result, tree_by_uuid, self._all_component_objects(), uuid)
+                if include_controls:
+                    result["controls"] = self.controls_by_component(uuid)
                 return result
         return None
 
     # -------------------------------------------------------------------------
     def control(self, identifier: str, with_control: bool = True,
-                depth: Optional[int] = None) -> Optional[dict]:
+                depth: Optional[int] = None, by_component_uuids: list = []) -> Optional[dict]:
         """Retrieve an SSP implemented-requirement by control-id or its uuid, as a safe copy.
 
         Looks up ``control-implementation.implemented-requirements`` for the first entry
@@ -973,6 +1399,14 @@ class SSP(OSCAL):
         (Whether to fetch the control is a separate boolean — ``with_control`` — rather
         than an overloaded ``depth`` sentinel, so ``depth`` keeps the same meaning it has
         everywhere else in the library, where ``0`` already means "node only.")
+
+        When ``by_component_uuids`` is a non-empty list, every ``by-component`` whose
+        ``component-uuid`` is not in it is dropped — from the requirement's own
+        ``by-components`` and from each ``statements[].by-components`` — so the returned
+        requirement reflects only those components' implementation (a by-component is kept if
+        it matches ANY uuid in the list). An emptied array is left in place (the key is not
+        removed), and a requirement with no matching by-component anywhere is still returned
+        (its arrays simply empty). An empty list (the default) keeps all.
 
         Each by-component — both the requirement's own ``by-components`` and each
         ``statements[].by-components`` — is annotated with its cited component's ``title``,
@@ -996,6 +1430,9 @@ class SSP(OSCAL):
             depth (int | None, optional): Enhancement depth of the inserted control
                 (``None`` full, ``0`` control only, ``N`` N levels). Ignored when
                 ``with_control`` is False.
+            by_component_uuids (list, optional): When non-empty, keep only ``by-component``
+                entries (requirement-level and statement-level) whose ``component-uuid`` is
+                in this list. Empty (default) keeps all.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement (with a ``control``
@@ -1005,6 +1442,19 @@ class SSP(OSCAL):
         for req in ci.get("implemented-requirements", []) or []:
             if req.get("control-id") == identifier or req.get("uuid") == identifier:
                 result = copy.deepcopy(req)
+                # Restrict by-components to the named component(s) when requested (keep a
+                # by-component matching ANY uuid in the list; preserve the key's presence).
+                if by_component_uuids:
+                    keep = set(by_component_uuids)
+                    if "by-components" in result:
+                        result["by-components"] = [
+                            bc for bc in result["by-components"] or []
+                            if bc.get("component-uuid") in keep]
+                    for statement in result.get("statements", []) or []:
+                        if "by-components" in statement:
+                            statement["by-components"] = [
+                                bc for bc in statement["by-components"] or []
+                                if bc.get("component-uuid") in keep]
                 # Annotate each by-component (requirement-level and statement-level) with its
                 # cited component's title/type/asset-type from implementation_tree.
                 tree_by_uuid = {n.get("uuid"): n for n in self.implementation_tree["components"]}
@@ -1048,30 +1498,26 @@ class SSP(OSCAL):
     # -------------------------------------------------------------------------
     @staticmethod
     def _apply_requirement_set_parameters(control: dict, req: dict) -> None:
-        """Apply an implemented-requirement's ``set-parameters`` to the fetched control.
+        """Apply an implemented-requirement's ``set-parameters`` to the fetched control, in place.
 
-        Groups the requirement's ``set-parameters`` by ``param-id`` and applies them to
-        every parameter defined in the control subtree (the control and its nested
-        enhancements), in place, via the shared
-        :func:`~oscal.oscal_controls._apply_set_parameters_to_control` — the same routine
-        profile resolution uses, so SSP and profile set-parameter semantics match.
-        No-op when the requirement has no ``set-parameters``.
+        A thin static-method forwarder to the module-level
+        :func:`_apply_requirement_set_parameters`, which both this class and
+        :meth:`ComponentDefinition.control` call. It carries no state (hence
+        ``@staticmethod``); it exists only so :meth:`SSP.control`'s existing
+        ``self._apply_requirement_set_parameters(...)`` call site keeps working unchanged
+        after the logic moved to module scope. The grouping-by-``param-id`` and
+        apply-across-the-control-subtree semantics — and the no-op-when-empty behavior —
+        are documented on the module-level function.
+
+        Args:
+            control (dict, required): The fetched control (a mutable copy); mutated in place,
+                including its nested enhancements.
+            req (dict, required): The implemented-requirement supplying ``set-parameters``.
+
+        Returns:
+            None: ``control`` is modified in place.
         """
-        set_params = req.get("set-parameters") or []
-        if not set_params:
-            return
-        by_id: dict[str, list] = {}
-        for setp in set_params:
-            if isinstance(setp, dict) and setp.get("param-id"):
-                by_id.setdefault(setp["param-id"], []).append(setp)
-
-        def _apply(node: dict) -> None:
-            _apply_set_parameters_to_control(node, by_id)
-            for child in node.get("controls", []) or []:
-                if isinstance(child, dict):
-                    _apply(child)
-
-        _apply(control)
+        _apply_requirement_set_parameters(control, req)
 
     # -------------------------------------------------------------------------
     def leveraged_authorization(self, uuid: str, include_components: bool = False) -> Optional[dict]:

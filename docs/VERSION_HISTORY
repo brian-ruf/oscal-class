@@ -41,4 +41,9 @@
 
 - Retrieval from the OSCAL Content Registry (https://registery.oscal.io)
 - Cache remotely acquired files locally
-- 
+
+## Version 4.0.0 
+- Revised metaschema index
+- increased coverage of metascha validation
+- established validation levels (minimally valid, valid, fully compliant)
+- complete SSP getters

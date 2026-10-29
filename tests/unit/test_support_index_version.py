@@ -254,6 +254,65 @@ class TestClosestSameMajor:
 
 
 # ===========================================================================
+# _closest_processed_version — ranks only versions that actually have a processed index
+# ===========================================================================
+class TestClosestProcessedVersion:
+
+    def _support(self, processed_versions):
+        obj = OSCALSupport.__new__(OSCALSupport)
+
+        class _DB:
+            def query(self, _sql):
+                return [{"version": v} for v in processed_versions]
+
+        obj.db = _DB()
+        return obj
+
+    def test_prefers_highest_at_or_below(self):
+        s = self._support(["v1.1.1", "v1.1.3", "v1.2.3"])
+        assert s._closest_processed_version("v1.2.0", "catalog") == "v1.1.3"
+
+    def test_falls_back_to_lowest_when_all_higher(self):
+        # An early version with only newer processed indexes resolves to the lowest one.
+        s = self._support(["v1.1.1", "v1.1.3", "v1.2.3"])
+        assert s._closest_processed_version("v1.0.4", "catalog") == "v1.1.1"
+
+    def test_none_when_no_processed_index(self):
+        s = self._support([])
+        assert s._closest_processed_version("v1.0.4", "catalog") is None
+
+
+# ===========================================================================
+# get_metaschema_index version fallback — early OSCAL versions (no published
+# machine-readable metaschema) serve the closest available processed index rather
+# than returning None (which would make validate() fail open).
+# ===========================================================================
+class TestVersionFallback:
+
+    def setup_method(self):
+        support_mod._metaschema_index_cache.clear()
+
+    def test_early_version_without_processed_index_falls_back(self, support):
+        # The bundled DB registers v1.0.4 but has no processed catalog index for it.
+        assert not support.get_asset("v1.0.4", "catalog", "processed")
+        substitute = support._closest_processed_version("v1.0.4", "catalog")
+        assert substitute is not None
+        assert support.get_asset(substitute, "catalog", "processed")  # really has one
+
+        idx = support.get_metaschema_index("v1.0.4", "catalog")
+        assert idx is not None and idx.get("nodes")
+        # Serves the substitute's index, cached under the requested key for stability.
+        assert idx is support.get_metaschema_index(substitute, "catalog")
+        assert ("v1.0.4", "catalog", support.active_index_version) in support_mod._metaschema_index_cache
+
+    def test_exact_version_not_substituted(self, support):
+        # A version that does have a processed index is served directly (no fallback).
+        assert support._closest_processed_version("v1.2.3", "catalog") == "v1.2.3"
+        idx = support.get_metaschema_index("v1.2.3", "catalog")
+        assert idx is not None and idx.get("nodes")
+
+
+# ===========================================================================
 # get_metaschema_index keyed by index version
 # ===========================================================================
 class TestIndexKeying:

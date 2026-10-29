@@ -14,8 +14,9 @@ Each node is ``{"uuid", "title", "type", "asset-type", "incorporates", "children
     * ``children`` is the control-implementation subtree (empty when none): one node per
       ``control-implementations`` entry — ``{"uuid", "source", "title", "version",
       "published"}`` resolved from the import tree (or ``title`` ``"**Import Error**"``) —
-      whose own ``children`` are one ``{"control-id", "label", "title"}`` node per
-      ``implemented-requirement`` (label/title looked up in the source's controls_tree).
+      whose own ``children`` are one ``{"uuid", "control-id", "label", "title"}`` node per
+      ``implemented-requirement`` (uuid = the requirement's own OSCAL uuid; label/title
+      looked up in the source's controls_tree).
     * The component/capability level is flat (imported cDefs' nodes appended without
       nesting); nesting exists only within the control-implementation subtree.
 
@@ -467,6 +468,15 @@ class TestCapabilityAndControlImplRoles:
         assert rr["title"] == "Administrator"
         assert rr["parties"] == [{"uuid": _P1, "type": "person", "name": "Alice"}]
 
+    def test_implemented_requirement_getter_roles_enriched(self, cdef_cap_ci_roles):
+        ir = cdef_cap_ci_roles.implemented_requirement("11111111-0000-4000-8000-000000000001")
+        rr = ir["responsible-roles"][0]
+        assert rr["title"] == "Administrator"
+        assert rr["parties"] == [{"uuid": _P1, "type": "person", "name": "Alice"}]
+        # parent context surfaced from the control-implementation
+        assert ir["control-implementation-uuid"] == _CI
+        assert ir["control-implementation-description"] == "ci"
+
 
 # ===========================================================================
 # component() relationships (forward + reverse component<->component links)
@@ -789,6 +799,150 @@ class TestControlImplementationGetter:
         assert "control" not in stored["implemented-requirements"][0]
 
 
+# implemented-requirement uuids in the cdef_ci fixture (one per control-implementation).
+_IR_GOOD_AC1  = "d0000000-0000-4000-8000-0000000000c1"  # ac-1 under _CI_GOOD (catalog)
+_IR_GOOD_AC2  = "d0000000-0000-4000-8000-0000000000c2"  # ac-2 under _CI_GOOD (catalog)
+_IR_BROKEN    = "d0000000-0000-4000-8000-0000000000c3"  # ac-1 under _CI_BROKEN (missing src)
+_IR_CAP_AC2   = "d0000000-0000-4000-8000-0000000000c5"  # ac-2 under _CI_CAPIMPL (capability)
+
+
+def _cdef_setparam_overlay():
+    """A cDef whose control-implementation and implemented-requirement both set parameters,
+    with one ``param-id`` (``p-shared``) in common, plus parent props/links."""
+    return {"component-definition": {
+        "uuid": "99999999-9999-4999-8999-999999999999",
+        "metadata": {"title": "SP", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.1.3"},
+        "components": [{"uuid": "aaaaaaaa-0000-4000-8000-0000000000e2",
+            "type": "software", "title": "A", "description": "d",
+            "control-implementations": [{
+                "uuid": "cccccccc-0000-4000-8000-0000000000e2",
+                "source": "#missing", "description": "ci",
+                "props": [{"name": "implementation-status", "value": "implemented"}],
+                "links": [{"href": "#ref", "rel": "reference"}],
+                "set-parameters": [
+                    {"param-id": "p-shared", "values": ["parent"]},
+                    {"param-id": "p-parent-only", "values": ["keep"]},
+                ],
+                "implemented-requirements": [{
+                    "uuid": "dddddddd-0000-4000-8000-0000000000e2",
+                    "control-id": "ac-1", "description": "r",
+                    "set-parameters": [
+                        {"param-id": "p-shared", "values": ["child"]},
+                        {"param-id": "p-child-only", "values": ["new"]},
+                    ]}]}]}]}}
+
+
+_IR_OVERLAY = "dddddddd-0000-4000-8000-0000000000e2"
+
+
+class TestImplementedRequirementGetter:
+
+    def test_missing_uuid_returns_none(self, cdef_ci):
+        assert cdef_ci.implemented_requirement("00000000-0000-4000-8000-000000000000") is None
+
+    def test_returns_requirement_by_own_uuid(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1)
+        assert ir["uuid"] == _IR_GOOD_AC1
+        assert ir["control-id"] == "ac-1"
+        assert ir["description"] == "r"          # the requirement's OWN description
+
+    def test_parent_control_implementation_context(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1)
+        assert ir["control-implementation-uuid"] == _CI_GOOD
+        assert ir["source"] == "catalog.json"
+        # parent's description surfaced under a distinct key (does not clobber the IR's own)
+        assert ir["control-implementation-description"] == "impl vs 800-53"
+        assert ir["description"] == "r"
+
+    def test_control_attached_at_depth_zero_by_default(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1)
+        ctl = ir["control"]
+        assert ctl["id"] == "ac-1"
+        # depth 0 -> the control alone; enhancement ac-1.1 excluded.
+        assert "controls" not in ctl or ctl["controls"] == []
+
+    def test_depth_override_includes_enhancements(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1, depth=None)
+        child_ids = [c["id"] for c in ir["control"].get("controls", [])]
+        assert "ac-1.1" in child_ids
+
+    def test_with_control_false_omits_control(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1, with_control=False)
+        assert "control" not in ir
+        # parent context is still present
+        assert ir["control-implementation-uuid"] == _CI_GOOD
+
+    def test_control_none_when_source_unresolvable(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_BROKEN)
+        assert ir["control-id"] == "ac-1"
+        assert ir["source"] == "missing.json"
+        assert ir["control"] is None
+
+    def test_resolves_requirement_under_capability(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_CAP_AC2)
+        assert ir["control-id"] == "ac-2"
+        assert ir["control-implementation-uuid"] == _CI_CAPIMPL
+        assert ir["control"]["id"] == "ac-2"
+
+    def test_returns_safe_copy(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC2)
+        ir["control-id"] = "MUTATED"
+        stored = cdef_ci._dict["component-definition"]["components"][0]["control-implementations"][0]
+        assert stored["implemented-requirements"][1]["control-id"] == "ac-2"
+        assert "control" not in stored["implemented-requirements"][1]
+        assert "control-implementation-uuid" not in stored["implemented-requirements"][1]
+
+    # --- parent props / links -------------------------------------------------
+    def test_parent_props_links_empty_when_absent(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1, with_control=False)
+        assert ir["control-implementation-props"] == []
+        assert ir["control-implementation-links"] == []
+
+    def test_parent_props_and_links_surfaced(self):
+        cd = _load(_cdef_setparam_overlay())
+        ir = cd.implemented_requirement(_IR_OVERLAY, with_control=False)
+        assert ir["control-implementation-props"] == [
+            {"name": "implementation-status", "value": "implemented"}]
+        assert ir["control-implementation-links"] == [{"href": "#ref", "rel": "reference"}]
+
+    # --- set-parameters overlay ----------------------------------------------
+    def test_parent_only_set_parameters_brought_in(self, cdef_ci):
+        # _CI_GOOD sets ac-1_prm; its implemented-requirements set nothing of their own.
+        ir = cdef_ci.implemented_requirement(_IR_GOOD_AC1, with_control=False)
+        assert ir["set-parameters"] == [{"param-id": "ac-1_prm", "values": ["30 days"]}]
+
+    def test_set_parameters_omitted_when_neither_level_sets_any(self, cdef_ci):
+        ir = cdef_ci.implemented_requirement(_IR_BROKEN, with_control=False)
+        assert "set-parameters" not in ir
+
+    def test_set_parameters_overlay_child_wins_on_collision(self):
+        cd = _load(_cdef_setparam_overlay())
+        ir = cd.implemented_requirement(_IR_OVERLAY, with_control=False)
+        by_id = {s["param-id"]: s["values"] for s in ir["set-parameters"]}
+        assert by_id == {
+            "p-shared": ["child"],       # child replaces parent on shared param-id
+            "p-parent-only": ["keep"],   # parent-only retained
+            "p-child-only": ["new"],     # child-only appended
+        }
+
+    def test_set_parameters_overlay_preserves_parent_order(self):
+        cd = _load(_cdef_setparam_overlay())
+        ir = cd.implemented_requirement(_IR_OVERLAY, with_control=False)
+        # parent order first (shared replaced in place), child-only appended last
+        assert [s["param-id"] for s in ir["set-parameters"]] == [
+            "p-shared", "p-parent-only", "p-child-only"]
+
+    def test_set_parameters_overlay_does_not_mutate_stored(self):
+        cd = _load(_cdef_setparam_overlay())
+        cd.implemented_requirement(_IR_OVERLAY)
+        ci = cd._dict["component-definition"]["components"][0]["control-implementations"][0]
+        # parent set-parameters untouched (still "parent" for the shared id)
+        assert ci["set-parameters"][0] == {"param-id": "p-shared", "values": ["parent"]}
+        assert ci["implemented-requirements"][0]["set-parameters"][0] == {
+            "param-id": "p-shared", "values": ["child"]}
+
+
 # ===========================================================================
 # implementation_tree — control-implementation subtree under each component/capability
 # ===========================================================================
@@ -821,19 +975,29 @@ class TestImplementationTreeControlImplementations:
         good = self._component_node(cdef_ci)["children"][0]
         reqs = good["children"]
         assert [r["control-id"] for r in reqs] == ["ac-1", "ac-2"]
-        assert reqs[0] == {"control-id": "ac-1", "label": "AC-1", "title": "Policy"}
-        assert reqs[1] == {"control-id": "ac-2", "label": "AC-2", "title": "Account Management"}
+        assert reqs[0] == {"uuid": "d0000000-0000-4000-8000-0000000000c1",
+                           "control-id": "ac-1", "label": "AC-1", "title": "Policy"}
+        assert reqs[1] == {"uuid": "d0000000-0000-4000-8000-0000000000c2",
+                           "control-id": "ac-2", "label": "AC-2", "title": "Account Management"}
 
     def test_requirement_node_has_no_extra_keys(self, cdef_ci):
         req = self._component_node(cdef_ci)["children"][0]["children"][0]
-        assert set(req.keys()) == {"control-id", "label", "title"}
+        assert set(req.keys()) == {"uuid", "control-id", "label", "title"}
+
+    def test_requirement_uuid_is_the_requirements_own_uuid(self, cdef_ci):
+        # The leaf uuid is the implemented-requirement's OSCAL uuid — the stable key a
+        # navigation UI needs, since a control-id (e.g. ac-2) repeats across components.
+        req = self._component_node(cdef_ci)["children"][0]["children"][1]
+        assert req["control-id"] == "ac-2"
+        assert req["uuid"] == "d0000000-0000-4000-8000-0000000000c2"
 
     def test_missing_source_child_is_import_error(self, cdef_ci):
         broken = self._component_node(cdef_ci)["children"][1]
         assert broken["title"] == "**Import Error**"
         assert "version" not in broken and "published" not in broken
-        # requirement children still present; label/title unresolved -> empty
-        assert broken["children"] == [{"control-id": "ac-1", "label": "", "title": ""}]
+        # requirement children still present; label/title unresolved -> empty, uuid kept
+        assert broken["children"] == [{"uuid": "d0000000-0000-4000-8000-0000000000c3",
+                                       "control-id": "ac-1", "label": "", "title": ""}]
 
     def test_wrong_type_source_child_is_import_error(self, cdef_ci):
         wrong = self._component_node(cdef_ci)["children"][2]
@@ -843,4 +1007,187 @@ class TestImplementationTreeControlImplementations:
         cap = next(n for n in cdef_ci.implementation_tree["components"] if n["uuid"] == _CI_CAP)
         assert [c["uuid"] for c in cap["children"]] == [_CI_CAPIMPL]
         assert cap["children"][0]["children"][0] == {
+            "uuid": "d0000000-0000-4000-8000-0000000000c5",
             "control-id": "ac-2", "label": "AC-2", "title": "Account Management"}
+
+
+# ===========================================================================
+# components() / capabilities() enumeration getters
+# ===========================================================================
+_SUMMARY_KEYS = {"uuid", "type", "title", "description", "asset-type",
+                 "control-implementations-count"}
+
+
+class TestComponentsEnumeration:
+
+    def test_returns_summary_per_component(self, valid_cdef):
+        comps = valid_cdef.components()
+        assert [c["title"] for c in comps] == ["Web Server", "Router"]
+        for c in comps:
+            assert set(c.keys()) == _SUMMARY_KEYS
+
+    def test_summary_values(self, valid_cdef):
+        web = valid_cdef.components()[0]
+        assert web["uuid"] == "aaaaaaaa-0000-4000-8000-000000000001"
+        assert web["type"] == "software"
+        assert web["description"] == "x"
+        assert web["asset-type"] == "appliance"
+        assert web["control-implementations-count"] == 0
+
+    def test_asset_type_empty_when_absent(self, valid_cdef):
+        assert valid_cdef.components()[1]["asset-type"] == ""
+
+    def test_excludes_capabilities(self, valid_cdef):
+        assert all(c["type"] != "capability" for c in valid_cdef.components())
+
+    def test_filter_by_type(self, valid_cdef):
+        assert [c["title"] for c in valid_cdef.components(component_type="hardware")] == ["Router"]
+
+    def test_filter_by_type_no_match(self, valid_cdef):
+        assert valid_cdef.components(component_type="nonexistent") == []
+
+    def test_filter_by_title_case_insensitive(self, valid_cdef):
+        assert [c["uuid"] for c in valid_cdef.components(title="web server")] == \
+            ["aaaaaaaa-0000-4000-8000-000000000001"]
+
+    def test_filters_combine(self, valid_cdef):
+        assert valid_cdef.components(component_type="software", title="Router") == []
+
+    def test_empty_when_no_components(self):
+        doc = _cdef_doc("66666666-6666-4666-8666-666666666666", "Empty")
+        assert _load(doc).components() == []
+
+    def test_control_implementations_count(self, cdef_ci):
+        app = next(c for c in cdef_ci.components() if c["uuid"] == _CI_COMP)
+        assert app["control-implementations-count"] == 3
+
+    def test_safe_copy(self, valid_cdef):
+        valid_cdef.components()[0]["title"] = "MUTATED"
+        assert valid_cdef._dict["component-definition"]["components"][0]["title"] == "Web Server"
+
+    def test_local_only_default_excludes_imports(self):
+        with tempfile.TemporaryDirectory() as d:
+            child = _cdef_doc(
+                "33333333-3333-4333-8333-333333333333", "Child",
+                components=[{"uuid": "bbbbbbbb-0000-4000-8000-000000000001",
+                             "type": "service", "title": "Auth Service", "description": "c"}])
+            with open(os.path.join(d, "child.json"), "w") as fh:
+                json.dump(child, fh)
+            parent = _cdef_doc(
+                "44444444-4444-4444-8444-444444444444", "Parent",
+                components=[{"uuid": "dddddddd-0000-4000-8000-000000000001",
+                             "type": "software", "title": "App", "description": "p"}],
+                imports=[{"href": "child.json"}])
+            path = os.path.join(d, "parent.json")
+            with open(path, "w") as fh:
+                json.dump(parent, fh)
+            cd = ComponentDefinition.load(path)
+            assert [c["title"] for c in cd.components()] == ["App"]
+            assert [c["title"] for c in cd.components(local_only=False)] == ["App", "Auth Service"]
+
+
+class TestCapabilitiesEnumeration:
+
+    def test_returns_summary_per_capability(self, valid_cdef):
+        caps = valid_cdef.capabilities()
+        assert [c["title"] for c in caps] == ["Logging"]
+        assert caps[0]["type"] == "capability"
+        assert set(caps[0].keys()) == _SUMMARY_KEYS
+
+    def test_title_is_capability_name(self, valid_cdef):
+        assert valid_cdef.capabilities()[0]["title"] == "Logging"
+
+    def test_filter_by_name_case_insensitive(self, valid_cdef):
+        assert [c["title"] for c in valid_cdef.capabilities(name="LOGGING")] == ["Logging"]
+
+    def test_filter_by_name_no_match(self, valid_cdef):
+        assert valid_cdef.capabilities(name="nope") == []
+
+    def test_empty_when_no_capabilities(self):
+        doc = _cdef_doc("66666666-6666-4666-8666-666666666666", "Empty")
+        assert _load(doc).capabilities() == []
+
+    def test_safe_copy(self, valid_cdef):
+        valid_cdef.capabilities()[0]["title"] = "MUTATED"
+        cap = valid_cdef._dict["component-definition"]["capabilities"][0]
+        assert cap["name"] == "Logging"
+
+
+# ===========================================================================
+# control(control_id) reverse getter — who implements a given control
+# ===========================================================================
+class TestReverseControlGetter:
+
+    def test_none_when_unimplemented(self, cdef_ci):
+        assert cdef_ci.control("zz-99") is None
+
+    def test_maps_control_to_implementers(self, cdef_ci):
+        # ac-2 is implemented by the component (via _CI_GOOD) and the capability (_CI_CAPIMPL).
+        result = cdef_ci.control("ac-2")
+        assert result["control-id"] == "ac-2"
+        uuids = {e["component-uuid"] for e in result["components"]}
+        assert uuids == {_CI_COMP, _CI_CAP}
+
+    def test_entry_shape(self, cdef_ci):
+        entry = next(e for e in cdef_ci.control("ac-2")["components"]
+                     if e["component-uuid"] == _CI_COMP)
+        assert entry["type"] == "software"
+        assert entry["title"] == "App"
+        assert entry["source"] == "catalog.json"
+        assert entry["control-implementation-uuid"] == _CI_GOOD
+        assert entry["implemented-requirement"]["control-id"] == "ac-2"
+
+    def test_capability_entry_typed_capability(self, cdef_ci):
+        entry = next(e for e in cdef_ci.control("ac-2")["components"]
+                     if e["component-uuid"] == _CI_CAP)
+        assert entry["type"] == "capability"
+        assert entry["title"] == "Logging"
+
+    def test_control_attached_by_default(self, cdef_ci):
+        entry = next(e for e in cdef_ci.control("ac-2")["components"]
+                     if e["component-uuid"] == _CI_COMP)
+        assert entry["implemented-requirement"]["control"]["id"] == "ac-2"
+
+    def test_with_control_false_omits_control(self, cdef_ci):
+        entry = cdef_ci.control("ac-2", with_control=False)["components"][0]
+        assert "control" not in entry["implemented-requirement"]
+
+    def test_depth_zero_excludes_enhancements(self, cdef_ci):
+        # ac-1 (implemented by component) has enhancement ac-1.1; depth=0 drops it.
+        entry = next(e for e in cdef_ci.control("ac-1", depth=0)["components"]
+                     if e["control-implementation-uuid"] == _CI_GOOD)
+        ctl = entry["implemented-requirement"]["control"]
+        assert "controls" not in ctl or ctl["controls"] == []
+
+    def test_control_none_when_source_unresolvable(self, cdef_ci):
+        # ac-1 is also implemented via _CI_BROKEN (missing source).
+        entry = next(e for e in cdef_ci.control("ac-1")["components"]
+                     if e["control-implementation-uuid"] == _CI_BROKEN)
+        assert entry["implemented-requirement"]["control"] is None
+
+    def test_asset_type_included_when_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "catalog.json"), "w") as fh:
+                json.dump(_ci_catalog(), fh)
+            doc = _cdef_doc(
+                "77777777-7777-4777-8777-777777777777", "cDef",
+                components=[{"uuid": "aaaaaaaa-0000-4000-8000-0000000000e1",
+                             "type": "software", "title": "App", "description": "d",
+                             "props": [{"name": "asset-type", "value": "appliance"}],
+                             "control-implementations": [
+                                 {"uuid": "cccccccc-0000-4000-8000-0000000000e1",
+                                  "source": "catalog.json", "description": "i",
+                                  "implemented-requirements": [
+                                      {"uuid": "dddddddd-0000-4000-8000-0000000000e1",
+                                       "control-id": "ac-2", "description": "r"}]}]}])
+            path = os.path.join(d, "cdef.json")
+            with open(path, "w") as fh:
+                json.dump(doc, fh)
+            cd = ComponentDefinition.load(path)
+            assert cd.control("ac-2")["components"][0]["asset-type"] == "appliance"
+
+    def test_returns_safe_copy(self, cdef_ci):
+        cdef_ci.control("ac-2")
+        stored = cdef_ci._dict["component-definition"]["components"][0]
+        req = stored["control-implementations"][0]["implemented-requirements"][1]
+        assert "control" not in req
