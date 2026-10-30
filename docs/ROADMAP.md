@@ -1,32 +1,31 @@
 ---
 
-# ROADMAP (_Updated Aug 12, 2026_)
+# ROADMAP (_Updated October 30, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
 ## CURRENT: Version 4.0.0 
 
 - Revised metaschema index
-- increased coverage of metascha validation
+- increased coverage of metaschema validation
 - established validation levels (minimally valid, valid, fully compliant)
 - SSP-specific getters full coverage
-- cDef-specific Getters full coverage
+- cDef-specific getters full coverage
 - Additional metaschema-defined enforcement  
-    - Significantly exceeds validation based on NIST-published XML or JSON schema files
+    - Significantly exceeds validation based on INST-published XML or JSON schema files
     - Greater than 80% of the metaschema constraints now enforced
     - Referential integrity validated
 - Three validation levels defined defined:
     - Minimally Valid: 
         - well-formed, valid syntax
         - sufficient for processing
-        - allows for resolving more complex validaiton issues via the library
-        - Some library funcitons are blocked until validation issues are resolved
+        - allows for resolving more complex validation issues via the library
+        - Some library functions are blocked until validation issues are resolved
     - Valid:
         - Highest level of compliance that can be verified using Python dict/JSON and direct interpretation of the metaschema
-        - All mmetaschema constraints handled except those that require xPath 3 to interpret
+        - All metaschema constraints handled except those that require xPath 3 to interpret
     - Fully Compliant (not yet implemented):
-        - convert to XML and apply xPath 3 to internpret remaining constraints
-
+        - convert to XML and apply xPath 3 to interpret remaining constraints
 
 ## Up Next:
 
