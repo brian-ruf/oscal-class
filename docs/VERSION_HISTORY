@@ -30,6 +30,12 @@
     - cDef -> cDef
 - Failed import handling
 - Basic addressibility across imported files
+- Direct python interpretation of metaschema for conversion between formats
+    - No reliance on NIST-published XSLT
+    - Processed against native Python dict
+- Direct python interpretation of metaschema for validation
+    - Syntax, cardinality, data types
+    - Simple constraints
 
 ### Version 3.1.x Profile Resolution
 
@@ -46,4 +52,22 @@
 - Revised metaschema index
 - increased coverage of metascha validation
 - established validation levels (minimally valid, valid, fully compliant)
-- complete SSP getters
+- SSP-specific getters full coverage
+- cDef-specific Getters full coverage
+- Additional metaschema-defined enforcement  
+    - Significantly exceeds validation based on NIST-published XML or JSON schema files
+    - Greater than 80% of the metaschema constraints now enforced
+    - Referential integrity validated
+- Three validation levels defined defined:
+    - Minimally Valid: 
+        - well-formed, valid syntax
+        - sufficient for processing
+        - allows for resolving more complex validaiton issues via the library
+        - Some library funcitons are blocked until validation issues are resolved
+    - Valid:
+        - Highest level of compliance that can be verified using Python dict/JSON and direct interpretation of the metaschema
+        - All mmetaschema constraints handled except those that require xPath 3 to interpret
+    - Fully Compliant (not yet implemented):
+        - convert to XML and apply xPath 3 to internpret remaining constraints
+
+

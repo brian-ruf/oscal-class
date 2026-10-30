@@ -26,7 +26,6 @@ classifiers = [
 keywords = ["oscal", "nist", "security", "compliance", "automation", "ssp", "fedramp", "csf"]
 
 dependencies = [
-    "jsonschema_rs   >= 0.26.1",
     "jsonpath-python >= 1.1.5",
     "xmlschema       >= 3.4.3",
     "PyYAML          >= 6.0",

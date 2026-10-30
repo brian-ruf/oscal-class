@@ -9,20 +9,50 @@ The sequencing of releases may change in response to client needs and other exte
 - Revised metaschema index
 - increased coverage of metascha validation
 - established validation levels (minimally valid, valid, fully compliant)
-- complete SSP getters
-
-
-
-### Version 
-- MVP cDef Getters
+- SSP-specific getters full coverage
+- cDef-specific Getters full coverage
+- Additional metaschema-defined enforcement  
+    - Significantly exceeds validation based on NIST-published XML or JSON schema files
+    - Greater than 80% of the metaschema constraints now enforced
+    - Referential integrity validated
+- Three validation levels defined defined:
+    - Minimally Valid: 
+        - well-formed, valid syntax
+        - sufficient for processing
+        - allows for resolving more complex validaiton issues via the library
+        - Some library funcitons are blocked until validation issues are resolved
+    - Valid:
+        - Highest level of compliance that can be verified using Python dict/JSON and direct interpretation of the metaschema
+        - All mmetaschema constraints handled except those that require xPath 3 to interpret
+    - Fully Compliant (not yet implemented):
+        - convert to XML and apply xPath 3 to internpret remaining constraints
 
 
 ## Up Next:
 
+- [ ] POA&M, AP and AR Getters
+
+- [ ] Generate and maintain metaschema-defined indexes
+
+- [ ] Handle metaschema-defined uniqueness constraints
 
 
+### Project Approach
 
-### Local Caching
+- [ ] Project-based Storage
+    - Save cluster of related files together
+        - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
+        - POAM -> SSP -> Profile -> [ Profile | Catalog ]
+    - SQLite-based
+    - Load cluster of related files
+    - External attachment packing with project
+
+- [ ] External attachment handling    
+    - In SQLite project file
+    - As external files relative to SQLite project file
+
+
+### Local Caching Enhancements
 
 - [ ] Automatic cache refresh based on TTL
 - [ ] Manually triggered refresh
@@ -83,25 +113,11 @@ The sequencing of releases may change in response to client needs and other exte
       `get_party_by_uuid` / `get_location_by_uuid`), which already cascade the import tree for a
       single match and expose owning-document info via `with_source`.
 
-### Project Approach
 
-- [ ] Project-based Storage
-    - Save cluster of related files together
-        - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
-        - POAM -> SSP -> Profile -> [ Profile | Catalog ]
-    - SQLite-based
-    - Load cluster of related files
-    - External attachment packing with project
-
-- [ ] External attachment handling    
-    - In SQLite project file
-    - As external files relative to SQLite project file
 
 ### Indexes and Robust Addressibility
 
-- [ ] Generate and maintain metaschema-defined indexes
 - [ ] Generate and maintain extra-metaschema indexes 
-- [ ] Handle metaschema-defined uniqueness constraints
 - [ ] Enable robust addressibility across project files
   - Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements
 
@@ -109,7 +125,7 @@ The sequencing of releases may change in response to client needs and other exte
 
 ### Farther Out
 
-- [ ] Robust URI and APIs Handling for Content Acquisition/Storage
+- [ ] Enhanced URI and APIs Handling for Content Acquisition/Storage
     - Additional API Specifications
     - Credentialed/Access-token Handling
     - S3 and similar cloud-native storage capabiities 
@@ -118,19 +134,15 @@ The sequencing of releases may change in response to client needs and other exte
     - Cached local copy of commonly used OSCAL content, such as the NIST SP 800-53 catalog and FedRAMP profiles.
     - Ability to add/refresh/remove content
 
-- [ ] Preferred Conversion
-    - Enable conversion of OSCAL content using pure python and direct interpretation of metaschema
-        - Eliminates dependency on XSLT 3.x processing for format converstion
-
-- [ ] Preferred Validation
-    - Enable validation of OSCAL content using pure Python and direct interpretation of NIST metaschema 
-        - Eliminate dependency on XML/JSON schema files
-        - Enables more complex metaschema checks 
+- [ ] Complete metaschema-based validation 
+  - currently 100% implemented for syntax, cardinality, data types, indexing 
+  greater than 85% implemented
+  - A few constraints require xPath 3 to interpret. 
+  - Plan is to convert to XML and use xPath 3 just for those constraints on demand and separate from the automatic validation
 
 - [ ] Project Storage and Sharing Enhancements
     - Enable multi-user interaction of shared project files
     - Enable storage on shared network drives
     - Enable storage on shared cloud drives (OneDrive, Google Drive)
     - Enablue use of enterprise databases
-
 
