@@ -35,6 +35,8 @@ import os
 import re
 import json
 import copy
+import base64
+import hashlib
 import contextvars
 from contextlib         import contextmanager
 import yaml
@@ -71,12 +73,16 @@ from .oscal_helpers     import (  # noqa: F401  (re-exported for callers)
 # modules, workspace, and tests keep working after the extraction.
 from .oscal_source      import (  # noqa: F401  (re-exported for callers)
     OscalRef, _normalize_refs, ImportState, ImportFailureCode, ImportLoadError,
-    ImportFailure, load_content, load_source, classify_source, _resolve_href,
-    _canonicalize_ref, _oscal_format_variants, _find_import_candidates,
+    ImportFailure, load_content, load_source, load_source_bytes, classify_source,
+    _resolve_href, _canonicalize_ref, _oscal_format_variants, _find_import_candidates,
     _pick_import_target, _remove_import_from_dict, _hrefs_from_dict_spec,
     _backmatter_resource,
 )
 from .oscal_resequence  import resequence_oscal
+from .oscal_references   import (  # noqa: F401  (re-exported for callers)
+    evaluate_library_reference_rules, library_reference_rules,
+    evaluate_global_identifier_uniqueness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,15 +166,22 @@ _IMPORT_PATTERNS_DICT: dict[str, list[dict]] = {
 # invalid (catalog 0/0, mapping-collection 0/0, SSP/AP/AR 1/1); such imports are set via
 # the retry_import modify path. Otherwise add is allowed while count < max and remove
 # while count > min (counting only imports with a non-empty, non-"#" href).
+# ``allowed_imports`` is the set of OSCAL models a first-level import added/updated via
+# add_import/update_import may reference; the add/update type gate rejects anything else
+# (see _reject_import_type). Models with no addable imports (catalog, mapping-collection —
+# path None) carry an empty set. cDef's set is only {component-definition}: the catalog/
+# profile objects that appear in a cDef's *import tree* come from control-implementation
+# @source references (a separate, future add/update mechanism), never via
+# import-component-definition. resolve_imports still discovers the full tree regardless.
 _IMPORT_SPEC: dict[str, dict] = {
-    "catalog":                       {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0},
-    "profile":                       {"path": "imports",                      "single": False, "href": "href", "min": 1, "max": None},
-    "component-definition":          {"path": "import-component-definitions", "single": False, "href": "href", "min": 0, "max": None},
-    "system-security-plan":          {"path": "import-profile",               "single": True,  "href": "href", "min": 1, "max": 1},
-    "assessment-plan":               {"path": "import-ssp",                   "single": True,  "href": "href", "min": 1, "max": 1},
-    "assessment-results":            {"path": "import-ap",                    "single": True,  "href": "href", "min": 1, "max": 1},
-    "plan-of-action-and-milestones": {"path": "import-ssp",                   "single": True,  "href": "href", "min": 0, "max": 1},
-    "mapping-collection":            {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0},
+    "catalog":                       {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0,    "allowed_imports": set()},
+    "profile":                       {"path": "imports",                      "single": False, "href": "href", "min": 1, "max": None, "allowed_imports": {"catalog", "profile"}},
+    "component-definition":          {"path": "import-component-definitions", "single": False, "href": "href", "min": 0, "max": None, "allowed_imports": {"component-definition"}},
+    "system-security-plan":          {"path": "import-profile",               "single": True,  "href": "href", "min": 1, "max": 1,    "allowed_imports": {"catalog", "profile"}},
+    "assessment-plan":               {"path": "import-ssp",                   "single": True,  "href": "href", "min": 1, "max": 1,    "allowed_imports": {"system-security-plan"}},
+    "assessment-results":            {"path": "import-ap",                    "single": True,  "href": "href", "min": 1, "max": 1,    "allowed_imports": {"assessment-plan"}},
+    "plan-of-action-and-milestones": {"path": "import-ssp",                   "single": True,  "href": "href", "min": 0, "max": 1,    "allowed_imports": {"system-security-plan"}},
+    "mapping-collection":            {"path": None,                           "single": False, "href": "href", "min": 0, "max": 0,    "allowed_imports": set()},
 }
 
 # Conditional origin states — not progressive; freshness is time-based and computed on demand.
@@ -212,12 +225,14 @@ class VersionSupport(Enum):
     UNSUPPORTED   = "unsupported"
 
 
-def _check_datatype(value: str, datatype: str, location: str, field: str) -> dict | None:
+def _check_datatype(value: str, datatype: str, location: str, field: str,
+                    identifier: str | None = None) -> dict | None:
     """Validate a string *value* against an OSCAL *datatype* pattern.
 
     Returns a structured error dict when the value fails the pattern, or ``None``
     when the value is acceptable (including when no applicable pattern is defined).
-    Patterns that fail to compile are silently skipped.
+    Patterns that fail to compile are silently skipped. ``identifier`` is the id/uuid
+    of the nearest enclosing identifiable object (see :meth:`OSCAL._walk_instance`).
     """
     type_info = OSCAL_DATATYPES.get(datatype)
     if not type_info:
@@ -230,6 +245,7 @@ def _check_datatype(value: str, datatype: str, location: str, field: str) -> dic
             return {
                 "error-type": "invalid-type",
                 "location":   location,
+                "identifier": identifier,
                 "field":      field,
                 "value":      value,
                 "expected": {
@@ -246,13 +262,131 @@ def _check_datatype(value: str, datatype: str, location: str, field: str) -> dic
 _OSCAL_NS = "http://csrc.nist.gov/ns/oscal" # OSCAL default namespace for props, parts and any other `ns` qualified elements.
 
 
+# Validation error types that, on their own, do NOT block import resolution. When a
+# document is not strictly valid but *every* validation error is of a type in this
+# allow-list, imports are still resolved (import_list is populated) — the document's
+# structure is navigable, so its references can be followed. Structural error types
+# (missing-required, cardinality, choice) are intentionally excluded: they can leave the
+# tree ambiguous or incomplete, so they still block. See docs/VALIDATION.md and the
+# ``oscal_import_nonblocking_errors`` memory note. Tune via ``OSCAL.import_nonblocking_error_types``.
+IMPORT_NONBLOCKING_ERROR_TYPES: frozenset = frozenset(
+    {"allowed-values", "invalid-type", "matches", "has-cardinality", "constraint-violation",
+     "unresolved-reference", "duplicate-key"})
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Link / back-matter-resource content acquisition
+# ---------------------------------------------------------------------------
+# OSCAL ``hash/@algorithm`` values mapped to the hashlib constructor that verifies them.
+# A hash whose algorithm is absent from this map is treated as unsupported (never a silent
+# pass). Covers the SHA-2 and SHA-3 families the OSCAL metaschema enumerates.
+_HASH_ALGORITHMS: dict = {
+    "SHA-224": hashlib.sha224, "SHA-256": hashlib.sha256,
+    "SHA-384": hashlib.sha384, "SHA-512": hashlib.sha512,
+    "SHA3-224": hashlib.sha3_224, "SHA3-256": hashlib.sha3_256,
+    "SHA3-384": hashlib.sha3_384, "SHA3-512": hashlib.sha3_512,
+}
+
+# ``integrity-verification-status`` values on an acquisition result. Non-gating: a failed or
+# absent check never blocks content delivery, it only reports.
+INTEGRITY_VALID                  = "valid"                    # a supported hash matched
+INTEGRITY_NOT_VALID              = "not-valid"                # a supported hash mismatched
+INTEGRITY_NO_SUPPORTED_ALGORITHMS = "no-supported-algorithms"  # hashes present, none supported
+INTEGRITY_NO_HASH                = "no-hash"                   # no hash to check (incl. base64)
+INTEGRITY_NOT_APPLICABLE         = "not-applicable"            # nothing acquired (failure)
+
+
+def _media_type_tokens(media_type: "str | None") -> "list[str] | None":
+    """Parse the ``media_type`` acquisition argument into a list of lowercased patterns.
+
+    Returns None when no *constraint* is expressed: the argument is empty, or any token is a
+    total wildcard (``*`` or ``*/*``) — a total wildcard means "no preference", so it must
+    behave exactly like omitting the argument (never a preference for typed sources). Otherwise
+    returns the comma-separated patterns (whitespace-trimmed, lowercased, empties dropped).
+    """
+    if not media_type:
+        return None
+    tokens = [t.strip().lower() for t in media_type.split(",")]
+    tokens = [t for t in tokens if t]
+    if not tokens or any(t in ("*", "*/*") for t in tokens):
+        return None
+    return tokens
+
+
+def _media_type_matches(tokens: "list[str] | None", candidate: "str | None") -> bool:
+    """True when *candidate*'s media type satisfies any pattern in *tokens*.
+
+    Matching is case-insensitive on the type essence (parameters after ``;`` are ignored).
+    A ``type/*`` subtype wildcard matches any candidate of that type family. ``tokens`` of
+    None means "no constraint" (see :func:`_media_type_tokens`) and always matches; a
+    candidate with no declared media type matches only the no-constraint case (a concrete or
+    subtype-wildcard pattern requires a declared type to match against).
+    """
+    if tokens is None:
+        return True
+    if not candidate:
+        return False
+    essence = candidate.split(";", 1)[0].strip().lower()
+    for pat in tokens:
+        if pat == essence:
+            return True
+        if pat.endswith("/*") and essence.startswith(pat[:-1]):  # "image/*" -> prefix "image/"
+            return True
+    return False
+
+
+def _embed_link_resources(doc: "OSCAL", obj: Any) -> Any:
+    """Embed referenced back-matter resources into ``links`` anywhere within *obj*, in place.
+
+    Walks *obj* and, for every ``links`` entry whose ``href`` is a ``#uuid`` fragment that
+    resolves to a ``back-matter.resource`` (in scope, via :meth:`OSCAL.get_resource_by_uuid`
+    — so an imported resource resolves too), inserts a ``resource`` key holding that resource.
+    The embedded copy has its ``base64.value`` stripped (the ``base64`` element is kept as a
+    *stub* — ``filename`` / ``media-type`` retained — so the caller knows embedded content
+    exists and its type without carrying a potentially huge payload; the bytes are obtained
+    separately via :meth:`OSCAL.link_content`).
+
+    Fragments that do not resolve to a resource (dangling, or naming a non-resource object)
+    are left untouched — no ``resource`` key is added. Mutates *obj* in place (callers pass a
+    safe copy) and returns it.
+    """
+    if isinstance(obj, dict):
+        for value in obj.values():            # recurse first; the embedded resource isn't re-walked
+            _embed_link_resources(doc, value)
+        links = obj.get("links")
+        if isinstance(links, list):
+            for link in links:
+                if not isinstance(link, dict) or "resource" in link:
+                    continue
+                href = str(link.get("href", ""))
+                if not href.startswith("#"):
+                    continue
+                resource = doc.get_resource_by_uuid(href[1:])
+                if resource is None:
+                    continue
+                b64 = resource.get("base64")
+                if isinstance(b64, dict):
+                    b64.pop("value", None)     # keep filename/media-type stub, drop the payload
+                link["resource"] = resource
+    elif isinstance(obj, list):
+        for item in obj:
+            _embed_link_resources(doc, item)
+    return obj
+
+
 def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
     """Return True when all conditions on a constraint are satisfied by *instance*.
 
     Condition types:
       namespace   – ``@ns`` flag must be in the allowed namespace values list.
                     Absent ``@ns`` is treated as the OSCAL default namespace per spec.
-      flag-equals – a sibling flag must equal a specific value.
+      flag-equals – a flag must equal a specific value (from an ``@f='v'`` target
+                    predicate).
+      flag-in     – a flag must be one of a set of values (from an ``@f=('v1','v2')``
+                    target predicate). An absent flag never matches, so the guarded
+                    constraint does not apply — e.g. the ``vendor-name``-only allowed
+                    values scoped to ``@type=('software','hardware','service')`` must not
+                    fire on props that carry no such ``type`` flag.
 
     An absent or unrecognised condition type is treated as satisfied (fail-open).
     """
@@ -269,7 +403,419 @@ def _constraint_conditions_met(constraint: dict, instance: dict) -> bool:
             expected = cond.get("value", "")
             if instance.get(flag) != expected:
                 return False
+        elif ctype == "flag-in":
+            flag = cond.get("flag", "")
+            if instance.get(flag) not in cond.get("values", []):
+                return False
     return True
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# L2 allowed-values — union semantics (step-2 prototype, not yet wired into the walk)
+#
+# A single flag is frequently governed by SEVERAL allowed-values constraints: one general
+# set plus context-scoped sets (e.g. a component's props accept `vendor-name` only when the
+# component `@type` is software/hardware/service). The correct L2 rule is UNION over the
+# in-scope constraints, not "fails any one":
+#   * a constraint is in scope when its *context-gate* conditions hold against the
+#     DEFINITION-context object (the node the constraint was declared on — e.g. the
+#     component) AND its *target-filter* conditions hold against the matched leaf object
+#     (e.g. the prop's namespace);
+#   * `allow-other` is least-restrictive — if ANY in-scope constraint permits others, the
+#     flag accepts anything (value-checking is short-circuited) while the value sets remain
+#     in the index for later GUI use;
+#   * with no in-scope constraint there is NO L2 opinion (not an error).
+# Conditions are partitioned here with a prototype heuristic (flag-equals/flag-in are
+# context-gates, namespace is a target-filter); Phase 0 of the build plan moves that
+# partition into the index so the evaluator is fed pre-tagged conditions.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+_CONTEXT_GATE_CONDITION_TYPES = frozenset({"flag-equals", "flag-in"})
+
+
+def _partition_conditions(constraint: dict) -> tuple:
+    """Split a constraint's conditions into ``(context_gates, target_filters)``.
+
+    Context-gates are predicates on the constraint's definition-node flags (they decide
+    whether the constraint is in scope for the current context object). Target-filters
+    (currently only ``namespace``) decide whether a matched leaf value is governed.
+    """
+    gates, filters = [], []
+    for cond in constraint.get("conditions", []) or []:
+        if cond.get("type") in _CONTEXT_GATE_CONDITION_TYPES:
+            gates.append(cond)
+        else:
+            filters.append(cond)
+    return gates, filters
+
+
+def _context_gates_met(gates: list, context_obj: Any) -> bool:
+    """True when every context-gate holds against ``context_obj`` (its own flags).
+
+    An absent flag never satisfies a gate, so a context-scoped constraint simply does not
+    apply to a context that lacks the gating flag (it is excluded from the union).
+    """
+    if not gates:
+        return True
+    if not isinstance(context_obj, dict):
+        return False
+    for g in gates:
+        flag = g.get("flag", "")
+        actual = context_obj.get(flag)
+        if g.get("type") == "flag-equals":
+            if actual is None or str(actual) != str(g.get("value", "")):
+                return False
+        elif g.get("type") == "flag-in":
+            if actual is None or str(actual) not in {str(v) for v in g.get("values", [])}:
+                return False
+    return True
+
+
+def _target_filters_met(filters: list, leaf_obj: Any) -> bool:
+    """True when target-filters admit ``leaf_obj`` (currently only ``namespace``).
+
+    A prop/part with no explicit ``@ns`` defaults to the OSCAL namespace, so a namespace
+    filter that lists the OSCAL ns (or allows absent) admits it; a different (vendor)
+    namespace is not governed by an OSCAL allowed-values set.
+    """
+    for f in filters:
+        if f.get("type") == "namespace":
+            allowed = f.get("values", [])
+            ns_val = (leaf_obj or {}).get("ns") if isinstance(leaf_obj, dict) else None
+            if ns_val is None:
+                ns_val = _OSCAL_NS  # OSCAL default per spec
+            if ns_val not in allowed:
+                return False
+    return True
+
+
+def _resolve_flag_allowed_values(constraints: list, context_obj: Any,
+                                 leaf_obj: Any = None) -> dict:
+    """Resolve the union of in-scope allowed-values for one flag.
+
+    Args:
+        constraints: the allowed-values constraints governing the flag.
+        context_obj: the DEFINITION-context instance (gates are evaluated against this).
+        leaf_obj: the matched target instance carrying the flag (target-filters apply here);
+            defaults to ``context_obj`` for self/own-flag constraints.
+
+    Returns:
+        ``{"governed": bool, "allow_other": bool, "allowed": set, "constraint_ids": list}``.
+        ``governed`` is False when no allowed-values constraint is in scope (no L2 opinion).
+    """
+    if leaf_obj is None:
+        leaf_obj = context_obj
+    allowed: set = set()
+    ids: list = []
+    allow_other = False
+    governed = False
+    for con in constraints:
+        if con.get("type") != "allowed-values":
+            continue
+        gates, filters = _partition_conditions(con)
+        if not _context_gates_met(gates, context_obj):
+            continue
+        if not _target_filters_met(filters, leaf_obj):
+            continue
+        governed = True
+        ids.append(con.get("id"))
+        if con.get("allow-other"):
+            allow_other = True
+        allowed |= {v.get("value") for v in con.get("values", [])}
+    return {"governed": governed, "allow_other": allow_other,
+            "allowed": allowed, "constraint_ids": ids}
+
+
+def _flag_value_allowed(value: Any, resolved: dict) -> bool:
+    """True when ``value`` satisfies a resolved allowed-values union.
+
+    No governing constraint ⇒ no L2 opinion (True). ``allow_other`` ⇒ least-restrictive
+    shortcut (True). Otherwise the value must be in the union of in-scope value sets.
+    """
+    if not resolved.get("governed"):
+        return True
+    if resolved.get("allow_other"):
+        return True
+    return value in resolved.get("allowed", set())
+
+
+def _self_gate_ok(gate: list, instance: dict) -> bool:
+    """True when every ``(flag, [vals])`` self-gate holds against *instance*."""
+    for flag, vals in gate or []:
+        if str(instance.get(flag)) not in {str(v) for v in vals}:
+            return False
+    return True
+
+
+def _matches_resolve_value(spec: dict, instance: dict, value_key: str):
+    """Resolve the scalar value a ``matches`` check applies to, per its ``match-spec``.
+
+    Returns the string value, or ``None`` when the target does not apply here (gate not
+    met, flag/field absent, or a non-scalar). Only the self/own-flag L2 shapes are handled
+    (child-path ``matches`` targets are deferred to L3).
+    """
+    if not isinstance(instance, dict) and spec.get("kind") == "self":
+        # a bare-string field value with no flags
+        return instance if isinstance(instance, str) else None
+    if not isinstance(instance, dict):
+        return None
+    kind = spec.get("kind")
+    if not _self_gate_ok(spec.get("gate", []), instance):
+        return None
+    if kind == "flag":
+        val = instance.get(spec.get("flag"))
+        return val if isinstance(val, str) else None
+    if kind == "self":
+        val = instance.get(value_key) if value_key else None
+        return val if isinstance(val, str) else None
+    return None
+
+
+def _apply_matches(value: str, regex: str | None, datatype: str | None,
+                   location: str, field: str, identifier: str | None) -> dict | None:
+    """Apply a ``matches`` regex and/or datatype to *value*; return an error dict or None.
+
+    The regex must match the whole value (Metaschema ``matches`` is anchored); the datatype
+    reuses the shared OSCAL datatype patterns via :func:`_check_datatype`.
+    """
+    if not isinstance(value, str) or value == "":
+        return None
+    if regex:
+        try:
+            if re.fullmatch(regex, value) is None:
+                return {
+                    "error-type": "matches",
+                    "location":   location,
+                    "identifier": identifier,
+                    "field":      field,
+                    "value":      value,
+                    "expected":   {"regex": regex},
+                }
+        except re.error:
+            pass  # an uncompilable metaschema regex is skipped, not a document error
+    if datatype:
+        err = _check_datatype(value, datatype, location, field, identifier)
+        if err:
+            err["error-type"] = "matches"
+            err["expected"]["via"] = "matches"
+            return err
+    return None
+
+
+def _find_child_index(node: dict, elem: str) -> dict | None:
+    """Return *node*'s child index node whose use-name/name is *elem* (descends into
+    ``choice`` groupings), or None. Used to resolve an element step's JSON key."""
+    for ch in node.get("children", []) or []:
+        if ch.get("structure-type") == "choice":
+            found = _find_child_index(ch, elem)
+            if found is not None:
+                return found
+        elif (ch.get("use-name") or ch.get("name")) == elem:
+            return ch
+    return None
+
+
+def _count_cardinality_target(node_index: dict, instance: Any, spec: dict):
+    """Count the child elements matching a ``has-cardinality`` ``card-spec`` under
+    *instance*. Returns the count, or None when not applicable (gate unmet / non-dict)."""
+    if not isinstance(instance, dict):
+        return None
+    if not _self_gate_ok(spec.get("self_gate", []), instance):
+        return None
+    step = spec["step"]
+    child_idx = _find_child_index(node_index, step["elem"])
+    jkey = (child_idx.get("group-as") or child_idx.get("use-name")) if child_idx else None
+    jkey = jkey or step["elem"]
+    val = instance.get(jkey)
+    items = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
+    names = step.get("names")
+    return sum(1 for it in items
+               if names is None or (isinstance(it, dict) and str(it.get("name")) in names))
+
+
+def _resolve_path_pairs(node_index: dict, instance: Any, steps: list) -> list:
+    """Resolve a forward path (list of step dicts) from *instance*, returning the reached
+    ``(index_node, value)`` pairs. Element steps use the index for JSON keys (so a collection's
+    ``group-as`` plural key is honoured); flag steps read the flag off the current dict(s);
+    ``self`` stays put. Shared by the expect evaluator and the referential-integrity pass."""
+    frontier = [(node_index, instance)]
+    for st in steps:
+        nf = []
+        for nidx, inst in frontier:
+            kind = st.get("kind")
+            if kind == "self":
+                nf.append((nidx, inst))
+            elif kind == "flag":
+                if isinstance(inst, dict):
+                    v = inst.get(st["flag"])
+                    if v is not None:
+                        nf.append((None, v))
+            else:  # element
+                if not isinstance(inst, dict):
+                    continue
+                child_idx = _find_child_index(nidx, st["elem"]) if nidx else None
+                jkey = (child_idx.get("group-as") or child_idx.get("use-name")) if child_idx else st["elem"]
+                val = inst.get(jkey)
+                items = val if isinstance(val, list) else ([val] if val is not None else [])
+                names = st.get("names")
+                for it in items:
+                    if names is None or (isinstance(it, dict) and str(it.get("name")) in names):
+                        nf.append((child_idx, it))
+        frontier = nf
+    return frontier
+
+
+def _resolve_test_path(node_index: dict, instance: Any, steps: list) -> list:
+    """Resolve a forward path and return just the reached values (see
+    :func:`_resolve_path_pairs`)."""
+    return [v for _, v in _resolve_path_pairs(node_index, instance, steps)]
+
+
+def _eval_test_bool(ast: dict, node_index: dict, instance: Any) -> bool:
+    """Evaluate a restricted expect-test AST (and/or/not/exists/eq) against *instance*.
+
+    Unknown ops default to True (pass) — the classifier only promotes fully-parseable
+    tests, so this is a defensive no-false-positive guard.
+    """
+    if not ast:
+        return True
+    op = ast.get("op")
+    if op == "or":
+        return any(_eval_test_bool(a, node_index, instance) for a in ast.get("args", []))
+    if op == "and":
+        return all(_eval_test_bool(a, node_index, instance) for a in ast.get("args", []))
+    if op == "not":
+        return not _eval_test_bool(ast.get("arg"), node_index, instance)
+    if op == "exists":
+        return len(_resolve_test_path(node_index, instance, ast.get("path", []))) > 0
+    if op == "eq":
+        vals = {str(v) for v in ast.get("values", [])}
+        return any(str(r) in vals for r in _resolve_test_path(node_index, instance, ast.get("path", [])))
+    return True
+
+
+def _find_gate_context(gates: list, chain: list) -> Any:
+    """Nearest instance in ``chain`` (nearest-first) that carries every gate flag.
+
+    A context-gate (e.g. ``(.)[@type=…]``) is evaluated at the constraint's definition
+    node — the object ``(.)`` points at — which is, by construction, the nearest enclosing
+    object that owns the gating flag. Returns ``None`` when no instance in scope carries
+    the flags (the guarded constraint then simply does not apply here).
+    """
+    if not gates:
+        return chain[0] if chain else None
+    need = {g.get("flag") for g in gates}
+    for inst in chain:
+        if isinstance(inst, dict) and need <= set(inst.keys()):
+            return inst
+    return None
+
+
+def _l2b_in_scope(spec: dict, current_use_name: str, current_inst: Any,
+                  ancestors: list) -> bool:
+    """True when an L2-B element-``@name``-gated constraint applies to the current leaf.
+
+    ``spec`` is the reverse-match spec produced by the parser (``metaschema_parser.
+    _parse_l2b_target``): ``{"leaf", "segments": [{"axis", "elem", "names"}, …]}``. The last
+    segment is the *governed* element — its element name must equal ``current_use_name`` and
+    its ``@name`` predicate (if any) must match ``current_inst`` (e.g. a
+    ``prop[@name='method']/@value`` constraint governs only props named ``method``). The
+    earlier segments are matched up the ``ancestors`` chain (nearest-first
+    ``(use_name, instance)`` pairs), honoring child (``/``) vs descendant (``//``) axes and
+    ``@name`` gates.
+    """
+    segs = spec.get("segments") or []
+    if not segs:
+        return False
+
+    def _name_ok(inst, names):
+        return names is None or (isinstance(inst, dict) and str(inst.get("name")) in names)
+
+    gov = segs[-1]
+    if current_use_name != gov.get("elem"):
+        return False
+    if not _name_ok(current_inst, gov.get("names")):
+        return False
+
+    ci = 0
+    axis = segs[-1].get("axis")          # how the governed element connects upward
+    for seg in reversed(segs[:-1]):
+        if axis == "child":
+            if ci >= len(ancestors):
+                return False
+            un, inst = ancestors[ci]
+            if un != seg.get("elem") or not _name_ok(inst, seg.get("names")):
+                return False
+            ci += 1
+        else:  # descendant: match some ancestor at or above the current position
+            found = -1
+            for j in range(ci, len(ancestors)):
+                un, inst = ancestors[j]
+                if un == seg.get("elem") and _name_ok(inst, seg.get("names")):
+                    found = j
+                    break
+            if found < 0:
+                return False
+            ci = found + 1
+        axis = seg.get("axis")
+    return True
+
+
+def _resolve_allowed_values_union(constraints: list, chain: list) -> dict:
+    """Union-resolve the L2 allowed-values for one flag against an ancestor chain.
+
+    ``chain`` is nearest-first ``(use_name, instance)`` pairs: ``chain[0]`` is the flag's
+    own object (the governed element), then each enclosing element up to the document root.
+    For each L2 (``valid``) allowed-values constraint, in scope when:
+
+      * (L2-A) its context-gates hold at the nearest chain instance owning the gate flags
+        — what ``(.)`` resolves to; and/or
+      * (L2-B) its cached ``l2b-spec`` reverse-matches the ancestor chain (element-``@name``
+        gate); and
+      * its target-filters (``namespace``) hold against the leaf object (``chain[0]``).
+
+    In-scope constraints contribute their value sets to the union; ``allow-other`` is
+    least-restrictive. ``fully-compliant`` (L3) constraints are skipped. Returns
+    ``{"governed", "allow_other", "allowed", "entries", "constraint_ids"}``; ``governed`` is
+    False when nothing is in scope (⇒ no L2 opinion).
+    """
+    instances = [inst for _, inst in chain]
+    leaf_obj = instances[0] if instances else {}
+    ancestors = chain[1:]
+    cur_use_name = chain[0][0] if chain else None
+    allowed: set = set()
+    entries: dict = {}
+    ids: list = []
+    allow_other = False
+    governed = False
+    for con in constraints:
+        if con.get("type") != "allowed-values":
+            continue
+        if con.get("validation-level") == "fully-compliant":
+            continue
+        filters = _partition_conditions(con)[1]
+        if not _target_filters_met(filters, leaf_obj):
+            continue
+        spec = con.get("l2b-spec")
+        if spec is not None:
+            if not _l2b_in_scope(spec, cur_use_name, leaf_obj, ancestors):
+                continue
+        else:
+            gates = _partition_conditions(con)[0]
+            ctx = _find_gate_context(gates, instances)
+            if gates and ctx is None:
+                continue
+            if not _context_gates_met(gates, ctx or {}):
+                continue
+        governed = True
+        ids.append(con.get("id"))
+        if con.get("allow-other"):
+            allow_other = True
+        for v in con.get("values", []):
+            val = v.get("value")
+            allowed.add(val)
+            entries.setdefault(val, v.get("description", ""))
+    return {"governed": governed, "allow_other": allow_other, "allowed": allowed,
+            "entries": entries, "constraint_ids": ids}
 
 
 # Progressive content validation states. Each level implies all prior levels passed.
@@ -451,6 +997,48 @@ class UnsupportedModelOperation(OSCALError, AttributeError):
         )
 
 
+class TransactionError(OSCALError):
+    """Raised when an :meth:`OSCAL.transaction` block cannot be committed.
+
+    A transaction aborts — rolling every enrolled document back to its pre-transaction
+    state — when commit-time checks fail: a structural metaschema failure, a *dangling*
+    cross-reference (a referenced id/uuid that resolves nowhere in scope), or an
+    *unverifiable* import-eligible reference (one that could only live in an imported
+    document, checked while the import tree is unresolved) when the caller did not opt in
+    via ``allow_unresolved_refs``. The offending items are carried on :attr:`problems`
+    for inspection/telemetry.
+
+    Attributes:
+        problems (list): The specific failures (``_RefProblem`` entries or validation
+            error dicts) that caused the abort; empty for a plain guard failure.
+    """
+
+    default_user_message = "The changes could not be saved because they failed validation."
+
+    def __init__(self, message: str, problems: "list | None" = None):
+        """Initialize the error.
+
+        Args:
+            message (str, required): Developer-facing detail (the default ``str``).
+            problems (list, optional): The failures that triggered the abort.
+        """
+        self.problems = problems or []
+        super().__init__(message)
+
+
+class _TxnAbort(Exception):
+    """Internal control-flow signal raised by :meth:`Transaction.abort`.
+
+    Unwinds the ``with`` block and rolls the transaction back *without* surfacing an
+    exception to the caller — an explicit, exception-free abort. Never escapes
+    :meth:`OSCAL.transaction`; not part of the public API.
+    """
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+        super().__init__(reason)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Current actor (view/session) — identifies who is performing mutations, so a
 # Workspace's write locks can be enforced per view on shared documents.
@@ -535,6 +1123,247 @@ class ImportResult:
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Transactions — atomic, validated, all-or-nothing batches of mutations.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+@dataclass(frozen=True)
+class _Reference:
+    """A cross-reference discovered in a document, for commit-time integrity checking.
+
+    Attributes:
+        value (str): The bare id/uuid referenced (no leading ``#``).
+        kinds (tuple): Candidate element kinds (subset of ``_RESOLVE_KINDS``); empty
+            means "any kind".
+        local_only (bool): True when the referent MUST live in this document (e.g. an
+            SSP ``component-uuid``); False when it may resolve through the import tree.
+        location (str): Human-readable JSON location of the reference, for diagnostics.
+    """
+    value: str
+    kinds: tuple
+    local_only: bool
+    location: str
+
+
+@dataclass(frozen=True)
+class _RefProblem:
+    """A referential-integrity problem found at commit.
+
+    Attributes:
+        status (str): ``"dangle"`` (resolves nowhere in scope) or ``"unverifiable"``
+            (import-eligible, but the import tree is unresolved so it cannot be checked).
+        reference (_Reference): The offending reference.
+        document_uuid (str): Root uuid of the document the reference was found in.
+    """
+    status: str
+    reference: _Reference
+    document_uuid: str
+
+
+class Savepoint:
+    """A named point within a :class:`Transaction` to which state can be rolled back.
+
+    Created by :meth:`Transaction.savepoint`; pass it to :meth:`Transaction.rollback_to`
+    to undo mutations made since the savepoint while keeping the surrounding transaction
+    open. Holds a deep-copied snapshot of every enrolled document's content at the moment
+    of creation. Treat it as an opaque token.
+    """
+
+    __slots__ = ("name", "_snapshots", "_seq")
+
+    def __init__(self, name: str, snapshots: dict, seq: int):
+        self.name = name
+        self._snapshots = snapshots   # id(doc) -> deepcopy(doc._dict)
+        self._seq = seq               # position in the owning transaction's stack
+
+
+class Transaction:
+    """Coordinator for an atomic, validated batch of mutations (see :meth:`OSCAL.transaction`).
+
+    A transaction defers each mutation's revision stamp and validation to a single commit:
+    mutations accumulate on the live document(s), and on clean exit the transaction runs
+    referential-integrity and (optionally) structural metaschema validation, then applies
+    one coalesced revision stamp per changed document. On any failure or exception it rolls
+    every enrolled document back to its pre-transaction content — all-or-nothing.
+
+    The object is a *coordinator* over one or more *participant* documents. Today only the
+    root document participates; the participant machinery (snapshots, dirty-tracking,
+    two-phase commit) is in place so cross-import-tree (multi-document) transactions can be
+    enabled later without restructuring — see :meth:`enroll`.
+
+    Attribute access not found on the transaction delegates to the root document, so a
+    document's own mutators can be called on the handle (``tx.add_component(...)`` ==
+    ``doc.add_component(...)``), mirroring a database session.
+    """
+
+    def __init__(self, root: "OSCAL", *, validate: bool = True, check_refs: bool = True,
+                 strict_refs: bool = True, stamp: bool = True,
+                 allow_unresolved_refs: bool = False):
+        self.root                  = root
+        self.do_validate           = validate
+        self.do_check_refs         = check_refs
+        self.strict_refs           = strict_refs
+        self.do_stamp              = stamp
+        self.allow_unresolved_refs = allow_unresolved_refs
+        self._participants: dict[int, "OSCAL"] = {}
+        self._entry:        dict[int, dict]    = {}   # id(doc) -> capture at enroll
+        self._dirty:        set[int]           = set()
+        self._savepoints:   list[Savepoint]    = []
+        self._active                           = True
+
+    # -- content capture / restore -------------------------------------------
+    @staticmethod
+    def _capture(doc: "OSCAL") -> dict:
+        """Snapshot a participant's content and identity bookkeeping for rollback."""
+        return {
+            "dict":          copy.deepcopy(doc._dict),
+            "uuid":          doc.uuid,
+            "last_modified": doc.last_modified,
+            "is_unsaved":    doc.is_unsaved,
+        }
+
+    @staticmethod
+    def _restore(doc: "OSCAL", snap: dict) -> None:
+        """Restore a participant from a :meth:`_capture` snapshot and drop derived caches."""
+        doc._dict          = copy.deepcopy(snap["dict"])
+        doc.uuid           = snap["uuid"]
+        doc.last_modified  = snap["last_modified"]
+        doc.is_unsaved     = snap["is_unsaved"]
+        doc._identity_override = {}
+        doc._import_tree   = None   # invalidate the derived import tree cache
+
+    # -- enrollment / dirty-tracking -----------------------------------------
+    def enroll(self, doc: "OSCAL") -> "Transaction":
+        """Enroll a document as a participant (idempotent). Only the root in v1.
+
+        Cross-document (import-tree) mutation is deferred: enrolling any document other
+        than the root raises :class:`TransactionError`. The coordinator/participant design
+        is already multi-document; this guard is the only thing to lift when cross-import
+        writes are enabled.
+        """
+        if doc is not self.root and id(doc) not in self._participants:
+            raise TransactionError(
+                "Cross-document transactions are not yet enabled; only the root document "
+                "may be enrolled in a transaction."
+            )
+        if id(doc) not in self._participants:
+            self._participants[id(doc)] = doc
+            self._entry[id(doc)] = Transaction._capture(doc)
+            doc._txn = self
+        return self
+
+    def mark_dirty(self, doc: "OSCAL") -> None:
+        """Record that ``doc`` was mutated during this transaction (drives the commit stamp)."""
+        self._dirty.add(id(doc))
+
+    # -- savepoints -----------------------------------------------------------
+    def savepoint(self, name: "str | None" = None) -> Savepoint:
+        """Create a savepoint capturing all participants' current content."""
+        snaps = {did: copy.deepcopy(doc._dict) for did, doc in self._participants.items()}
+        sp = Savepoint(name or f"sp{len(self._savepoints)}", snaps, len(self._savepoints))
+        self._savepoints.append(sp)
+        return sp
+
+    def rollback_to(self, sp: Savepoint) -> None:
+        """Restore all participants to ``sp`` and discard it and any later savepoints."""
+        for did, doc in self._participants.items():
+            if did in sp._snapshots:
+                doc._dict = copy.deepcopy(sp._snapshots[did])
+                doc._import_tree = None
+        self._savepoints = self._savepoints[:sp._seq]
+
+    def release_savepoint(self, sp: Savepoint) -> None:
+        """Keep changes made since ``sp`` but drop it (and later savepoints) from the stack."""
+        self._savepoints = self._savepoints[:sp._seq]
+
+    def abort(self, reason: str = "") -> None:
+        """Abort the transaction: roll back and exit the ``with`` block without raising."""
+        raise _TxnAbort(reason)
+
+    @property
+    def dirty(self) -> bool:
+        """bool: True if any participant was mutated during the transaction."""
+        return bool(self._dirty)
+
+    # -- delegation to the root document -------------------------------------
+    def __getattr__(self, name: str):
+        # Only reached for names not found on the Transaction itself; forward to the root
+        # document so its mutators are callable on the handle. Guard against recursion
+        # before ``root`` is assigned.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        root = self.__dict__.get("root")
+        if root is None:
+            raise AttributeError(name)
+        return getattr(root, name)
+
+    # -- commit / rollback (driven by OSCAL.transaction) ---------------------
+    def _rollback_all(self) -> None:
+        """Restore every participant to its pre-transaction state and end the transaction."""
+        for did, doc in self._participants.items():
+            Transaction._restore(doc, self._entry[did])
+            doc._txn = None
+        self._active = False
+
+    def _finish(self) -> None:
+        """Detach the transaction from its participants after a successful commit."""
+        for doc in self._participants.values():
+            doc._txn = None
+        self._active = False
+
+    def _commit(self) -> None:
+        """Validate all participants and apply one coalesced stamp each; raise on failure.
+
+        Runs in three phases across every participant: (1) referential integrity —
+        dangling references abort unconditionally, unverifiable import-eligible references
+        abort unless ``allow_unresolved_refs``; (2) structural metaschema validation when
+        ``validate`` is set; (3) one revision stamp per dirty participant. Raising leaves
+        the live content mutated — the caller (:meth:`OSCAL.transaction`) rolls back.
+        """
+        # Phase 1 — referential integrity (reads local scope + import tree; never resolves).
+        if self.do_check_refs:
+            problems: list = []
+            for doc in self._participants.values():
+                problems.extend(doc._run_reference_check())
+            dangles = [p for p in problems if p.status == "dangle"]
+            unver   = [p for p in problems if p.status == "unverifiable"]
+            if dangles:
+                detail = "; ".join(
+                    f"{p.reference.value!r} at {p.reference.location}" for p in dangles[:5]
+                )
+                raise TransactionError(
+                    f"{len(dangles)} dangling reference(s) — resolves nowhere in scope: {detail}",
+                    problems=dangles,
+                )
+            if unver and not self.allow_unresolved_refs:
+                first = unver[0].reference
+                raise TransactionError(
+                    f"{len(unver)} import-eligible reference(s) cannot be verified because the "
+                    f"import tree is unresolved; resolve imports or pass allow_unresolved_refs=True "
+                    f"(first: {first.value!r} at {first.location})",
+                    problems=unver,
+                )
+            for p in unver:
+                logger.warning(
+                    f"transaction: unverified import-eligible reference {p.reference.value!r} "
+                    f"at {p.reference.location} (imports unresolved; permitted by "
+                    f"allow_unresolved_refs)."
+                )
+        # Phase 2 — structural metaschema validation.
+        if self.do_validate:
+            for doc in self._participants.values():
+                if not doc.validate():
+                    raise TransactionError(
+                        f"structural validation failed for {doc.model or 'document'} "
+                        f"{doc.uuid or ''}".strip(),
+                        problems=list(getattr(doc, "validation_errors", []) or []),
+                    )
+        # Phase 3 — one coalesced revision stamp per changed participant.
+        if self.do_stamp:
+            for did in self._dirty:
+                self._participants[did]._stamp_revision()
+        self._finish()
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # OSCAL CLASS
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class OSCAL:
@@ -595,6 +1424,13 @@ class OSCAL:
         boundary and show the user ``err.user_message`` instead of internals.
 
     """
+
+    # Validation error types that do not, by themselves, block import resolution. Class
+    # attribute (shared default = module-level :data:`IMPORT_NONBLOCKING_ERROR_TYPES`);
+    # override on an instance or subclass to widen/narrow the allow-list. Consumed by
+    # :attr:`import_blocking_errors` and the import gate in :meth:`validate`.
+    import_nonblocking_error_types: frozenset = IMPORT_NONBLOCKING_ERROR_TYPES
+
     def __init_common__(self, ttl: int = 0, support_db_conn: str = "", support_db_type: str = ""):
 
         logger.debug("Initializing common OSCAL class properties...")
@@ -650,6 +1486,9 @@ class OSCAL:
         # Explicit uuid/last-modified set by the current mutation; consumed by the
         # post-mutation revision stamp so an explicit value wins over the auto-stamp.
         self._identity_override: dict = {}
+        # Active transaction (Transaction) coordinating this document's mutations, or None.
+        # When set, mutations defer their revision stamp/validation to a single commit.
+        self._txn: "Transaction | None" = None
 
         # Validation Status
         self.validation_status: dict[str, bool | None] = {
@@ -659,8 +1498,22 @@ class OSCAL:
             "allowed-values": None,  # every constrained value is within its enumerated set
             "cardinality":    None,  # all arrays satisfy their min-occurs/max-occurs bounds
             "choice":         None,  # every choice is mutually exclusive (at most one member) and has a member when one is required
+            "constraints":    None,  # L2 metaschema constraint families: matches / has-cardinality / expect
+            "references":     None,  # Phase-3 referential integrity + uniqueness (separate dimension; NOT in is_valid)
         }
         self.validation_errors: list[dict] = []  # structured errors from the most recent validate() call
+        # L3 (full-compliance) result, set only by validate_full(): None = not yet
+        # evaluated, True/False once the XML/XPath pass has run. is_fully_compliant
+        # exposes this as a tri-state. Reset to None whenever validate() re-runs.
+        self._fully_compliant: bool | None = None
+        self.full_validation_errors: list[dict] = []  # L3 errors from the most recent validate_full()
+        # Identifier indexes built during the validation walk (one pass, not a second
+        # traversal). Each maps an id/uuid value -> list of occurrence records
+        # {"value", "key", "path"} where "key" is the containing collection's JSON key and
+        # "path" is the JSON path to the object carrying the identifier. A value with more
+        # than one record is a duplicate (consumed by the future uniqueness check).
+        self._id_index: dict[str, list[dict]] = {}
+        self._uuid_index: dict[str, list[dict]] = {}
         self.errors = {} # A dictionary to hold any acquisition, validation or importing errors encountered during processing
 
         # Get the OSCAL support object
@@ -824,14 +1677,85 @@ class OSCAL:
     # -------------------------------------------------------------------------
     @property
     def is_valid(self) -> bool:
-        """bool: True when content passes OSCAL validation (``content_state >= VALID``)."""
+        """bool: True when content passes **L2 (``valid``)** validation (``content_state >= VALID``).
+
+        L2 validity requires every phase to pass with the checks the library evaluates
+        natively on the JSON: structure, cardinality, choice, data-types, and the
+        **natively-evaluable** allowed-values (those tagged ``valid`` in the metaschema
+        index). Ancestor/cross-path-scoped allowed-values (tagged ``fully-compliant``/L3)
+        and the other constraint families (``matches``/``expect``/``is-unique``/…) are
+        **not** enforced here — they are deferred to :meth:`validate_full` and reflected by
+        :attr:`is_fully_compliant`. This tier is designed to meet or exceed the guarantees
+        of the NIST-published OSCAL JSON Schema. For gating that only needs structural
+        soundness (tree building, import resolution), use :attr:`is_minimally_valid`.
+        """
         return self.content_state >= ContentState.VALID
+
+    # -------------------------------------------------------------------------
+    @property
+    def is_fully_compliant(self) -> bool | None:
+        """bool | None: Tri-state L3 (``fully-compliant``) conformance.
+
+        L3 is the strictest tier: L2 validity **plus** every constraint the automatic walk
+        defers — ancestor/cross-path allowed-values and the ``matches``/``expect``/
+        ``is-unique``/``index``/``index-has-key``/``has-cardinality`` families — evaluated
+        against XML with a real Metapath/XPath engine by :meth:`validate_full`.
+
+        Returns:
+            * ``False`` when the document is not even L2-:attr:`is_valid` (it cannot be
+              fully compliant).
+            * ``None`` when L2 passes but full validation has not been run yet (unknown).
+            * ``True`` / ``False`` once :meth:`validate_full` has evaluated the L3 checks.
+        """
+        if not self.is_valid:
+            return False
+        return self._fully_compliant
+
+    # -------------------------------------------------------------------------
+    @property
+    def reference_findings(self) -> list[dict]:
+        """list[dict]: Phase-3 referential-integrity / uniqueness findings from the most recent
+        :meth:`validate` — the ``unresolved-reference`` / ``duplicate-key`` subset of
+        :attr:`validation_errors`. Each carries ``level`` (ERROR/WARNING/INFORMATIONAL) and
+        ``rule-source`` (``metaschema``/``library``). These form a separate dimension reported by
+        ``validation_status['references']`` and do **not** affect :attr:`is_valid`."""
+        return [e for e in self.validation_errors
+                if e.get("error-type") in ("unresolved-reference", "duplicate-key")]
+
+    # -------------------------------------------------------------------------
+    @property
+    def is_minimally_valid(self) -> bool:
+        """bool: True when content is well-formed and has no *structural* validation errors.
+
+        Minimal validity is the reliable, operational bar: the document is well-formed and
+        free of structural errors (``missing-required`` / ``cardinality`` / ``choice``),
+        i.e. its hierarchy is complete and navigable. Value-quality errors (``allowed-values``,
+        ``invalid-type``) do not affect it — those are the gap between minimal and full
+        (:attr:`is_valid`) validity. Summary trees and import resolution gate on this, not
+        on full validity. Structural vs value-quality is the same split used by
+        :attr:`import_blocking_errors` / :attr:`import_nonblocking_error_types`.
+        """
+        return self.is_well_formed and not self.import_blocking_errors
 
     # -------------------------------------------------------------------------
     @property
     def imports_resolved(self) -> bool:
         """bool: True when all imports resolved (``content_state >= IMPORTS_RESOLVED``)."""
         return self.content_state >= ContentState.IMPORTS_RESOLVED
+
+    # -------------------------------------------------------------------------
+    @property
+    def import_blocking_errors(self) -> list[dict]:
+        """list[dict]: Validation errors that block import resolution.
+
+        Every error from the most recent :meth:`validate` whose ``error-type`` is *not*
+        on the non-blocking allow-list (:attr:`import_nonblocking_error_types`). Empty
+        when the document is valid, or when its only errors are non-blocking (e.g.
+        ``allowed-values`` / ``invalid-type``) — in which case :meth:`validate` still
+        resolves imports so ``import_list`` is populated. See docs/VALIDATION.md.
+        """
+        allow = self.import_nonblocking_error_types
+        return [e for e in self.validation_errors if e.get("error-type") not in allow]
 
     # -------------------------------------------------------------------------
     @classmethod
@@ -1012,7 +1936,9 @@ class OSCAL:
         """Create a new OSCAL document from a template.
 
         Must be called on a specific model class (``Catalog.new()``,
-        ``Profile.new()``, etc.), not on ``OSCAL`` directly.
+        ``Profile.new()``, etc.), not on ``OSCAL`` directly. The new document is given its
+        own fresh root ``uuid`` and ``last-modified`` (:meth:`_stamp_revision`) so it never
+        carries the packaged stub template's shared placeholder uuid.
 
         Args:
             title (str, required): Document title (stored in metadata).
@@ -1032,7 +1958,12 @@ class OSCAL:
                 "OSCAL.new() requires a specific model class. "
                 "Use Catalog.new(), Profile.new(), etc."
             )
-        model    = cls.__name__.lower()
+        # The OSCAL model name rarely equals the lowercased class name (e.g. SSP ->
+        # system-security-plan, Mapping -> mapping-collection). Use the authoritative
+        # class->name mapping from the model registry; only catalog/profile coincide with
+        # the lowercased class name, so a bare .lower() silently stubbed the other six.
+        model    = next((name for name, kls in _MODEL_REGISTRY.items() if kls is cls),
+                        cls.__name__.lower())
         instance = create_new_oscal_content(model, title, version, published)
         if instance is None:
             instance = cls.__new__(cls)
@@ -1299,13 +2230,13 @@ class OSCAL:
             )
             target_entry.setdefault("href_list", []).append(retry_item)
             self._import_tree = None
-            self._refresh_content_state()
+            self._after_import_resolution_changed()
             return False
 
         retry_item: dict = {"href": resolved, "original": False}
         try:
             child = OSCAL.acquire(resolved)
-            if child.is_valid:
+            if child.is_minimally_valid:
                 retry_item["status"]        = ImportState.READY
                 target_entry["href_valid"]  = resolved
                 target_entry["object"]      = child
@@ -1341,7 +2272,7 @@ class OSCAL:
             )
         target_entry.setdefault("href_list", []).append(retry_item)
         self._import_tree = None
-        self._refresh_content_state()
+        self._after_import_resolution_changed()
         return target_entry["status"] == ImportState.READY
 
     # -------------------------------------------------------------------------
@@ -1413,7 +2344,7 @@ class OSCAL:
                 tree_imports[idx]["status"]  = ImportState.IGNORED
                 tree_imports[idx]["failure"] = None
 
-        self._refresh_content_state()
+        self._after_import_resolution_changed()
         logger.info(f"ignore_import: '{href}' marked as IGNORED.")
         return True
 
@@ -1587,6 +2518,12 @@ class OSCAL:
             logger.error(f"add_import: '{href}' is already imported by this {self.model}.")
             return ImportResult("duplicate", entry=existing, message=f"'{href}' is already imported.")
 
+        # Enforce import-type rules: only appropriate models may be imported here.
+        rejected = self._reject_import_type(spec, href)
+        if rejected is not None:
+            logger.error(f"add_import: {rejected.message}")
+            return rejected
+
         # Reuse a back-matter resource already targeting this href, else create one
         # through the shared append_resource path. The href becomes the resource's
         # single rlink and version is folded into props.
@@ -1694,6 +2631,15 @@ class OSCAL:
                          "(system-security-plan, assessment-plan, assessment-results, "
                          "plan-of-action-and-milestones)."),
             )
+
+        # Enforce import-type rules when repointing to a new target (supplied via rlinks).
+        # (The no-import bootstrap path below delegates to add_import, which gates its own
+        # href; the in-place metadata edit with no rlinks leaves the target unchanged.)
+        if rlinks:
+            rejected = self._reject_import_type(spec, str(rlinks[0].get("href", "")).strip())
+            if rejected is not None:
+                logger.error(f"update_import: {rejected.message}")
+                return rejected
 
         key = spec["href"]
         entries = self._import_entries()
@@ -1871,6 +2817,62 @@ class OSCAL:
         return False
 
     # -------------------------------------------------------------------------
+    def _import_base_path(self) -> str:
+        """Directory/base URL used to resolve this document's relative import hrefs.
+
+        The directory of this document's own href (or working directory when it has no
+        href). Shared by :meth:`resolve_imports` and the add/update import type gate.
+        """
+        src = self.href or self.href_original
+        if not src:
+            return os.getcwd()
+        parsed_src = urlparse(src)
+        if parsed_src.scheme and len(parsed_src.scheme) > 1:  # real URL (not a drive letter)
+            return src.rsplit("/", 1)[0] + "/"
+        return os.path.dirname(os.path.abspath(src))
+
+    # -------------------------------------------------------------------------
+    def _peek_import_model(self, href: str) -> Optional[str]:
+        """Best-effort load of *href* (relative to this document) → its OSCAL model.
+
+        Returns the imported document's ``model``, or None when it is a fragment ref, is
+        blank, or cannot be loaded/classified. The load is registry-shared with
+        :meth:`resolve_imports`, so a subsequent resolve reuses it rather than re-fetching.
+        Used by the add/update import type gate to reject inappropriate imports before
+        committing them.
+        """
+        if not href or href.startswith("#"):
+            return None
+        resolved = _resolve_href(self._import_base_path(), href)
+        try:
+            return self._acquire_shared(resolved).model or None
+        except Exception as exc:  # load failures are handled downstream by resolve_imports
+            logger.debug(f"_peek_import_model: could not load '{href}': {exc}")
+            return None
+
+    # -------------------------------------------------------------------------
+    def _reject_import_type(self, spec: dict, href: str) -> Optional["ImportResult"]:
+        """Return an ``invalid`` ImportResult when *href*'s model is not importable here.
+
+        Enforces per-model import-type rules (``spec['allowed_imports']``): the target is
+        loaded (best-effort) and its model checked against the allow-set. Only a
+        *positively determined* disallowed model is rejected; an undeterminable target
+        (unreachable/not-yet-OSCAL) is left to :meth:`resolve_imports` to flag. Returns
+        None when the import type is acceptable (or cannot be determined).
+        """
+        allowed = spec.get("allowed_imports")
+        if not allowed or not href or href.startswith("#"):
+            return None
+        model = self._peek_import_model(href)
+        if model is not None and model not in allowed:
+            return ImportResult(
+                "invalid",
+                message=(f"a {self.model} may import only "
+                         f"{', '.join(sorted(allowed))}; '{href}' is a {model}."),
+            )
+        return None
+
+    # -------------------------------------------------------------------------
     def _place_import_entry(self, spec: dict, import_entry: dict) -> Optional[str]:
         """Insert *import_entry* into the content, replacing an empty placeholder.
 
@@ -1962,6 +2964,22 @@ class OSCAL:
         self._on_content_mutated()
 
     # -------------------------------------------------------------------------
+    def _after_import_resolution_changed(self) -> None:
+        """Refresh derived state after an import's *resolution* changed without editing the
+        document (e.g. :meth:`retry_import` supplied a replacement source, or
+        :meth:`ignore_import` marked an entry ignored).
+
+        Distinct from :meth:`_after_imports_changed`: that hook is for structural edits to the
+        document's own ``imports`` (add/remove), so it re-stamps the revision via
+        :meth:`_on_content_mutated`. Resolution changes do **not** edit ``_dict`` — the same
+        document now simply points at a located/ignored source — so this hook must NOT re-stamp
+        the root uuid/last-modified. Base behavior is just to recompute ``content_state``;
+        subclasses with derived structures (e.g. :class:`~oscal.oscal_controls.Profile` with its
+        ``controls_tree``) override this to rebuild them from the updated ``import_list``.
+        """
+        self._refresh_content_state()
+
+    # -------------------------------------------------------------------------
     def _identity_key(self) -> tuple | None:
         """Return this document's composite content-identity key, or None.
 
@@ -2042,7 +3060,7 @@ class OSCAL:
         child = OSCAL.acquire(resolved, cache=cache_directive)
         child._registry = self._registry
 
-        if child.is_valid:
+        if child.is_minimally_valid:
             key = child._identity_key()
             if key is not None:
                 if not force_reload:
@@ -2161,16 +3179,7 @@ class OSCAL:
 
         # --- resolve base directory for relative hrefs ---
         if not base_path:
-            src = self.href or self.href_original
-            if src:
-                parsed_src = urlparse(src)
-                if parsed_src.scheme and len(parsed_src.scheme) > 1:
-                    # Real URL (not a Windows drive letter like 'C')
-                    base_path = src.rsplit("/", 1)[0] + "/"
-                else:
-                    base_path = os.path.dirname(os.path.abspath(src))
-            else:
-                base_path = os.getcwd()
+            base_path = self._import_base_path()
 
         # --- collect raw hrefs from dict ---
         raw_hrefs: list[str] = []
@@ -2195,10 +3204,15 @@ class OSCAL:
         # --- load each referenced document (shared for both branches) ---
         loaded_hrefs: set[str] = set()  # tracks resolved hrefs already loaded this pass
         for raw_href in raw_hrefs:
+            # A back-matter fragment ref (#uuid) is not itself a loadable location — it is
+            # resolved through the cited resource's rlinks, which are appended below. So the
+            # fragment is never placed in href_list: for a valid resource the list holds only
+            # the resolved rlinks; for a missing/invalid resource it stays blank. A direct
+            # href seeds the list with itself.
             entry: dict = {
                 "href_original": raw_href,
                 "href_valid":    "",
-                "href_list":     [{"href": raw_href, "original": True}],
+                "href_list":     [] if raw_href.startswith("#") else [{"href": raw_href, "original": True}],
                 "status":        ImportState.NOT_LOADED,
                 "is_valid":      False,
                 "is_local":      None,
@@ -2280,7 +3294,7 @@ class OSCAL:
                     rlinks_tried.append(resolved)
                     try:
                         child = self._acquire_shared(resolved, cache_directive)
-                        if child.is_valid:
+                        if child.is_minimally_valid:
                             item["status"]      = ImportState.READY
                             entry["href_valid"] = resolved
                             entry["object"]     = child
@@ -2853,9 +3867,15 @@ class OSCAL:
 
         Returns True only when every phase passes (content_state reaches VALID).
         """
-        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
+        for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints", "references"):
             self.validation_status[phase] = None
         self.validation_errors = []
+        # Any prior L3 result is invalidated by re-running the L2 walk.
+        self._fully_compliant = None
+        self.full_validation_errors = []
+        # Rebuilt by the walk below (same single traversal).
+        self._id_index = {}
+        self._uuid_index = {}
 
         if format and format not in OSCAL_FORMATS:
             logger.error(f"Validation format '{format}' is not a recognized OSCAL format.")
@@ -2868,7 +3888,7 @@ class OSCAL:
         index = self._support.get_metaschema_index(self.oscal_version, self.model)
         if index is None:
             logger.warning("Metaschema index unavailable; treating all validation phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints", "references"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -2880,7 +3900,7 @@ class OSCAL:
 
         if not isinstance(model_instance, dict) or model_nodes is None:
             logger.warning("Cannot locate model root or index nodes; treating all phases as passed.")
-            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice"):
+            for phase in ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints", "references"):
                 self.validation_status[phase] = True
             self.content_state = ContentState.VALID
             if self.content_state < ContentState.IMPORTS_RESOLVED:
@@ -2891,17 +3911,38 @@ class OSCAL:
         errors: list[dict] = []
         self._walk_instance(model_instance, model_nodes, errors, f"/{self.model}")
 
+        # Phase 3 — JSON-native referential integrity + uniqueness. A separate dimension:
+        # its findings are appended to validation_errors (so consumers surface them, each
+        # tagged with `level` and `rule-source`) but their error-types are NOT in any
+        # is_valid-gating phase, so is_valid is unaffected (see `_phases` below).
+        reference_findings = self._eval_references(model_instance, model_nodes, f"/{self.model}")
+        errors.extend(reference_findings)
+
         struct_errors      = [e for e in errors if e["error-type"] == "missing-required"]
         dtype_errors       = [e for e in errors if e["error-type"] == "invalid-type"]
         av_errors          = [e for e in errors if e["error-type"] == "allowed-values"]
         cardinality_errors = [e for e in errors if e["error-type"] == "cardinality"]
         choice_errors      = [e for e in errors if e["error-type"] == "choice"]
+        # L2 metaschema constraint families (regex/datatype `matches`, `has-cardinality`,
+        # and `expect`) report under their own phase so they do not perturb the structural
+        # or pure datatype/allowed-values phase flags.
+        constraint_errors  = [e for e in errors
+                              if e["error-type"] in ("matches", "has-cardinality", "constraint-violation")]
 
         self.validation_status["structure"]      = (len(struct_errors)      == 0)
         self.validation_status["data-types"]     = (len(dtype_errors)       == 0)
         self.validation_status["allowed-values"] = (len(av_errors)          == 0)
         self.validation_status["cardinality"]    = (len(cardinality_errors) == 0)
         self.validation_status["choice"]         = (len(choice_errors)      == 0)
+        self.validation_status["constraints"]    = (len(constraint_errors)  == 0)
+        # Referential dimension: fails only on ERROR-level findings; WARNING/INFORMATIONAL
+        # are advisory and leave the status True. Excluded from the is_valid `_phases` gate.
+        ref_errors = [e for e in reference_findings if e.get("level", "ERROR") == "ERROR"]
+        self.validation_status["references"]     = (len(ref_errors)         == 0)
+        # Differentiate rule origin uniformly: metaschema-walk errors are metaschema-defined;
+        # library findings already set rule-source="library".
+        for e in errors:
+            e.setdefault("rule-source", "metaschema")
         self.validation_errors = errors
 
         for e in errors:
@@ -2910,7 +3951,7 @@ class OSCAL:
                 f"field={e.get('field', '')} value={e.get('value')!r}"
             )
 
-        _phases = ("structure", "data-types", "allowed-values", "cardinality", "choice")
+        _phases = ("structure", "data-types", "allowed-values", "cardinality", "choice", "constraints")
         all_passed = all(self.validation_status[p] for p in _phases)
         if all_passed:
             self.content_state = ContentState.VALID
@@ -2920,20 +3961,312 @@ class OSCAL:
             failed = [p for p in _phases if not self.validation_status[p]]
             logger.info(f"Validation failed phases: {failed} ({len(errors)} total error(s))")
 
-        if self.is_valid and self.content_state < ContentState.IMPORTS_RESOLVED:
+        # Resolve imports when nothing *blocking* remains: either the document is valid,
+        # or its only errors are non-blocking (e.g. allowed-values / invalid-type). In the
+        # latter case content_state stays WELL_FORMED (resolve_imports only advances to
+        # IMPORTS_RESOLVED from VALID), so is_valid stays False while import_list is still
+        # populated — a not-quite-valid document's references remain followable.
+        if self.content_state < ContentState.IMPORTS_RESOLVED and not self.import_blocking_errors:
+            if not self.is_valid:
+                logger.info(
+                    "Resolving imports despite %d non-blocking validation error(s) "
+                    "(types: %s).",
+                    len(self.validation_errors),
+                    sorted({e.get("error-type") for e in self.validation_errors}),
+                )
             self.resolve_imports()
 
         return self.is_valid
 
     # -------------------------------------------------------------------------
+    def validate_full(self) -> bool | None:
+        """Run L3 (``fully-compliant``) validation and set :attr:`is_fully_compliant`.
+
+        L3 covers every constraint the automatic L2 walk defers: ancestor/cross-path-scoped
+        allowed-values (tagged ``fully-compliant`` in the index) and the other rule families
+        captured verbatim in the index (``matches``, ``expect``, ``is-unique``, ``index``,
+        ``index-has-key``, ``has-cardinality``). These targets are Metapath/XPath-3.x against
+        the OSCAL **XML**, so the engine evaluates them on the XML projection of ``_dict``
+        rather than re-implementing XPath over JSON.
+
+        .. note::
+           **Not yet implemented.** The L3 engine (XML projection + Metapath evaluation +
+           ``has-oscal-namespace`` support + error mapping, with result caching invalidated
+           on mutation) is the next step-2 build item; it is deferred pending the design
+           decision on absolute vs. ``//``-prefixed targets and XML-oriented paths over
+           JSON-primary data. Until then this records nothing and leaves
+           :attr:`is_fully_compliant` as ``None`` (unknown) when the document is L2-valid.
+
+        Returns:
+            bool | None: :attr:`is_fully_compliant` after the pass — currently ``False`` when
+            not L2-:attr:`is_valid`, otherwise ``None`` (L3 not yet evaluated).
+        """
+        if not self.is_valid:
+            self._fully_compliant = None  # is_fully_compliant already reports False
+            self.full_validation_errors = []
+            return self.is_fully_compliant
+        logger.info(
+            "validate_full: L3 constraint engine not yet implemented; "
+            "is_fully_compliant remains unknown (None)."
+        )
+        self._fully_compliant = None
+        self.full_validation_errors = []
+        return self.is_fully_compliant
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _record_identifier(index: dict, value: Any, location: str) -> None:
+        """Record one id/uuid occurrence into *index*, keyed by the identifier value.
+
+        *index* maps each value to a list of occurrence records
+        ``{"value", "key", "path"}`` — ``key`` is the JSON key of the collection that
+        contains the object (derived from the last path segment, array index stripped;
+        e.g. ``/component-definition/components[0]`` -> ``components``), and ``path`` is
+        the JSON path to the object itself. A value with more than one record is a
+        duplicate. Only non-empty string values are indexed.
+        """
+        if not isinstance(value, str) or not value:
+            return
+        last_segment = location.rsplit("/", 1)[-1]
+        parent_key = re.sub(r"\[\d+\]$", "", last_segment)
+        index.setdefault(value, []).append(
+            {"value": value, "key": parent_key, "path": location})
+
+    # -------------------------------------------------------------------------
+    def _eval_node_matches(self, node: dict, instance: Any, location: str,
+                           node_name: str | None, identifier: str | None,
+                           errors: list[dict]) -> None:
+        """Evaluate L2 ``matches`` (regex/datatype) declared on *node* against *instance*.
+
+        *instance* is the node's object (a dict for elements/fields-with-flags) or the bare
+        string value of a scalar field. Only constraints carrying a ``match-spec`` (promoted
+        to L2 by the classifier) are checked; others stay deferred to L3.
+        """
+        value_key = node.get("json-value-key")
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "matches":
+                continue
+            if con.get("validation-level") == "fully-compliant":
+                continue
+            mspec = con.get("match-spec")
+            if mspec is None:
+                continue
+            val = _matches_resolve_value(mspec, instance, value_key)
+            if val is None:
+                continue
+            field = f"@{mspec['flag']}" if mspec.get("kind") == "flag" else (node_name or ".")
+            err = _apply_matches(val, con.get("regex"), con.get("datatype"),
+                                 location, field, identifier)
+            if err:
+                err["constraint-id"] = con.get("id")
+                errors.append(err)
+
+    def _eval_node_cardinality(self, node: dict, instance: Any, location: str,
+                               identifier: str | None, errors: list[dict]) -> None:
+        """Evaluate L2 ``has-cardinality`` constraints declared on *node* against *instance*
+        (count a child collection against min/max-occurs)."""
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "has-cardinality":
+                continue
+            if con.get("validation-level") == "fully-compliant":
+                continue
+            cspec = con.get("card-spec")
+            if cspec is None:
+                continue
+            count = _count_cardinality_target(node, instance, cspec)
+            if count is None:
+                continue  # gate not met / not a dict -> constraint does not apply here
+            mn, mx = con.get("min-occurs"), con.get("max-occurs")
+            min_i = int(mn) if mn is not None else None
+            max_i = int(mx) if (mx is not None and mx != "unbounded") else None
+            if (min_i is not None and count < min_i) or (max_i is not None and count > max_i):
+                errors.append({
+                    "error-type":    "has-cardinality",
+                    "location":      location,
+                    "identifier":    identifier,
+                    "field":         con.get("target"),
+                    "value":         count,
+                    "min":           min_i,
+                    "max":           max_i,
+                    "constraint-id": con.get("id"),
+                })
+
+    def _eval_node_expect(self, node: dict, instance: Any, location: str,
+                          identifier: str | None, errors: list[dict]) -> None:
+        """Evaluate L2 ``expect`` boolean tests declared on *node* against *instance*."""
+        if not isinstance(instance, dict):
+            return
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "expect":
+                continue
+            if con.get("validation-level") == "fully-compliant":
+                continue
+            espec = con.get("expect-spec")
+            if espec is None:
+                continue
+            applies = espec.get("applies")
+            if applies is not None and not _eval_test_bool(applies, node, instance):
+                continue  # the target predicate excludes this instance
+            if not _eval_test_bool(espec.get("test"), node, instance):
+                errors.append({
+                    "error-type":    "constraint-violation",
+                    "location":      location,
+                    "identifier":    identifier,
+                    "field":         con.get("target"),
+                    "value":         None,
+                    "test":          con.get("test"),
+                    "constraint-id": con.get("id"),
+                })
+
+    # -------------------------------------------------------------------------
+    # Phase 3 — JSON-native referential integrity + uniqueness
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _ref_key_tuple(idx: dict, item: Any, key_steps: list) -> tuple | None:
+        """Resolve a referential key tuple (one component per ``<key-field>``) from *item*.
+
+        Each key-field must resolve to exactly one scalar; returns ``None`` when any key-field
+        is missing or multi-valued (the node is then skipped — never a false positive)."""
+        parts: list[str] = []
+        for steps in key_steps:
+            vals = [v for v in _resolve_test_path(idx, item, steps)
+                    if isinstance(v, (str, int, float, bool))]
+            if len(vals) != 1:
+                return None
+            parts.append(str(vals[0]))
+        return tuple(parts)
+
+    def _walk_reference_specs(self, node: dict, instance: Any, location: str,
+                              named_index: dict, pending: list, findings: list) -> None:
+        """Walk the metaschema index *node* alongside *instance*, evaluating ``references``-tier
+        specs. ``index`` specs populate *named_index*; ``index-has-key`` specs queue checks into
+        *pending* (resolved after all indexes are built); ``is-unique`` specs emit
+        ``duplicate-key`` findings in place (uniqueness is scoped to each definition instance)."""
+        if isinstance(instance, list):
+            for i, it in enumerate(instance):
+                self._walk_reference_specs(node, it, f"{location}[{i}]", named_index, pending, findings)
+            return
+        if not isinstance(instance, dict):
+            return
+
+        for con in node.get("constraints", []) or []:
+            if con.get("validation-level") != "references":
+                continue
+            spec = con.get("ref-spec")
+            if not spec:
+                continue
+            family = spec.get("family")
+            target_pairs = _resolve_path_pairs(node, instance, spec["target"])
+            local_seen: dict = {}
+            for i, (tidx, titem) in enumerate(target_pairs):
+                if not isinstance(titem, dict):
+                    continue
+                key = self._ref_key_tuple(tidx, titem, spec["keys"])
+                if key is None:
+                    continue
+                loc = f"{location}[{i}]"
+                if family == "index":
+                    named_index.setdefault(spec.get("name"), set()).add(key)
+                elif family == "index-has-key":
+                    pending.append((spec.get("name"), key, loc, con))
+                elif family == "is-unique":
+                    if key in local_seen:
+                        findings.append({
+                            "error-type":    "duplicate-key",
+                            "level":         con.get("level", "ERROR"),
+                            "rule-source":   "metaschema",
+                            "rule-id":       con.get("id"),
+                            "location":      loc,
+                            "field":         ",".join(f.get("flag", f.get("elem", "?"))
+                                                      for s in spec["keys"] for f in s[-1:]),
+                            "value":         ",".join(key),
+                            "identifier":    ",".join(key),
+                            "detail":        (f"duplicate key {list(key)} (is-unique"
+                                              f"{(' ' + spec['name']) if spec.get('name') else ''})"),
+                        })
+                    else:
+                        local_seen[key] = loc
+
+        # Recurse into element children, honouring choice groupings and JSON collection keys.
+        def _descend(child: dict) -> None:
+            if child.get("structure-type") == "choice":
+                for member in child.get("children", []) or []:
+                    _descend(member)
+                return
+            if child.get("structure-type") == "flag":
+                return
+            jkey = child.get("group-as") or child.get("use-name") or child.get("name")
+            if not jkey or jkey not in instance:
+                return
+            self._walk_reference_specs(child, instance[jkey], f"{location}/{jkey}",
+                                  named_index, pending, findings)
+
+        for child in node.get("children", []) or []:
+            _descend(child)
+
+    def _eval_references(self, model_instance: dict, model_nodes: dict, base_location: str) -> list[dict]:
+        """Run the Phase-3 referential/uniqueness pass and return normalized findings.
+
+        Covers (1) metaschema-derived simple ``index``/``index-has-key``/``is-unique`` specs
+        (tier ``references``) evaluated JSON-natively, (2) library-defined reference rules for
+        references OSCAL does not machine-enforce, and (3) a library-defined global uniqueness
+        check on bare ``id`` / ``uuid`` within this one document (collisions OSCAL expects but
+        does not encode as a constraint). Findings carry ``level`` (ERROR/WARNING/INFORMATIONAL)
+        and ``rule-source`` (``metaschema``/``library``). This dimension reports on
+        ``validation_status['references']`` and never feeds :attr:`is_valid`."""
+        findings: list[dict] = []
+        named_index: dict = {}
+        pending: list = []
+        self._walk_reference_specs(model_nodes, model_instance, base_location,
+                              named_index, pending, findings)
+        # index-has-key: the referenced value must exist in its named index. Skip when no
+        # simple `index` populated that name (all its definitions were complex → Phase 4).
+        for name, key, loc, con in pending:
+            if name not in named_index:
+                continue
+            if key not in named_index[name]:
+                findings.append({
+                    "error-type":    "unresolved-reference",
+                    "level":         con.get("level", "ERROR"),
+                    "rule-source":   "metaschema",
+                    "rule-id":       con.get("id"),
+                    "location":      loc,
+                    "field":         con.get("target"),
+                    "value":         ",".join(key),
+                    "identifier":    ",".join(key),
+                    "detail":        f"reference {list(key)} not found in index '{name}'",
+                })
+        # Library-defined rules (by-component → component, …).
+        findings.extend(
+            evaluate_library_reference_rules(self.model, model_instance, base_location))
+        # Library-defined global uniqueness of bare id / uuid within this one document.
+        findings.extend(
+            evaluate_global_identifier_uniqueness(model_instance, base_location))
+        return findings
+
     def _walk_instance(
         self,
         instance: dict,
         node: dict,
         errors: list[dict],
         location: str,
+        identifier: str | None = None,
+        ancestors: dict | None = None,
+        ancestor_instances: list | None = None,
     ) -> None:
         """Recursively walk *instance* against metaschema *node*, collecting structured errors.
+
+        Every error dict is normalized to the same core shape::
+
+            {
+              "error-type": str,      # missing-required | invalid-type | allowed-values
+                                      # | cardinality | choice
+              "location":   str,      # JSON path to the erroneous item (e.g. "/catalog/groups[0]")
+              "identifier": str|None, # id/uuid of the nearest enclosing identifiable object
+              "field":      str|list, # the offending flag/field name(s)
+              "value":      Any,      # the offending value (or count / None)
+              ...                     # error-type-specific details: "expected", or "min"/"max"
+            }
 
         Error types produced:
           ``missing-required``  – a required field or flag is absent
@@ -2941,6 +4274,18 @@ class OSCAL:
           ``allowed-values``    – a value is not in its enumerated allowed-values set
           ``cardinality``       – an array has fewer items than min-occurs or more than max-occurs
           ``choice``            – a choice has more than one member present (mutually exclusive), or none where one is required
+
+        The walk fully descends OSCAL's nested structure:
+
+        * **choice** groupings are transparent — their members are validated and recursed
+          into like ordinary children, but an *absent* choice member never raises
+          ``missing-required`` (whether a required choice is satisfied is a ``choice``
+          check, handled by :meth:`_check_choice`).
+        * **recursive** self-references (``part/part``, ``group/group``, ``control``
+          enhancements, ``task/task``) are index stubs with no children; each resolves to
+          the nearest same-use-name concrete ancestor node (tracked in *ancestors*) so
+          arbitrarily-deep instance nesting is validated against the real definition.
+          Termination is instance-driven (the walk stops when the data stops nesting).
 
         All error types are collected in a single pass so that ``validate()`` can
         partition them by phase after the walk completes.
@@ -2950,11 +4295,35 @@ class OSCAL:
             node:     The metaschema index node describing the expected structure.
             errors:   Accumulator list — errors are appended in-place.
             location: JSON path to *instance* used for error reporting (e.g. "/catalog/metadata").
+            identifier: id/uuid of the nearest enclosing identifiable object, inherited from
+                the parent. Refined to *instance*'s own ``uuid``/``id`` when it has one, so
+                every error reports the closest identifiable item.
+            ancestors: Map of use-name -> concrete index node for the definitions seen on
+                the path down to here, used to resolve ``recursive`` stubs.
+            ancestor_instances: ``(use_name, instance)`` pairs for the elements enclosing
+                *instance* (root-first), used to resolve an L2 allowed-values constraint's
+                context (``(.)`` flag-gate, L2-A) or element-``@name`` ancestor gate (L2-B)
+                against the instance's ancestor chain.
         """
         if not isinstance(instance, dict) or not isinstance(node, dict):
             return
 
+        # Nearest identifiable ancestor: this object's own uuid/id if present, else inherited.
+        identifier = instance.get("uuid") or instance.get("id") or identifier
+
+        # Register this (concrete) node so deeper recursive stubs with the same use-name
+        # resolve back to it. Copy-on-descend so sibling branches don't leak into each other.
+        ancestors = dict(ancestors or {})
+        node_name = node.get("use-name") or node.get("name")
+        if node_name and node.get("children"):
+            ancestors[node_name] = node
+
         children = node.get("children", [])
+
+        # Node-level matches (regex/datatype), has-cardinality, and expect on this element.
+        self._eval_node_matches(node, instance, location, node_name, identifier, errors)
+        self._eval_node_cardinality(node, instance, location, identifier, errors)
+        self._eval_node_expect(node, instance, location, identifier, errors)
 
         # ------------------------------------------------------------------
         # Flags: structure → data-type → allowed-values
@@ -2968,6 +4337,7 @@ class OSCAL:
                 errors.append({
                     "error-type": "missing-required",
                     "location":   location,
+                    "identifier": identifier,
                     "field":      f"@{flag_name}",
                     "value":      None,
                     "expected":   {},
@@ -2979,6 +4349,14 @@ class OSCAL:
 
             flag_val = instance[flag_name]
 
+            # Identifier indexing (same pass): a flag named exactly "id"/"uuid" is this
+            # object's defining identifier (compound refs like control-id/component-uuid
+            # are not). Record value -> occurrence for the uniqueness check / lookups.
+            if flag_name == "uuid":
+                self._record_identifier(self._uuid_index, flag_val, location)
+            elif flag_name == "id":
+                self._record_identifier(self._id_index, flag_val, location)
+
             # Data type check
             datatype = flag_node.get("datatype")
             if datatype and isinstance(flag_val, str) and flag_val:
@@ -2989,40 +4367,70 @@ class OSCAL:
                     if fixed != flag_val:
                         logger.warning(f"Repaired non-conformant {datatype} @{flag_name} at {location}: {flag_val!r} -> {fixed!r}")
                         instance[flag_name] = flag_val = fixed
-                err = _check_datatype(flag_val, datatype, location, f"@{flag_name}")
+                err = _check_datatype(flag_val, datatype, location, f"@{flag_name}", identifier)
                 if err:
                     errors.append(err)
 
-            # Allowed-values check
-            for constraint in flag_node.get("constraints", []):
-                if constraint.get("type") != "allowed-values":
-                    continue
-                if constraint.get("allow-other", False):
-                    continue
-                if not _constraint_conditions_met(constraint, instance):
-                    continue
-                values = constraint.get("values", [])
-                if flag_val not in {v["value"] for v in values}:
+            # Allowed-values check (L2 only), UNION semantics.
+            # A flag may be governed by several allowed-values constraints (a general set
+            # plus context-scoped sets, e.g. a component's props accept ``vendor-name`` only
+            # when the component ``@type`` is software/hardware/service). The value is valid
+            # when it is in the UNION of the in-scope sets, or any in-scope set is
+            # ``allow-other`` (least-restrictive). Each constraint's context-gate is resolved
+            # against the nearest enclosing object that owns the gate flag (its definition
+            # context). Only ``valid`` (L2) constraints participate here; ``fully-compliant``
+            # (L3) scoped constraints are deferred to :meth:`validate_full` — evaluating them
+            # on the JSON walk would over-report (the nested ``part/@name='item'`` and
+            # context-only ``vendor-name`` false positives on published catalogs).
+            av_constraints = [c for c in flag_node.get("constraints", [])
+                              if c.get("type") == "allowed-values"]
+            if av_constraints:
+                chain = [(node_name, instance)] + list(reversed(ancestor_instances or []))
+                resolved = _resolve_allowed_values_union(av_constraints, chain)
+                if (resolved["governed"] and not resolved["allow_other"]
+                        and flag_val not in resolved["allowed"]):
                     errors.append({
                         "error-type": "allowed-values",
                         "location":   location,
+                        "identifier": identifier,
                         "field":      f"@{flag_name}",
                         "value":      flag_val,
+                        "validation-level": "valid",
                         "expected": {
                             "one-of": [
-                                {"enum": v["value"], "description": v.get("description", "")}
-                                for v in sorted(values, key=lambda x: x["value"])
+                                {"enum": val, "description": resolved["entries"][val]}
+                                for val in sorted(resolved["entries"])
                             ],
                         },
                     })
 
         # ------------------------------------------------------------------
-        # Non-flag children: structure → data-type (fields) → recurse
+        # Non-flag children: structure → data-type (fields) → recurse.
+        # Choice groupings are flattened so their members are validated here (tagged
+        # from_choice so an absent branch is not a missing-required error — that is the
+        # choice's own concern, checked below). Recursive stubs resolve to their concrete
+        # same-use-name ancestor so nested content is validated against the real node.
         # ------------------------------------------------------------------
-        for child_node in children:
+        def _model_children(nodes, from_choice=False):
+            for child in nodes:
+                if child.get("structure-type") == "choice":
+                    yield from _model_children(child.get("children", []), from_choice=True)
+                else:
+                    yield child, from_choice
+
+        for child_node, from_choice in _model_children(children):
             stype = child_node.get("structure-type")
-            if stype in ("flag", "choice", "any", "recursive"):
+            if stype in ("flag", "any"):
                 continue
+
+            # Resolve a recursive stub to its concrete ancestor definition; keep the stub's
+            # own json grouping/cardinality but validate items against the resolved node.
+            effective = child_node
+            if stype == "recursive":
+                effective = ancestors.get(child_node.get("use-name") or child_node.get("name"))
+                if effective is None:
+                    continue  # unresolved self-reference (shouldn't happen in a built index)
+
             child_name = child_node.get("use-name") or child_node.get("name")
             if not child_name:
                 continue
@@ -3031,13 +4439,16 @@ class OSCAL:
             child_val  = instance.get(json_key)
             min_occurs = child_node.get("min-occurs", "0")
             max_occurs = child_node.get("max-occurs", "unbounded")
-            required   = min_occurs == "1"
+            # A direct required child must be present; a choice member's presence is governed
+            # by the choice as a whole, so its absence here is never missing-required.
+            required   = (min_occurs == "1") and not from_choice
 
             if child_val is None:
                 if required:
                     errors.append({
                         "error-type": "missing-required",
                         "location":   location,
+                        "identifier": identifier,
                         "field":      child_name,
                         "value":      None,
                         "expected":   {},
@@ -3056,40 +4467,50 @@ class OSCAL:
                         if fixed != child_val:
                             logger.warning(f"Repaired non-conformant {datatype} {child_name} at {location}: {child_val!r} -> {fixed!r}")
                             instance[json_key] = child_val = fixed
-                    err = _check_datatype(child_val, datatype, location, child_name)
+                    err = _check_datatype(child_val, datatype, location, child_name, identifier)
                     if err:
                         errors.append(err)
+                # Node-level matches on a bare-string field (no flags -> not recursed into).
+                self._eval_node_matches(child_node, child_val, child_loc, child_name,
+                                        identifier, errors)
 
             # Recurse into assemblies and grouped fields
             if isinstance(child_val, list):
-                min_int = int(min_occurs)
+                # Lower bound is the choice's concern for members, so only enforce it on
+                # direct children; the upper bound (max-occurs) always applies.
+                min_int = 0 if from_choice else int(min_occurs)
                 max_int = None if max_occurs == "unbounded" else int(max_occurs)
                 actual  = len(child_val)
                 if actual < min_int or (max_int is not None and actual > max_int):
                     errors.append({
                         "error-type": "cardinality",
                         "location":   location,
+                        "identifier": identifier,
                         "field":      child_name,
                         "value":      actual,
                         "min":        min_int,
                         "max":        max_int,
                     })
+                child_ancestors = (ancestor_instances or []) + [(node_name, instance)]
                 for i, item in enumerate(child_val):
                     if isinstance(item, dict):
-                        self._walk_instance(item, child_node, errors, f"{child_loc}[{i}]")
+                        self._walk_instance(item, effective, errors, f"{child_loc}[{i}]",
+                                            identifier, ancestors, child_ancestors)
             elif isinstance(child_val, dict):
-                self._walk_instance(child_val, child_node, errors, child_loc)
+                self._walk_instance(child_val, effective, errors, child_loc, identifier,
+                                    ancestors, (ancestor_instances or []) + [(node_name, instance)])
 
         # ------------------------------------------------------------------
         # Choice groups: mutually exclusive members (at most one), and a member
         # required when every member is min-occurs="1"
         # ------------------------------------------------------------------
         for choice_node in (c for c in children if c.get("structure-type") == "choice"):
-            self._check_choice(instance, choice_node, errors, location)
+            self._check_choice(instance, choice_node, errors, location, identifier)
 
     # -------------------------------------------------------------------------
     def _check_choice(self, instance: dict, choice_node: dict,
-                      errors: list[dict], location: str) -> None:
+                      errors: list[dict], location: str,
+                      identifier: str | None = None) -> None:
         """Enforce a metaschema ``choice``: mutually exclusive use of its members.
 
         Per the Metaschema specification, a ``choice`` "permits the mutually exclusive
@@ -3114,6 +4535,8 @@ class OSCAL:
             choice_node (dict, required): The index node of structure-type ``"choice"``.
             errors (list, required): Accumulator for ``"choice"`` errors.
             location (str, required): JSON path to ``instance`` for error reporting.
+            identifier (str | None, optional): id/uuid of the nearest enclosing
+                identifiable object, attached to any error for provenance.
         """
         members: list[dict] = []
 
@@ -3136,6 +4559,7 @@ class OSCAL:
             errors.append({
                 "error-type": "choice",
                 "location":   location,
+                "identifier": identifier,
                 "field":      keys,
                 "value":      0,
                 "expected":   {"select-one-of": keys},
@@ -3144,6 +4568,7 @@ class OSCAL:
             errors.append({
                 "error-type": "choice",
                 "location":   location,
+                "identifier": identifier,
                 "field":      present,
                 "value":      len(present),
                 "expected":   {"mutually-exclusive": keys},
@@ -3436,8 +4861,190 @@ class OSCAL:
         :class:`~oscal.oscal_controls.Profile` also invalidates a stale resolved catalog —
         and must call ``super()._on_content_mutated()``. Called by
         :func:`if_update_successful`-decorated mutators and by :meth:`put` on success.
+
+        Inside an open :class:`Transaction` the revision stamp is *deferred*: the document
+        is marked dirty and stamped once at commit, so a batch of edits yields a single new
+        revision rather than one per mutation. Subclass reactions (e.g. Profile's resolved
+        catalog invalidation) still run per mutation.
         """
+        if self._txn is not None:
+            self._txn.mark_dirty(self)
+            return
         self._stamp_revision()
+
+    # -------------------------------------------------------------------------
+    @contextmanager
+    def transaction(self, *, validate: bool = True, check_refs: bool = True,
+                    strict_refs: bool = True, stamp: bool = True,
+                    allow_unresolved_refs: bool = False):
+        """Group mutations into an atomic, validated, all-or-nothing batch.
+
+        Within the ``with`` block, mutations accumulate on the live document but their
+        per-edit revision stamp is deferred. On clean exit the transaction validates and
+        commits as one unit: referential integrity, then (optionally) structural
+        metaschema validation, then a single coalesced revision stamp. If any check fails
+        — or any exception propagates out of the block — every enrolled document is rolled
+        back to its pre-transaction state and the failure is raised as a
+        :class:`TransactionError` (or the original exception).
+
+        Referential integrity treats a reference as *dangling* (always aborts) when it
+        resolves nowhere in scope. An import-eligible reference — one that may legitimately
+        live in an imported profile/catalog — is resolved against this document first and
+        then the already-resolved import tree; it is never re-resolved here. When the
+        import tree is unresolved such a reference is *unverifiable*: by default this
+        aborts the commit (critical cross-import references must be gotten right), unless
+        ``allow_unresolved_refs`` is set, which downgrades the unverifiable subset to
+        warnings. Local-only references (e.g. an SSP ``component-uuid``) must always
+        resolve in this document.
+
+        Nesting: opening a transaction while one is already active reuses the active
+        transaction bracketed by a :class:`Savepoint`, so an inner block that raises rolls
+        back only its own changes while the outer transaction continues.
+
+        Cross-document scope: only the root document participates today. The yielded
+        :class:`Transaction` is a coordinator whose participant machinery already supports
+        multiple documents, so import-tree (multi-document) transactions can be enabled
+        later without changing this API.
+
+        Args:
+            validate (bool, optional): Run :meth:`validate` at commit. Defaults to True.
+            check_refs (bool, optional): Run referential-integrity at commit. Defaults to True.
+            strict_refs (bool, optional): Reserved policy flag for per-model reference
+                strictness; local dangling references always abort. Defaults to True.
+            stamp (bool, optional): Apply the single coalesced revision stamp at commit.
+                Defaults to True.
+            allow_unresolved_refs (bool, optional): Permit commit when import-eligible
+                references cannot be verified because the import tree is unresolved (they
+                become warnings instead of aborting). Defaults to False.
+
+        Yields:
+            Transaction: The transaction handle (savepoints, ``abort``, mutator delegation).
+
+        Raises:
+            TransactionError: On a commit-time validation/integrity failure, or when the
+                content is read-only/unavailable.
+        """
+        # Nested transaction: reuse the active one, bracketed by a savepoint.
+        if self._txn is not None:
+            tx = self._txn
+            sp = tx.savepoint()
+            try:
+                yield tx
+            except _TxnAbort:
+                tx.rollback_to(sp)
+            except Exception:
+                tx.rollback_to(sp)
+                raise
+            else:
+                tx.release_savepoint(sp)
+            return
+
+        if not self._can_mutate("transaction"):
+            raise TransactionError("content is read-only or unavailable; cannot open a transaction.")
+
+        tx = Transaction(self, validate=validate, check_refs=check_refs,
+                         strict_refs=strict_refs, stamp=stamp,
+                         allow_unresolved_refs=allow_unresolved_refs)
+        tx.enroll(self)
+        self._txn = tx
+        try:
+            yield tx
+        except _TxnAbort as abort:
+            tx._rollback_all()
+            self._txn = None
+            logger.info(f"transaction aborted: {abort.reason}")
+            return
+        except Exception:
+            tx._rollback_all()
+            self._txn = None
+            raise
+        # Clean block exit — attempt the commit; roll back if it fails.
+        try:
+            tx._commit()
+        except Exception:
+            tx._rollback_all()
+            self._txn = None
+            raise
+        self._txn = None
+
+    # -------------------------------------------------------------------------
+    # Keyed cross-references shared by every OSCAL model, checked at commit. Maps a JSON
+    # key to (candidate kinds, local_only). Subclasses extend the walk via
+    # :meth:`_collect_references` for model-specific references.
+    _REFERENCE_KEYS: dict = {
+        "role-id":        (("role",),     False),
+        "role-ids":       (("role",),     False),
+        "party-uuid":     (("party",),    False),
+        "party-uuids":    (("party",),    False),
+        "location-uuids": (("location",), False),
+    }
+
+    def _collect_references(self) -> list:
+        """Collect cross-references in this document for commit-time integrity checking.
+
+        Walks ``self._dict`` for the universal, stable-key references shared by every OSCAL
+        model — metadata ``role-id``(s), ``party-uuid``(s), ``location-uuids``, and
+        ``#``-fragment ``href`` references (back-matter resources). Subclasses override
+        (calling ``super()._collect_references()``) to add model-specific references, e.g.
+        an SSP's ``by-component.component-uuid`` (local-only) or implemented-requirement
+        control ids (import-eligible).
+
+        Returns:
+            list[_Reference]: Every reference found, each tagged with candidate kinds, a
+                local-only flag, and a human-readable location.
+        """
+        refs: list = []
+        root = (self._dict or {}).get(self.model)
+        if isinstance(root, (dict, list)):
+            self._walk_references(root, f"/{self.model}", refs)
+        return refs
+
+    def _walk_references(self, node, path: str, refs: list) -> None:
+        """Recursively gather :attr:`_REFERENCE_KEYS` and ``#``-fragment ``href`` references."""
+        if isinstance(node, dict):
+            for key, val in node.items():
+                here = f"{path}/{key}"
+                if key in self._REFERENCE_KEYS:
+                    kinds, local_only = self._REFERENCE_KEYS[key]
+                    for v in (val if isinstance(val, list) else [val]):
+                        if isinstance(v, str) and v:
+                            refs.append(_Reference(v, kinds, local_only, here))
+                elif key == "href" and isinstance(val, str) and val.startswith("#"):
+                    frag = val[1:]
+                    if frag:
+                        refs.append(_Reference(frag, (), False, here))
+                else:
+                    self._walk_references(val, here, refs)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                self._walk_references(item, f"{path}/{i}", refs)
+
+    def _run_reference_check(self) -> list:
+        """Resolve every collected reference; return unresolved/unverifiable problems.
+
+        Local-only references must resolve in THIS document. Import-eligible references
+        resolve in scope — this document first, then (only when :attr:`imports_resolved`)
+        the import tree via :meth:`find_in_import_tree`; this never triggers import
+        re-resolution. An import-eligible reference that resolves nowhere is a *dangle*;
+        one that cannot be checked because the import tree is unresolved is *unverifiable*.
+
+        Returns:
+            list[_RefProblem]: One entry per unresolved or unverifiable reference (empty
+                when every reference resolves).
+        """
+        problems: list = []
+        for ref in self._collect_references():
+            kinds = list(ref.kinds) if ref.kinds else None
+            if self._find_local_element(ref.value, kinds=kinds) is not None:
+                continue
+            if ref.local_only:
+                problems.append(_RefProblem("dangle", ref, self.uuid))
+            elif self.imports_resolved:
+                if self.find_in_import_tree(ref.value, kinds=kinds) is None:
+                    problems.append(_RefProblem("dangle", ref, self.uuid))
+            else:
+                problems.append(_RefProblem("unverifiable", ref, self.uuid))
+        return problems
 
     # -------------------------------------------------------------------------
     def _stamp_revision(self) -> None:
@@ -4057,6 +5664,252 @@ class OSCAL:
         return self._lookup_in_scope(resource_uuid, "resource", with_source, local_only)
 
     # -------------------------------------------------------------------------
+    # Content acquisition — links and back-matter resources
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _acquisition_result(success: bool, *, source: "str | None" = None,
+                            media_type: "str | None" = None, content: "bytes | None" = None,
+                            original_href: "str | None" = None, href: "str | None" = None,
+                            filename: "str | None" = None,
+                            integrity: str = INTEGRITY_NOT_APPLICABLE,
+                            failure: "dict | None" = None) -> dict:
+        """Assemble the normalized content-acquisition result dict (see :meth:`link_content`)."""
+        return {
+            "success": success,
+            "source": source,                                 # "href" | "rlink" | "base64" | None
+            "media-type": media_type,                         # effective media type, if known
+            "content": content,                               # raw bytes, or None on failure
+            "original-href": original_href,                   # as authored (href/rlink)
+            "href": href,                                     # resolved/absolute (href/rlink)
+            "filename": filename,                             # base64 filename, if present
+            "integrity-verification-status": integrity,
+            "failure": failure,                               # {code, message, uri} when not success
+        }
+
+    @staticmethod
+    def _verify_hashes(content: bytes, hashes: "list[dict] | None") -> str:
+        """Verify *content* against a resource/rlink ``hashes`` list; return an integrity status.
+
+        Picks the FIRST hash whose ``algorithm`` the library supports (:data:`_HASH_ALGORITHMS`)
+        and checks it: ``valid`` on match, ``not-valid`` on mismatch. If hashes are present but
+        none use a supported algorithm → ``no-supported-algorithms``; if none are present →
+        ``no-hash``. Never raises and never gates delivery — integrity is reported, not enforced.
+        """
+        if not hashes:
+            return INTEGRITY_NO_HASH
+        for h in hashes:
+            algo = _HASH_ALGORITHMS.get(str(h.get("algorithm", "")).upper())
+            if algo is None:
+                continue
+            expected = str(h.get("value", "")).strip().lower()
+            actual = algo(content).hexdigest().lower()
+            return INTEGRITY_VALID if actual == expected else INTEGRITY_NOT_VALID
+        return INTEGRITY_NO_SUPPORTED_ALGORITHMS
+
+    @staticmethod
+    def _ordered_resource_candidates(resource: dict, prefer_embedded: bool,
+                                     tokens: "list[str] | None") -> list:
+        """Order a resource's content sources for the acquisition cascade.
+
+        Builds the base64 + rlink candidates, orders them by *prefer_embedded* (base64 first
+        when True, else rlinks first in document order), then stable-partitions so sources
+        matching the *tokens* media-type preference come first — media type is a preference,
+        not a filter, so non-matching sources remain as fallbacks. Each candidate is
+        ``{"source": "base64"|"rlink", "media-type", "obj"}``.
+        """
+        candidates: list = []
+        b64 = resource.get("base64")
+        base64_cand = ([{"source": "base64", "media-type": b64.get("media-type"), "obj": b64}]
+                       if isinstance(b64, dict) and b64.get("value") else [])
+        rlink_cands = [{"source": "rlink", "media-type": rl.get("media-type"), "obj": rl}
+                       for rl in resource.get("rlinks", []) or [] if isinstance(rl, dict)]
+        candidates = base64_cand + rlink_cands if prefer_embedded else rlink_cands + base64_cand
+        if tokens is None:
+            return candidates
+        matches = [c for c in candidates if _media_type_matches(tokens, c.get("media-type"))]
+        rest = [c for c in candidates if c not in matches]
+        return matches + rest
+
+    def resource_content(self, resource_uuid: str, media_type: "str | None" = None,
+                         prefer_embedded: bool = True) -> dict:
+        """Acquire the binary content of a back-matter ``resource`` by uuid.
+
+        Resolves the resource in scope (this document, then the import tree, via
+        :meth:`get_resource_by_uuid`), chooses among its content sources — inline ``base64``
+        and any ``rlinks`` — and returns the first that successfully yields bytes, as a
+        normalized result dict (see :meth:`link_content` for the shape).
+
+        Source selection:
+          * ``prefer_embedded`` (default True) orders ``base64`` ahead of ``rlinks``; False
+            reverses it (rlinks first, in document order).
+          * ``media_type`` is an optional preference — a comma-separated list, case-insensitive,
+            supporting ``type/*`` subtype wildcards; a total wildcard (``*``/``*/*``) means no
+            preference. Sources matching any listed type are tried first; non-matching sources
+            remain as fallbacks (preference, not filter).
+          * Acquisition cascades: a source that fails to yield bytes is skipped and the next is
+            tried; only when *every* source fails is the result a failure.
+
+        Integrity: when the chosen source is an ``rlink`` carrying ``hashes``, the content is
+        hash-verified (first supported algorithm) and the outcome recorded in
+        ``integrity-verification-status`` — never gating delivery. ``base64`` content has no
+        OSCAL hash, so it reports ``no-hash``.
+
+        Args:
+            resource_uuid (str, required): The bare resource UUID (no ``#``).
+            media_type (str | None, optional): Preferred media type(s). Defaults to None.
+            prefer_embedded (bool, optional): Prefer ``base64`` over ``rlinks``. Defaults to True.
+
+        Returns:
+            dict: The acquisition result (``success`` True/False; see :meth:`link_content`).
+        """
+        locator = self.get_resource_by_uuid(resource_uuid, with_source=True)
+        if locator is None:
+            return self._acquisition_result(
+                False, failure={"code": ImportFailureCode.RESOURCE_NOT_FOUND,
+                                "message": f"No back-matter resource with uuid '{resource_uuid}'.",
+                                "uri": f"#{resource_uuid}"})
+        resource = locator.get("element", {}) or {}
+        owner_href = locator.get("href", "") or ""      # owning doc location (for relative rlinks)
+        base_path = os.path.dirname(owner_href) if owner_href else ""
+
+        tokens = _media_type_tokens(media_type)
+        candidates = self._ordered_resource_candidates(resource, prefer_embedded, tokens)
+        if not candidates:
+            return self._acquisition_result(
+                False, failure={"code": ImportFailureCode.RESOURCE_NO_VIABLE_CONTENT,
+                                "message": "Resource has neither base64 content nor rlinks.",
+                                "uri": f"#{resource_uuid}"})
+
+        last_failure: "dict | None" = None
+        for cand in candidates:
+            if cand["source"] == "base64":
+                b64 = cand["obj"]
+                try:
+                    content = base64.b64decode(str(b64.get("value", "")), validate=False)
+                except (ValueError, TypeError) as exc:
+                    last_failure = {"code": ImportFailureCode.CONTENT_INVALID,
+                                    "message": f"base64 decode failed: {exc}", "uri": f"#{resource_uuid}"}
+                    continue
+                if not content:
+                    last_failure = {"code": ImportFailureCode.CONTENT_EMPTY,
+                                    "message": "base64 value decoded to empty content.",
+                                    "uri": f"#{resource_uuid}"}
+                    continue
+                return self._acquisition_result(
+                    True, source="base64", media_type=b64.get("media-type"), content=content,
+                    filename=b64.get("filename"), integrity=INTEGRITY_NO_HASH)
+            else:  # rlink
+                rlink = cand["obj"]
+                original = str(rlink.get("href", ""))
+                resolved = _resolve_href(base_path, original) if base_path else original
+                try:
+                    content = self._fetch_href_bytes(resolved)
+                except ImportLoadError as exc:
+                    last_failure = {"code": exc.code, "message": str(exc), "uri": resolved}
+                    continue
+                return self._acquisition_result(
+                    True, source="rlink", media_type=rlink.get("media-type"), content=content,
+                    original_href=original, href=resolved,
+                    integrity=self._verify_hashes(content, rlink.get("hashes")))
+
+        return self._acquisition_result(False, failure=last_failure or {
+            "code": ImportFailureCode.CONTENT_EMPTY,
+            "message": "No resource content source could be acquired.",
+            "uri": f"#{resource_uuid}"})
+
+    def link_content(self, href: str, media_type: "str | None" = None,
+                     prefer_embedded: bool = True) -> dict:
+        """Acquire the content a link's ``href`` points at — the universal link resolver.
+
+        Handles all three link content scenarios behind one call:
+
+        1. **Full URI** (``href`` is not a fragment) — fetched directly as external content
+           (``source="href"``).
+        2. **Fragment → resource → rlink** (``href="#uuid"`` resolving to a back-matter
+           resource with ``rlinks``) — fetched from the chosen rlink (``source="rlink"``).
+        3. **Fragment → resource → base64** (resource with inline ``base64``) — decoded in
+           memory (``source="base64"``).
+
+        Fragment cases (2 and 3) delegate to :meth:`resource_content`, so ``media_type`` and
+        ``prefer_embedded`` select among a resource's multiple sources exactly as described
+        there. For a full-URI href those arguments do not apply (there is a single source).
+
+        Scope note: only fragments that resolve to a ``back-matter.resource`` are supported;
+        a fragment naming any other object kind — or no match at all — returns a failure
+        result (it is not guessed at).
+
+        Args:
+            href (str, required): The link's ``href`` — a full URI/path or a ``#uuid`` fragment.
+            media_type (str | None, optional): Preferred media type(s) for resource sources.
+            prefer_embedded (bool, optional): Prefer ``base64`` over ``rlinks``. Defaults to True.
+
+        Returns:
+            dict: A normalized acquisition result with keys: ``success`` (bool), ``source``
+                (``"href"``/``"rlink"``/``"base64"``/None), ``media-type`` (effective),
+                ``content`` (bytes or None), ``original-href`` / ``href`` (for href/rlink
+                sources; ``href`` is the resolved/absolute form), ``filename`` (base64),
+                ``integrity-verification-status`` (see the module ``INTEGRITY_*`` values), and
+                ``failure`` ({``code``, ``message``, ``uri``} when ``success`` is False).
+        """
+        if not href:
+            return self._acquisition_result(
+                False, failure={"code": ImportFailureCode.CONTENT_EMPTY,
+                                "message": "Empty href.", "uri": ""})
+        target = href.strip()
+        if target.startswith("#"):
+            fragment = target[1:]
+            if self.get_resource_by_uuid(fragment) is None:
+                # Either a dangling fragment or one naming a non-resource object (out of scope).
+                return self._acquisition_result(
+                    False, source=None, original_href=href,
+                    failure={"code": ImportFailureCode.RESOURCE_NOT_FOUND,
+                             "message": (f"Fragment '{href}' does not resolve to a back-matter "
+                                         "resource (dangling or non-resource reference)."),
+                             "uri": href})
+            return self.resource_content(fragment, media_type=media_type,
+                                         prefer_embedded=prefer_embedded)
+        # Full URI / path (scenario 1): a single direct source, no resource indirection.
+        resolved = self._resolve_against_self(target)
+        try:
+            content = self._fetch_href_bytes(resolved)
+        except ImportLoadError as exc:
+            return self._acquisition_result(
+                False, source="href", original_href=href, href=resolved,
+                failure={"code": exc.code, "message": str(exc), "uri": resolved})
+        return self._acquisition_result(
+            True, source="href", media_type=media_type, content=content,
+            original_href=href, href=resolved, integrity=INTEGRITY_NO_HASH)
+
+    def _resolve_against_self(self, href: str) -> str:
+        """Resolve a possibly-relative *href* against this document's own location.
+
+        Absolute URIs/paths are returned unchanged; a relative href is resolved against the
+        directory of this document's href (so a link relative to the OSCAL content loads from
+        the right place). Falls back to the href as-is when this document has no known location.
+        """
+        src = self.href or self.href_original
+        if not src:
+            return href
+        parsed = urlparse(href)
+        if parsed.scheme and len(parsed.scheme) > 1:
+            return href                       # already absolute URI
+        if os.path.isabs(href):
+            return href
+        parsed_src = urlparse(src)
+        if parsed_src.scheme and len(parsed_src.scheme) > 1:
+            base = src.rsplit("/", 1)[0] + "/"
+        else:
+            base = os.path.dirname(os.path.abspath(src))
+        return _resolve_href(base, href)
+
+    @staticmethod
+    def _fetch_href_bytes(href: str) -> bytes:
+        """Fetch *href* (absolute URI or local path) as raw bytes via the source layer."""
+        ref = OscalRef(href=href)
+        classify_source(ref)
+        return load_source_bytes(ref)
+
+    # -------------------------------------------------------------------------
     def get_role_by_id(self, role_id: str, with_source: bool = False,
                        local_only: bool = False) -> Optional[dict]:
         """Return a metadata ``role`` (by id) defined anywhere in scope, or None.
@@ -4422,6 +6275,10 @@ def create_new_oscal_content(model_name: str, title: str, version: str = "", pub
                             meta["version"] = version
                         if published:
                             meta["published"] = published
+                        # Refresh the cached summary attributes (self.title/version/…),
+                        # which were populated from the template default during
+                        # initial_validation and would otherwise ignore these overrides.
+                        oscal._populate_summary_from_dict()
                 return oscal
             logger.error(f"Template content failed validation for model: {model_name}")
             return None

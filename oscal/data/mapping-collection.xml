@@ -14,8 +14,8 @@
       <target-resource type="catalog" href="#"></target-resource>
       <map uuid="87f789cb-c170-4d12-b78f-4bd301312653">
          <relationship>no-relationship</relationship>
-         <source type="catalog" id-ref="a"></source>
-         <target type="catalog" id-ref="b"></target>
+         <source type="control" id-ref="a"></source>
+         <target type="control" id-ref="b"></target>
       </map>
    </mapping>
    

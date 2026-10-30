@@ -15,11 +15,25 @@
         "controls": [
           {
             "id": "ac-1_ov",
-            "title": "Org Access Policy Addendum"
+            "title": "Org Access Policy Addendum",
+            "parts": [
+              {
+                "id": "ac-1_ov_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           },
           {
             "id": "ac-2_ov",
-            "title": "Org Account Review"
+            "title": "Org Account Review",
+            "parts": [
+              {
+                "id": "ac-2_ov_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           }
         ]
       },
@@ -30,7 +44,14 @@
         "controls": [
           {
             "id": "sa-1_ov",
-            "title": "Org Acquisition Privacy Requirement"
+            "title": "Org Acquisition Privacy Requirement",
+            "parts": [
+              {
+                "id": "sa-1_ov_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           }
         ]
       }

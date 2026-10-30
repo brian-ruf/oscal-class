@@ -16,6 +16,8 @@ This library processes profiles in two phases so you only expend processing for 
    This is the source of truth for *scope and organization*. 
      - No control content is copied.
      - Profile alterations are applied to individual controls as they are feteched. 
+     - Built when the profile is **minimally valid** (structurally sound) and its imports
+       resolve — full OSCAL validity is not required. See [Tiered Validation](VALIDATION.html).
 2. **`resolve()` (on demand, heavy).** Walks the `controls_tree`, fetches the real
    content for each node, applies `modify` (removes → adds → set-parameters), and
    materializes a brand-new `Catalog` in `profile.catalog`.

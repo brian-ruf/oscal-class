@@ -271,9 +271,11 @@ there" support-database problems.
 
 On startup the support layer:
 
-1. Runs a lightweight schema migration (adds the `index_version` column to an older
-   database and backfills existing rows to `1.0.0`, since indexes built by this codebase
-   already conform to the current schema).
+1. Runs a lightweight schema migration: adds the `index_version` column to an older
+   database, then backfills **any** row still holding `NULL` to `1.0.0` (idempotent, on
+   every startup — indexes built by this codebase conform to the current schema). This
+   self-heals a bundled/pulled database whose column exists but was left `NULL` for
+   versions the build never indexed (e.g. those below `METASCHEMA_MIN_VERSION`).
 2. Reads the distinct `index_version` values recorded in `oscal_versions` and keeps those
    in the compatible range `[METASCHEMA_INDEX_VERSION, next-major)`.
 3. Assigns the **lowest** in-range value to `support.active_index_version` (the most

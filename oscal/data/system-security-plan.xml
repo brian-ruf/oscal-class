@@ -44,7 +44,7 @@
          <description>
             <p></p>
          </description>
-         <status state="planned"/>
+         <status state="operational"/>
       </component>
    </system-implementation>
    <control-implementation>

@@ -986,6 +986,29 @@ def _apply_one_set_parameter(param: dict, setp: dict) -> list:
                 param.pop(field, None)
 
     return warnings
+
+
+def _apply_set_parameters_to_control(content: dict, set_params_by_id: dict) -> None:
+    """Apply grouped ``set-parameters`` to a control's *defined* parameters, in place.
+
+    *set_params_by_id* maps ``param-id`` → list of ``set-parameter`` dicts. Each parameter
+    defined directly in ``content`` (its ``params``) receives every matching
+    set-parameter, in order, via :func:`_apply_one_set_parameter`; any resulting warnings
+    are logged. Parameters not defined in ``content`` are ignored here.
+
+    Shared by profile resolution (:meth:`Profile._apply_set_parameters`, where the source
+    is the profile's ``modify.set-parameters``) and SSP implemented-requirement rendering
+    (:meth:`~oscal.oscal_implementation.SSP.control`, where the source is the
+    implemented-requirement's own ``set-parameters``).
+    """
+    if not set_params_by_id:
+        return
+    for param in content.get("params", []) or []:
+        if not isinstance(param, dict):
+            continue
+        for setp in set_params_by_id.get(param.get("id"), []):
+            for warning in _apply_one_set_parameter(param, setp):
+                logger.warning(f"set-parameter: {warning}")
 class Catalog(OSCAL):
     """Editable OSCAL Catalog model.
 
@@ -1012,7 +1035,7 @@ class Catalog(OSCAL):
         """
         super()._init_common()
         self.controls_tree: list[dict[str, Any]] = []
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_controls_tree()
 
     # -------------------------------------------------------------------------
@@ -1032,7 +1055,7 @@ class Catalog(OSCAL):
             bool: True when every validation phase passes.
         """
         result = super().validate(format=format)
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_controls_tree()
         else:
             self.controls_tree = []
@@ -1295,21 +1318,35 @@ class Catalog(OSCAL):
     def _validate_subtree(self, instance: dict, node_name: str) -> list:
         """Validate an incoming subtree against its model-child metaschema node.
 
+        Only **blocking (structural)** errors are returned — the inserted subtree must be
+        structurally sound (no ``missing-required`` / ``cardinality`` / ``choice``), but
+        value-quality findings (``allowed-values`` / ``invalid-type`` / ``matches`` /
+        ``has-cardinality`` / ``constraint-violation``, e.g. a control still lacking its
+        ``statement`` part) do **not** reject a faithful-copy insert: they are remediable in
+        place and must not cause profile resolution to silently drop content. This mirrors
+        the minimal-vs-full validity split (see :attr:`import_nonblocking_error_types`).
+
         Args:
             instance (dict, required): The control/group dict to validate.
             node_name (str, required): The metaschema node name (``"control"`` /
                 ``"group"``).
 
         Returns:
-            list: Structured error dicts (empty when valid, or when the index is
-                unavailable so validation is skipped).
+            list: Blocking (structural) error dicts (empty when structurally sound, or when
+                the index is unavailable so validation is skipped).
         """
         node = self._model_index_node(node_name)
         if node is None:
             return []
         errors: list[dict] = []
         self._walk_instance(instance, node, errors, f"/{self.model}/{node_name}")
-        return errors
+        # Reject structural problems AND clearly-malformed values (missing-required,
+        # cardinality, choice, invalid-type, allowed-values) — but not the cross-cutting
+        # constraint families (matches / has-cardinality / expect), which are remediable in
+        # place and must not cause a faithful-copy insert (or profile resolution) to drop a
+        # control merely because, e.g., it still lacks its ``statement`` part.
+        _remediable = {"matches", "has-cardinality", "constraint-violation"}
+        return [e for e in errors if e.get("error-type") not in _remediable]
 
     # -------------------------------------------------------------------------
     @requires(is_read_only=False)
@@ -2120,14 +2157,16 @@ class Profile(OSCAL):
 
     # -------------------------------------------------------------------------
     def _on_content_mutated(self) -> None:
-        """React to any edit of the profile's content by dropping a stale resolved catalog.
+        """React to any edit of the profile's content.
 
-        Invoked automatically after every successful content mutation (via
-        :func:`if_update_successful` and :meth:`OSCAL.put`). A resolved catalog reflects
-        the profile as it was *before* the edit, so any change resets the profile to
-        ``UNRESOLVED``; re-run :meth:`resolve` to rebuild it. (Manual duplicate resolution
-        edits :attr:`catalog` through Catalog methods, which do not trigger this hook, so
-        those intentionally keep the profile resolved.)
+        Chains to :meth:`OSCAL._on_content_mutated` (which stamps a fresh root uuid +
+        last-modified) and then drops a stale resolved catalog. Invoked automatically after
+        every successful content mutation (via :func:`if_update_successful` and
+        :meth:`OSCAL.put`). A resolved catalog reflects the profile as it was *before* the
+        edit, so any change resets the profile to ``UNRESOLVED``; re-run :meth:`resolve` to
+        rebuild it. (Manual duplicate resolution edits :attr:`catalog` through Catalog
+        methods, which do not trigger this hook, so those intentionally keep the profile
+        resolved.)
 
         This does not itself mark the ``controls_tree`` stale: scope/organization mutators
         (:meth:`add_import`, :meth:`set_merge`) already set ``_tree_dirty`` and rebuild;
@@ -2184,7 +2223,7 @@ class Profile(OSCAL):
             bool: True when every validation phase passes.
         """
         result = super().validate(format=format)
-        if self.is_valid:
+        if self.is_minimally_valid:
             self._build_controls_tree()
         else:
             self.controls_tree = []
@@ -2219,7 +2258,12 @@ class Profile(OSCAL):
             self.controls_tree = []
             self._tree_dirty = False
             return
-        if not self.imports_resolved:
+        # Resolve only when imports have never been attempted (empty list). If import_list is
+        # already populated we build from it as-is: re-running resolve_imports() wipes the list
+        # and re-acquires from the declared hrefs, which would discard any retry_import fix (a
+        # located replacement for a relative href that cannot be re-derived). This matters when
+        # the tree is rebuilt mid-way through fixing imports (some still INVALID).
+        if not self.import_list:
             self.resolve_imports()
 
         sources, blocking = self._resolution_sources()
@@ -2576,6 +2620,24 @@ class Profile(OSCAL):
         reflects the changed import set.
         """
         super()._after_imports_changed()
+        self._tree_dirty = True
+        self._ensure_controls_tree()
+
+    # -------------------------------------------------------------------------
+    def _after_import_resolution_changed(self) -> None:
+        """Rebuild profile-derived state after an import's resolution changed (e.g.
+        :meth:`retry_import` located a previously-failed source, or :meth:`ignore_import`).
+
+        Unlike :meth:`_after_imports_changed` this does not re-stamp the revision (the
+        document's ``imports`` were not edited — only which source each resolves to). It
+        recomputes ``content_state`` (base), drops any now-stale resolved catalog, and
+        rebuilds the ``controls_tree`` from the updated ``import_list`` so a located import's
+        controls become visible without requiring a full :meth:`resolve`. The rebuild reuses
+        the already-resolved ``import_list`` (``imports_resolved`` stays True), so a prior
+        retry fix is preserved rather than re-acquired from the declared href.
+        """
+        super()._after_import_resolution_changed()   # recompute content_state
+        self._invalidate_resolution()                # effective import set changed → drop stale catalog
         self._tree_dirty = True
         self._ensure_controls_tree()
 
@@ -4373,17 +4435,10 @@ class Profile(OSCAL):
 
         Each parameter defined in the control receives every matching ``set-parameter``
         (by ``param-id``), in profile order. Parameters cited but not defined in the
-        control are handled separately by :meth:`_resolve_cited_params`.
+        control are handled separately by :meth:`_resolve_cited_params`. Delegates the
+        per-control application to the shared :func:`_apply_set_parameters_to_control`.
         """
-        set_params = self._modify_index()["set_params"]
-        if not set_params:
-            return
-        for param in content.get("params", []):
-            if not isinstance(param, dict):
-                continue
-            for setp in set_params.get(param.get("id"), []):
-                for warning in _apply_one_set_parameter(param, setp):
-                    logger.warning(f"modify: {warning}")
+        _apply_set_parameters_to_control(content, self._modify_index()["set_params"])
 
     # -------------------------------------------------------------------------
     def _resolve_cited_params(self, content: dict, shared_sink: Optional[list]) -> None:

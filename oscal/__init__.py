@@ -6,6 +6,17 @@ and assessment content.
 
 """
 import logging
+from importlib.metadata import version as _pkg_version, PackageNotFoundError
+
+# Package version, read from the installed distribution metadata (baked in from
+# pyproject.toml's [project] version at build time). pyproject.toml is a build
+# input, not a runtime artifact, so we never parse it directly — importlib.metadata
+# is the single, install-agnostic source. Falls back when running from a source
+# tree that was never installed (e.g. no egg-info/dist-info present).
+try:
+    __version__ = _pkg_version("oscal")
+except PackageNotFoundError:  # pragma: no cover - only when not installed
+    __version__ = "0.0.0+unknown"
 
 # The library emits log records but installs no handler of its own, so it stays
 # silent unless the calling application configures logging. Consumers enable it
@@ -45,6 +56,7 @@ from .oscal_workspace import Workspace  # noqa: E402
 # Library exception hierarchy
 from .oscal_content import OSCALError, UnsupportedModelOperation  # noqa: E402
 __all__ = [
+    "__version__",
     "oscal_support",
     "oscal_helpers",
     "oscal_source",

@@ -506,6 +506,85 @@ def load_source(ref: OscalRef, cache_directive: "CacheDirective | None" = None) 
     return content
 
 # -------------------------------------------------------------------------
+def load_source_bytes(ref: OscalRef, cache_directive: "CacheDirective | None" = None) -> bytes:
+    """Fetch content from a classified ``OscalRef`` as **raw bytes**.
+
+    The bytes-returning companion to :func:`load_source`, for binary payloads (diagram
+    images, PDFs, …) where the str path's UTF-8 decode would be lossy. Local files are read
+    in binary; remote/URI content is fetched fresh.
+
+    .. note::
+       Unlike :func:`load_source`, remote fetches here are **not** served from or written to
+       the local content cache: that cache normalizes entries to text on read (lossy for
+       binary). Binary-safe caching is deferred to the planned cache-watchdog work; until
+       then binary fetches always go to the source. ``cache_directive`` is accepted for
+       signature parity and future use.
+
+    Args:
+        ref (OscalRef, required): A reference already classified via :func:`classify_source`.
+        cache_directive (CacheDirective | None, optional): Accepted for parity; not yet
+            applied to binary fetches (see note).
+
+    Returns:
+        bytes: The raw content on success.
+
+    Raises:
+        ImportLoadError: With a typed ``ImportFailureCode`` on any load failure.
+    """
+    src = ref.href.strip()
+    payload: bytes = b""
+
+    def _read_local(path: str) -> bytes:
+        data = getfile(path, normalize=False, mode="rb")
+        return data if isinstance(data, (bytes, bytearray)) else b""
+
+    try:
+        if ref.source_type == "uri" and ref.source_scheme == "file":
+            parsed = urlparse(src)
+            local_path = parsed.path
+            if parsed.netloc:
+                local_path = f"//{parsed.netloc}{parsed.path}"
+            payload = _read_local(local_path)
+            if not payload:
+                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
+                                      f"File URI returned no content: {local_path}")
+
+        elif ref.source_type == "uri" and ref.source_scheme in {"http", "https", "ftp", "data"}:
+            logger.info(f"Fetching binary content from URI: {src}")
+            try:
+                with urlopen(src) as response:  # nosec B310 - intentional unauthenticated read
+                    payload = response.read()
+            except HTTPError as exc:
+                if exc.code in (401, 403):
+                    raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
+                                          f"HTTP {exc.code}: authentication required") from exc
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
+                                      f"HTTP {exc.code}: {exc.reason}") from exc
+            except (URLError, OSError, ConnectionError) as exc:
+                raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
+
+        elif ref.source_type == "file":
+            payload = _read_local(src)
+            if not payload:
+                raise ImportLoadError(ImportFailureCode.LOCAL_NOT_FOUND, src,
+                                      f"File not found or empty: {src}")
+
+        else:
+            raise ImportLoadError(ImportFailureCode.REMOTE_UNSUPPORTED, src,
+                                  f"No loader for source type={ref.source_type} scheme={ref.source_scheme}")
+
+    except ImportLoadError:
+        raise
+    except Exception as exc:
+        logger.error(f"Unexpected error loading bytes from '{src}': {exc}")
+        raise ImportLoadError(ImportFailureCode.CONTENT_EMPTY, src, str(exc)) from exc
+
+    if not payload:
+        raise ImportLoadError(ImportFailureCode.CONTENT_EMPTY, src,
+                              f"Source returned no content: {src}")
+    return payload
+
+# -------------------------------------------------------------------------
 def _hrefs_from_dict_spec(root_obj: dict, spec: dict) -> list[str]:
     """Extract all href strings from a JSON model root object using one pattern spec."""
     hrefs   = []

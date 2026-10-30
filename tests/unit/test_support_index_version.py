@@ -21,7 +21,7 @@ from importlib import resources
 import pytest
 
 import oscal.oscal_support as support_mod
-from oscal.oscal_support import OSCALSupport, METASCHEMA_INDEX_VERSION
+from oscal.oscal_support import OSCALSupport, METASCHEMA_INDEX_VERSION, PRE_VERSIONING_INDEX_SENTINEL
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +130,19 @@ class TestMigration:
         assert "index_version" in _columns(bundled_db_path, "oscal_versions")
 
     def test_existing_rows_backfilled(self, support):
-        assert _distinct_index_versions(support.db_conn) == [METASCHEMA_INDEX_VERSION]
+        # Indexed versions carry the current schema; un-indexed rows get the pre-versioning
+        # sentinel (NOT fabricated to the current version).
+        ivs = set(_distinct_index_versions(support.db_conn))
+        assert METASCHEMA_INDEX_VERSION in ivs
+        assert ivs <= {METASCHEMA_INDEX_VERSION, PRE_VERSIONING_INDEX_SENTINEL}
 
     def test_migration_is_idempotent(self, bundled_db_path):
         OSCALSupport(db_conn=bundled_db_path, db_init_mode="auto")
         # Re-opening must not error or change the backfilled values.
         OSCALSupport(db_conn=bundled_db_path, db_init_mode="auto")
-        assert _distinct_index_versions(bundled_db_path) == [METASCHEMA_INDEX_VERSION]
+        ivs = set(_distinct_index_versions(bundled_db_path))
+        assert METASCHEMA_INDEX_VERSION in ivs
+        assert ivs <= {METASCHEMA_INDEX_VERSION, PRE_VERSIONING_INDEX_SENTINEL}
 
 
 # ===========================================================================
@@ -148,17 +154,21 @@ class TestResolveIndexVersion:
         assert support.active_index_version == METASCHEMA_INDEX_VERSION
 
     def test_picks_lowest_in_range(self, support):
-        # Introduce a higher (still same-major) index version on some rows.
+        # Introduce a higher (still same-major) index version on some rows; the rest stay
+        # at METASCHEMA_INDEX_VERSION, which is then the lowest in [target, next-major).
+        major = METASCHEMA_INDEX_VERSION.split(".")[0]
+        higher = f"{major}.99.0"
         c = sqlite3.connect(support.db_conn)
-        c.execute("UPDATE oscal_versions SET index_version = '1.5.0' WHERE version = 'v1.2.3'")
+        c.execute("UPDATE oscal_versions SET index_version = ? WHERE version = 'v1.2.3'", (higher,))
         c.commit()
         c.close()
-        assert support.resolve_index_version() == "1.0.0"   # lowest in [1.0.0, 2.0.0)
+        assert support.resolve_index_version() == METASCHEMA_INDEX_VERSION
 
     def test_out_of_range_falls_back_to_target(self, support, caplog):
         # All rows a different major -> nothing in range -> heal attempt, then fall back.
+        next_major = f"{int(METASCHEMA_INDEX_VERSION.split('.')[0]) + 1}.0.0"
         c = sqlite3.connect(support.db_conn)
-        c.execute("UPDATE oscal_versions SET index_version = '2.0.0'")
+        c.execute("UPDATE oscal_versions SET index_version = ?", (next_major,))
         c.commit()
         c.close()
         with caplog.at_level("WARNING"):
@@ -244,6 +254,65 @@ class TestClosestSameMajor:
 
 
 # ===========================================================================
+# _closest_processed_version — ranks only versions that actually have a processed index
+# ===========================================================================
+class TestClosestProcessedVersion:
+
+    def _support(self, processed_versions):
+        obj = OSCALSupport.__new__(OSCALSupport)
+
+        class _DB:
+            def query(self, _sql):
+                return [{"version": v} for v in processed_versions]
+
+        obj.db = _DB()
+        return obj
+
+    def test_prefers_highest_at_or_below(self):
+        s = self._support(["v1.1.1", "v1.1.3", "v1.2.3"])
+        assert s._closest_processed_version("v1.2.0", "catalog") == "v1.1.3"
+
+    def test_falls_back_to_lowest_when_all_higher(self):
+        # An early version with only newer processed indexes resolves to the lowest one.
+        s = self._support(["v1.1.1", "v1.1.3", "v1.2.3"])
+        assert s._closest_processed_version("v1.0.4", "catalog") == "v1.1.1"
+
+    def test_none_when_no_processed_index(self):
+        s = self._support([])
+        assert s._closest_processed_version("v1.0.4", "catalog") is None
+
+
+# ===========================================================================
+# get_metaschema_index version fallback — early OSCAL versions (no published
+# machine-readable metaschema) serve the closest available processed index rather
+# than returning None (which would make validate() fail open).
+# ===========================================================================
+class TestVersionFallback:
+
+    def setup_method(self):
+        support_mod._metaschema_index_cache.clear()
+
+    def test_early_version_without_processed_index_falls_back(self, support):
+        # The bundled DB registers v1.0.4 but has no processed catalog index for it.
+        assert not support.get_asset("v1.0.4", "catalog", "processed")
+        substitute = support._closest_processed_version("v1.0.4", "catalog")
+        assert substitute is not None
+        assert support.get_asset(substitute, "catalog", "processed")  # really has one
+
+        idx = support.get_metaschema_index("v1.0.4", "catalog")
+        assert idx is not None and idx.get("nodes")
+        # Serves the substitute's index, cached under the requested key for stability.
+        assert idx is support.get_metaschema_index(substitute, "catalog")
+        assert ("v1.0.4", "catalog", support.active_index_version) in support_mod._metaschema_index_cache
+
+    def test_exact_version_not_substituted(self, support):
+        # A version that does have a processed index is served directly (no fallback).
+        assert support._closest_processed_version("v1.2.3", "catalog") == "v1.2.3"
+        idx = support.get_metaschema_index("v1.2.3", "catalog")
+        assert idx is not None and idx.get("nodes")
+
+
+# ===========================================================================
 # get_metaschema_index keyed by index version
 # ===========================================================================
 class TestIndexKeying:
@@ -258,6 +327,134 @@ class TestIndexKeying:
     def test_index_available(self, support):
         idx = support.get_metaschema_index("v1.2.3", "catalog")
         assert idx is not None and idx.get("nodes")
+
+
+# ===========================================================================
+# Constraint capture + validation-level tagging (metaschema-index schema 2.x)
+# ===========================================================================
+class TestConstraintCapture:
+    """The 2.x index tags every allowed-values constraint with a validation-level and
+    captures every other constraint rule verbatim (raw XML). Exercised against the
+    bundled database so it is independent of the working directory."""
+
+    def _all_constraints(self, support, version="v1.2.3", model="catalog"):
+        idx = support.get_metaschema_index(version, model)
+        assert idx is not None and idx.get("nodes")
+        out = []
+        seen = set()
+
+        def walk(n):
+            if id(n) in seen:
+                return
+            seen.add(id(n))
+            for c in n.get("constraints", []) or []:
+                out.append((n, c))
+            for ch in n.get("children", []) or []:
+                walk(ch)
+
+        nodes = idx["nodes"]
+        walk(nodes) if isinstance(nodes, dict) else [walk(n) for n in nodes]
+        return out
+
+    def test_every_allowed_values_has_a_level(self, support):
+        cons = [c for _, c in self._all_constraints(support)]
+        avs = [c for c in cons if c.get("type") == "allowed-values"]
+        assert avs, "expected allowed-values constraints in the catalog index"
+        assert all(c.get("validation-level") in {"valid", "fully-compliant"} for c in avs)
+
+    def test_both_levels_present(self, support):
+        # The catalog model genuinely has both natively-evaluable and ancestor-scoped
+        # allowed-values, so both tiers must appear.
+        avs = [c for _, c in self._all_constraints(support) if c.get("type") == "allowed-values"]
+        levels = {c.get("validation-level") for c in avs}
+        assert levels == {"valid", "fully-compliant"}
+
+    def test_per_node_all_or_nothing(self, support):
+        # Within any single node, allowed-values constraints share one level.
+        by_node = {}
+        for node, c in self._all_constraints(support):
+            if c.get("type") == "allowed-values":
+                by_node.setdefault(id(node), set()).add(c.get("validation-level"))
+        assert all(len(levels) == 1 for levels in by_node.values())
+
+    def test_other_rules_captured_raw(self, support):
+        cons = [c for _, c in self._all_constraints(support)]
+        raw = [c for c in cons if c.get("type") != "allowed-values"]
+        assert raw, "expected non-allowed-values constraints to be captured"
+        for c in raw:
+            assert isinstance(c.get("raw"), str) and c["raw"].strip().startswith("<")
+            assert "target" in c  # may be None, but the key is always present
+            lvl = c.get("validation-level")
+            assert lvl in ("valid", "references", "fully-compliant")
+            # handled iff promoted to L2 (valid) or the JSON-native references tier (Phase 3)
+            assert c.get("handled") is (lvl in ("valid", "references"))
+        # matches are evaluated at L2 (some handled); referential families, when simple, are
+        # promoted to the `references` tier (Phase 3) and never to `valid`.
+        assert any(c.get("type") == "matches" and c.get("handled") for c in raw)
+        for c in raw:
+            if c.get("type") in ("index", "index-has-key", "is-unique") and c.get("handled"):
+                assert c.get("validation-level") == "references"
+
+    def test_expected_rule_types_present(self, support):
+        types = {c.get("type") for _, c in self._all_constraints(support)}
+        # catalog carries a representative spread of rule families
+        assert {"index", "is-unique", "matches", "index-has-key", "expect"} <= types
+
+    def test_raw_rules_carry_id(self, support):
+        # Every captured rule family records its constraint id as a structured key.
+        raw = [c for _, c in self._all_constraints(support) if c.get("type") != "allowed-values"]
+        assert raw
+        assert all(c.get("id") for c in raw), "every raw constraint must carry an id"
+
+    def test_index_families_carry_name_and_key_fields(self, support):
+        cons = [c for _, c in self._all_constraints(support)]
+        # index / index-has-key reference a named index.
+        for t in ("index", "index-has-key"):
+            named = [c for c in cons if c.get("type") == t]
+            assert named and all(c.get("name") for c in named), f"{t} must carry a name"
+        # is-unique / index / index-has-key carry key-field targets.
+        for t in ("is-unique", "index", "index-has-key"):
+            keyed = [c for c in cons if c.get("type") == t]
+            assert keyed and all(c.get("key-fields") for c in keyed), f"{t} must carry key-fields"
+
+
+# ===========================================================================
+# Validation-coverage report (OSCALSupport.coverage_report_html)
+# ===========================================================================
+class TestCoverageReport:
+
+    def test_per_model_tiers(self, support):
+        data = support._coverage_for_model("v1.2.3", "catalog")
+        assert set(data) == {"structural", "constraints"}
+        assert data["constraints"], "catalog should declare constraints"
+        for c in data["constraints"]:
+            assert c["tier"] in ("L2", "references", "unhandled")
+            assert {"id", "type", "target", "tier", "note"} <= set(c)
+        # the L2 and unhandled tiers are both represented in the catalog model
+        tiers = {c["tier"] for c in data["constraints"]}
+        assert {"L2", "unhandled"} <= tiers
+
+    def test_referential_families_tiered(self, support):
+        # Simple referential constraints are now the JSON-native `references` tier (Phase 3);
+        # complex ones (predicate / // / | / href-fragment) stay unhandled → Phase 4 XPath.
+        data = support._coverage_for_model("v1.2.3", "system-security-plan")
+        ref_tiers = {c["tier"] for c in data["constraints"]
+                     if c["type"] in ("is-unique", "index", "index-has-key")}
+        assert ref_tiers, "SSP should declare referential constraints"
+        assert ref_tiers <= {"references", "unhandled"}
+        assert "references" in ref_tiers   # at least the simple is-unique by-component set
+
+    def test_html_is_self_contained(self, support):
+        html = support.coverage_report_html("v1.2.3")
+        assert html.startswith("<!DOCTYPE html>")
+        assert "OSCAL Validation Coverage" in html
+        assert "<style>" in html and "http" not in html.split("<style>")[1].split("</style>")[0]
+        # every document model appears as a section
+        for m in ("catalog", "system-security-plan", "profile"):
+            assert f"id='{m}'" in html
+        # the references tier and the library-defined rules table are present
+        assert "references" in html
+        assert "lib-ssp-by-component-component-uuid" in html
 
 
 # ===========================================================================

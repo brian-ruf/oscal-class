@@ -14,6 +14,24 @@ import tempfile
 import pytest
 
 from oscal import OSCAL, Catalog, Profile
+from oscal.oscal_controls import Mapping
+from oscal.oscal_implementation import ComponentDefinition, SSP
+from oscal.oscal_assessment import AssessmentPlan, AssessmentResults, POAM
+
+# Every model subclass and the OSCAL model name its .new() template must resolve to.
+# Regression guard: .new() derives the model name from the registry, not the lowercased
+# class name — only catalog/profile coincide, so a bare .lower() silently produced
+# non-well-formed stubs for the other six models.
+_ALL_MODELS = [
+    (Catalog, "catalog"),
+    (Profile, "profile"),
+    (Mapping, "mapping-collection"),
+    (ComponentDefinition, "component-definition"),
+    (SSP, "system-security-plan"),
+    (AssessmentPlan, "assessment-plan"),
+    (AssessmentResults, "assessment-results"),
+    (POAM, "plan-of-action-and-milestones"),
+]
 
 # ---------------------------------------------------------------------------
 # Paths to small local test fixtures
@@ -367,6 +385,50 @@ class TestNew:
         assert isinstance(yml, str)
         parsed = yaml.safe_load(yml)
         assert "catalog" in parsed
+
+
+# ===========================================================================
+# OSCAL.new() across ALL eight models
+# ===========================================================================
+class TestNewAllModels:
+    """Every model's .new() must yield a template that is well-formed (L1) and L2-valid.
+
+    Regression for the bug where .new() used ``cls.__name__.lower()`` as the model name,
+    which only matched catalog/profile; the other six resolved no template and returned
+    empty, non-well-formed stubs.
+    """
+
+    @pytest.mark.parametrize("cls,model_name", _ALL_MODELS)
+    def test_new_resolves_correct_model_name(self, cls, model_name):
+        doc = cls.new("T")
+        assert doc.model == model_name
+
+    @pytest.mark.parametrize("cls,model_name", _ALL_MODELS)
+    def test_new_is_well_formed(self, cls, model_name):
+        """L1: the template must parse and structurally match its metaschema."""
+        doc = cls.new("T")
+        assert doc.is_well_formed, f"{cls.__name__}.new() is not well-formed"
+
+    @pytest.mark.parametrize("cls,model_name", _ALL_MODELS)
+    def test_new_is_valid(self, cls, model_name):
+        """L2: the shipped template carries no validation errors."""
+        doc = cls.new("T")
+        assert doc.is_valid, (
+            f"{cls.__name__}.new() is not valid: "
+            f"{[(e['error-type'], e.get('field'), e.get('value')) for e in doc.validation_errors]}"
+        )
+
+    @pytest.mark.parametrize("cls,model_name", _ALL_MODELS)
+    def test_new_sets_title_and_origin(self, cls, model_name):
+        doc = cls.new("My Title")
+        assert doc.title == "My Title"
+        assert doc._origin == "new"
+
+    @pytest.mark.parametrize("cls,model_name", _ALL_MODELS)
+    def test_new_roundtrips_json(self, cls, model_name):
+        doc = cls.new("T")
+        parsed = json.loads(doc.dumps("json"))
+        assert model_name in parsed
 
 
 # ===========================================================================

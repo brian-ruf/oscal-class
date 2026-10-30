@@ -1,0 +1,73 @@
+# Version History
+
+## Version 1.x
+
+- Support Module: Acquire and manage NIST-pubished support files
+    - Support files in local SQLite database
+    - Support files in local Folder
+    - Deploy, update, and repopulate
+- OSCAL Content Class: 
+    - Simple local loading and saving
+    - Auto-detect OSCAL format, version and model
+    - Validation using NIST schema files
+    - Load any OSCAL format (XML, JSON, YAML)
+    - Convert and save in any OSCAL format (XML, JSON, YAML)
+        - Currently relies on SaxonC-HE and NIST XSLT 3.x Convertion files
+
+
+### Version 2.0.x: Refactoring, XML/JSON Parity
+
+- Separate class for each model
+- Refactor class attributes, methods (names, organization)
+- Efficiency and maintainability improvements
+- Robust Loading from local file system and remote URLs
+
+### Version 3.0.x: Import Dependency Chain
+
+- Top level imports 
+    - AR -> AP -> SSP -> Profile -> [ Profile | Catalog ]
+    - POAM -> SSP -> Profile -> [ Profile | Catalog ]
+    - cDef -> cDef
+- Failed import handling
+- Basic addressibility across imported files
+- Direct python interpretation of metaschema for conversion between formats
+    - No reliance on NIST-published XSLT
+    - Processed against native Python dict
+- Direct python interpretation of metaschema for validation
+    - Syntax, cardinality, data types
+    - Simple constraints
+
+### Version 3.1.x Profile Resolution
+
+- Control Tree Generation/Caching
+- By-Control Tailoring
+- Saving Resolved Profile Catalogs
+
+### Version 3.2.x 
+
+- Retrieval from the OSCAL Content Registry (https://registery.oscal.io)
+- Cache remotely acquired files locally
+
+## Version 4.0.0 
+- Revised metaschema index
+- increased coverage of metascha validation
+- established validation levels (minimally valid, valid, fully compliant)
+- SSP-specific getters full coverage
+- cDef-specific Getters full coverage
+- Additional metaschema-defined enforcement  
+    - Significantly exceeds validation based on NIST-published XML or JSON schema files
+    - Greater than 80% of the metaschema constraints now enforced
+    - Referential integrity validated
+- Three validation levels defined defined:
+    - Minimally Valid: 
+        - well-formed, valid syntax
+        - sufficient for processing
+        - allows for resolving more complex validaiton issues via the library
+        - Some library funcitons are blocked until validation issues are resolved
+    - Valid:
+        - Highest level of compliance that can be verified using Python dict/JSON and direct interpretation of the metaschema
+        - All mmetaschema constraints handled except those that require xPath 3 to interpret
+    - Fully Compliant (not yet implemented):
+        - convert to XML and apply xPath 3 to internpret remaining constraints
+
+

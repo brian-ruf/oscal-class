@@ -134,8 +134,12 @@ For finer-grained checks:
 |---|---|
 | `catalog.is_acquired` | Content was retrieved (non-empty) |
 | `catalog.is_well_formed` | Content parsed successfully |
-| `catalog.is_valid` | Content passed OSCAL schema validation |
+| `catalog.is_minimally_valid` | Structurally sound (the bar for tree building & imports) |
+| `catalog.is_valid` | Passed **L2** validation (structure + native value-quality; meets/exceeds the OSCAL JSON Schema) |
+| `catalog.is_fully_compliant` | **L3** tri-state (`None` until `validate_full()` runs) — full metaschema conformance |
 | `catalog.imports_resolved` | All imported documents loaded |
+
+See [Tiered Validation](VALIDATION.html) for the minimal / L2 / L3 tiers.
 
 ### Inspecting validation errors
 

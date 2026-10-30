@@ -36,21 +36,56 @@
             "controls": [
               {
                 "id": "ac-2.1",
-                "title": "Automated System Account Management"
+                "title": "Automated System Account Management",
+                "parts": [
+                  {
+                    "id": "ac-2.1_smt",
+                    "name": "statement",
+                    "prose": "."
+                  }
+                ]
               },
               {
                 "id": "ac-2.2",
-                "title": "Automated Temporary and Emergency Account Management"
+                "title": "Automated Temporary and Emergency Account Management",
+                "parts": [
+                  {
+                    "id": "ac-2.2_smt",
+                    "name": "statement",
+                    "prose": "."
+                  }
+                ]
+              }
+            ],
+            "parts": [
+              {
+                "id": "ac-2_smt",
+                "name": "statement",
+                "prose": "."
               }
             ]
           },
           {
             "id": "ac-3",
-            "title": "Access Enforcement"
+            "title": "Access Enforcement",
+            "parts": [
+              {
+                "id": "ac-3_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           },
           {
             "id": "ac-4",
-            "title": "Information Flow Enforcement"
+            "title": "Information Flow Enforcement",
+            "parts": [
+              {
+                "id": "ac-4_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           }
         ]
       },
@@ -61,15 +96,36 @@
         "controls": [
           {
             "id": "au-1",
-            "title": "Policy and Procedures"
+            "title": "Policy and Procedures",
+            "parts": [
+              {
+                "id": "au-1_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           },
           {
             "id": "au-2",
-            "title": "Event Logging"
+            "title": "Event Logging",
+            "parts": [
+              {
+                "id": "au-2_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           },
           {
             "id": "au-3",
-            "title": "Content of Audit Records"
+            "title": "Content of Audit Records",
+            "parts": [
+              {
+                "id": "au-3_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           }
         ]
       },
@@ -80,7 +136,14 @@
         "controls": [
           {
             "id": "pt-1",
-            "title": "Policy and Procedures"
+            "title": "Policy and Procedures",
+            "parts": [
+              {
+                "id": "pt-1_smt",
+                "name": "statement",
+                "prose": "."
+              }
+            ]
           },
           {
             "id": "pt-2",
@@ -88,7 +151,21 @@
             "controls": [
               {
                 "id": "pt-2.1",
-                "title": "Data Tagging"
+                "title": "Data Tagging",
+                "parts": [
+                  {
+                    "id": "pt-2.1_smt",
+                    "name": "statement",
+                    "prose": "."
+                  }
+                ]
+              }
+            ],
+            "parts": [
+              {
+                "id": "pt-2_smt",
+                "name": "statement",
+                "prose": "."
               }
             ]
           }

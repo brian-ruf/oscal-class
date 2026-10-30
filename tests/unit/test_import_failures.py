@@ -637,29 +637,32 @@ class TestHrefList:
         statuses = [item.get("status") for item in entry["href_list"] if "status" in item]
         assert ImportState.INVALID in statuses
 
-    def test_fragment_initial_item_is_raw_href(self):
+    def test_fragment_ref_not_in_href_list(self):
+        """A #uuid fragment ref is resolved through back-matter and is never itself an
+        href_list item; only the cited resource's rlinks appear."""
         bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_nonexistent.xml"])
         obj = _load_profile(f"#{_RLINK_UUID}", bm)
         entry = obj.import_list[0]
-        assert entry["href_list"][0]["href"] == f"#{_RLINK_UUID}"
-        assert entry["href_list"][0]["original"] is True
+        assert all(not item["href"].startswith("#") for item in entry["href_list"])
+        assert f"#{_RLINK_UUID}" not in [item["href"] for item in entry["href_list"]]
 
-    def test_fragment_rlinks_appended_with_original_true(self):
+    def test_fragment_rlinks_are_the_href_list_with_original_true(self):
         bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/a.xml", "/tmp/b.xml"])
         obj = _load_profile(f"#{_RLINK_UUID}", bm)
         entry = obj.import_list[0]
-        rlink_hrefs = [item["href"] for item in entry["href_list"][1:]]
-        assert "/tmp/a.xml" in rlink_hrefs
-        assert "/tmp/b.xml" in rlink_hrefs
-        for item in entry["href_list"][1:]:
+        rlink_hrefs = [item["href"] for item in entry["href_list"]]
+        assert rlink_hrefs == ["/tmp/a.xml", "/tmp/b.xml"]
+        for item in entry["href_list"]:
             assert item.get("original") is True
 
-    def test_fragment_initial_item_has_no_status(self):
-        """The #uuid placeholder is skipped — it never gets a status stamped on it."""
-        bm = _resource_xml(_RLINK_UUID, rlinks=["/tmp/_oscal_test_nonexistent.xml"])
-        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+    def test_fragment_to_missing_resource_leaves_href_list_blank(self):
+        """A fragment citing a non-existent / invalid back-matter resource yields an
+        empty href_list (nothing to attempt)."""
+        # No back-matter at all: the resource UUID cannot be found.
+        obj = _load_profile(f"#{_RLINK_UUID}")
         entry = obj.import_list[0]
-        assert "status" not in entry["href_list"][0]
+        assert entry["href_list"] == []
+        assert entry["status"] == ImportState.INVALID
 
     def test_successful_item_gets_status_ready(self):
         bm = _resource_xml(_RLINK_UUID, rlinks=[_CATALOG_PATH])
@@ -997,3 +1000,75 @@ class TestNonFragmentRlinksTried:
         obj = _load_profile("/tmp/_oscal_test_nonexistent_XYZ.xml")
         failure = obj.import_list[0]["failure"]
         assert any("_oscal_test_nonexistent_XYZ" in r for r in failure.rlinks_tried)
+
+
+# ===========================================================================
+# retry_import refreshes a Profile's derived controls_tree
+# ===========================================================================
+class TestRetryImportRebuildsControlsTree:
+    """A profile opened without a resolvable base (e.g. a GUI drop-zone) fails its relative
+    imports, so controls_tree is empty. Supplying the located file via retry_import must make
+    the imported controls visible in controls_tree WITHOUT a full resolve(), and must preserve
+    an earlier fix across a partial retry of a multi-import profile (resolve_imports() wipes and
+    re-acquires import_list from the declared hrefs, which would clobber the fix)."""
+
+    @staticmethod
+    def _catalog_file(tmp_path, name, ctrl_id):
+        from oscal import Catalog
+        cat = Catalog.new(f"Cat {ctrl_id}")
+        cat.create_control_group("[root]", f"g-{ctrl_id}", title="G")
+        cat.create_control(f"g-{ctrl_id}", ctrl_id, title="C", statements=["do it"])
+        path = str(tmp_path / name)
+        cat.dump(path, format="xml")
+        return path
+
+    @staticmethod
+    def _two_import_profile():
+        return OSCAL.loads(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" '
+            'uuid="aabbccdd-0000-4000-a000-000000000009">'
+            "<metadata><title>Two Imports</title>"
+            "<last-modified>2026-04-28T00:00:00Z</last-modified>"
+            "<version>1.0</version><oscal-version>1.2.1</oscal-version></metadata>"
+            '<import href="miss1.xml"><include-all/></import>'
+            '<import href="miss2.xml"><include-all/></import>'
+            '<merge><combine method="keep"/><as-is>true</as-is></merge></profile>')
+
+    def test_single_import_retry_populates_tree(self, tmp_path):
+        cat = self._catalog_file(tmp_path, "cat.xml", "ac-1")
+        prof = _load_profile("missing-cat.xml")   # relative href, unresolvable (drop-zone)
+        assert prof.controls_tree == []
+        assert prof.retry_import("missing-cat.xml", cat) is True
+        assert prof.controls_tree, "controls_tree must populate after retry_import"
+        assert prof.control("ac-1") is not None
+
+    def test_retry_does_not_require_resolve(self, tmp_path):
+        # The tree is visible without ever calling resolve(): the profile stays UNRESOLVED.
+        cat = self._catalog_file(tmp_path, "cat.xml", "ac-1")
+        prof = _load_profile("missing-cat.xml")
+        prof.retry_import("missing-cat.xml", cat)
+        assert prof.control("ac-1") is not None
+        assert prof.catalog is None   # no resolved catalog was built
+
+    def test_retry_does_not_restamp_revision(self, tmp_path):
+        # Locating an import is not a content edit — the root uuid/last-modified must not change.
+        cat = self._catalog_file(tmp_path, "cat.xml", "ac-1")
+        prof = _load_profile("missing-cat.xml")
+        uuid0, lm0 = prof.uuid, prof.last_modified
+        prof.retry_import("missing-cat.xml", cat)
+        assert prof.uuid == uuid0
+        assert prof.last_modified == lm0
+
+    def test_partial_retry_preserves_earlier_fix(self, tmp_path):
+        cat1 = self._catalog_file(tmp_path, "c1.xml", "ac-1")
+        cat2 = self._catalog_file(tmp_path, "c2.xml", "ac-2")
+        prof = self._two_import_profile()
+        assert prof.controls_tree == []
+        assert prof.retry_import("miss1.xml", cat1) is True
+        # First fix is visible even though the second import is still INVALID.
+        assert prof.control("ac-1") is not None
+        assert prof.retry_import("miss2.xml", cat2) is True
+        # The earlier fix survived the second retry (not clobbered by a re-acquire).
+        assert prof.control("ac-1") is not None
+        assert prof.control("ac-2") is not None
