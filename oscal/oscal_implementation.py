@@ -697,7 +697,7 @@ class ComponentDefinition(OSCAL):
         return None
 
     # -------------------------------------------------------------------------
-    def control_implementation(self, uuid: str) -> Optional[dict]:
+    def control_implementation(self, uuid: str, include_resources: bool = False) -> Optional[dict]:
         """Retrieve a ``control-implementation`` by its ``uuid``, as a safe copy.
 
         Searches every component and capability in this cDef for a control-implementation
@@ -717,6 +717,13 @@ class ComponentDefinition(OSCAL):
 
         Args:
             uuid (str, required): The ``uuid`` of the control-implementation.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned control-implementation (including on each inserted ``control``,
+                whose links reference the source catalog/profile's back-matter) whose
+                ``href`` is a ``#uuid`` fragment resolving to a ``back-matter.resource``
+                **in scope** (this cDef or any imported document) gains a ``resource`` key
+                holding that resource, with its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the control-implementation with each
@@ -740,12 +747,15 @@ class ComponentDefinition(OSCAL):
                             source_obj.get_control_by_id(control_id, depth=0)
                             if source_obj is not None and control_id else None
                         )
+                    if include_resources:
+                        _embed_link_resources(self, result)
                     return result
         return None
 
     # -------------------------------------------------------------------------
     def implemented_requirement(self, uuid: str, with_control: bool = True,
-                                depth: Optional[int] = 0) -> Optional[dict]:
+                                depth: Optional[int] = 0,
+                                include_resources: bool = False) -> Optional[dict]:
         """Retrieve a single ``implemented-requirement`` by its own ``uuid``, as a safe copy.
 
         An ``implemented-requirement`` is the child of a ``control-implementation`` (which
@@ -783,6 +793,13 @@ class ComponentDefinition(OSCAL):
             depth (int | None, optional): Enhancement depth of the attached control
                 (``0`` the control alone, ``None`` the full subtree, ``N`` N levels),
                 following the library-wide convention. Ignored when ``with_control`` is False.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned requirement (including on the inserted ``control`` and the parent's
+                ``control-implementation-links``) whose ``href`` is a ``#uuid`` fragment
+                resolving to a ``back-matter.resource`` **in scope** (this cDef or any
+                imported document) gains a ``resource`` key holding that resource, with its
+                ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement augmented as above, or
@@ -839,6 +856,8 @@ class ComponentDefinition(OSCAL):
                             source_obj.get_control_by_id(control_id, depth=depth)
                             if source_obj is not None and control_id else None
                         )
+                    if include_resources:
+                        _embed_link_resources(self, result)
                     return result
         return None
 
@@ -966,7 +985,7 @@ class ComponentDefinition(OSCAL):
 
     # -------------------------------------------------------------------------
     def control(self, control_id: str, with_control: bool = True,
-                depth: Optional[int] = None) -> Optional[dict]:
+                depth: Optional[int] = None, include_resources: bool = False) -> Optional[dict]:
         """Reverse-map a ``control-id`` to every component/capability that implements it.
 
         The cDef analog of :meth:`SSP.control`: rather than looking up one
@@ -985,6 +1004,13 @@ class ComponentDefinition(OSCAL):
             depth (int | None, optional): Enhancement depth of each inserted control
                 (``None`` full subtree, ``0`` control only, ``N`` N levels), following the
                 library-wide convention. Ignored when ``with_control`` is False.
+            include_resources (bool, optional): When True, every ``link`` anywhere in each
+                returned entry (including on the inserted ``control``, whose links reference
+                the source catalog/profile's back-matter) whose ``href`` is a ``#uuid``
+                fragment resolving to a ``back-matter.resource`` **in scope** (this cDef or
+                any imported document) gains a ``resource`` key holding that resource, with
+                its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: ``{"control-id", "components"}`` where ``components`` is one
@@ -1037,6 +1063,8 @@ class ComponentDefinition(OSCAL):
                         if control is not None:
                             _apply_requirement_set_parameters(control, req)
                         ir["control"] = control
+                    if include_resources:
+                        _embed_link_resources(self, ir)
                     entry["implemented-requirement"] = ir
                     entries.append(entry)
         if not entries:
@@ -1380,7 +1408,8 @@ class SSP(OSCAL):
 
     # -------------------------------------------------------------------------
     def control(self, identifier: str, with_control: bool = True,
-                depth: Optional[int] = None, by_component_uuids: list = []) -> Optional[dict]:
+                depth: Optional[int] = None, by_component_uuids: list = [],
+                include_resources: bool = False) -> Optional[dict]:
         """Retrieve an SSP implemented-requirement by control-id or its uuid, as a safe copy.
 
         Looks up ``control-implementation.implemented-requirements`` for the first entry
@@ -1433,6 +1462,13 @@ class SSP(OSCAL):
             by_component_uuids (list, optional): When non-empty, keep only ``by-component``
                 entries (requirement-level and statement-level) whose ``component-uuid`` is
                 in this list. Empty (default) keeps all.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned requirement (including on the inserted ``control``, whose links
+                reference the imported catalog/profile's back-matter) whose ``href`` is a
+                ``#uuid`` fragment resolving to a ``back-matter.resource`` **in scope**
+                (this SSP or any imported document) gains a ``resource`` key holding that
+                resource, with its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement (with a ``control``
@@ -1475,6 +1511,8 @@ class SSP(OSCAL):
                     if control is not None:
                         self._apply_requirement_set_parameters(control, req)
                     result["control"] = control
+                if include_resources:
+                    _embed_link_resources(self, result)
                 return result
         return None
 

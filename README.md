@@ -35,32 +35,32 @@ A Python library for working with [Open Security Controls Assessment Language (O
 
 ---
 
-
 ## Documentation
 
 | Document | Contents |
 |---|---|
 | [API Reference (Human Oriented)](https://brian-ruf.github.io/oscal-class/api.html) | Reference: Functions, Classes, Methods, Attributes |
 | [API Reference (LLM Oriented)](https://brian-ruf.github.io/oscal-class/api-llm.html) | Reference: Functions, Classes, Methods, Attributes |
-| [Getting Started](docs/GETTING_STARTED.md) | Installation, loading patterns, saving, and a walkthrough example |
-| [OSCAL Class API](docs/CONTENT.md) | Complete class reference: factory methods, states, querying, mutation, import handling |
-| [Querying Content](docs/QUERY_CONTENT.md) | Full path syntax for `query()` and `json_query()` |
-| [Import Resolution](docs/IMPORTS.md) | How imports are resolved, failure codes, and retry API |
-| [Profile Processing](docs/PROFILE_PROCESSING.md) | How imports are resolved, failure codes, and retry API |
-| [Format Converters](docs/CONVERTERS.md) | `OSCALConverter` and markup conversion internals |
-| [Support Module](docs/SUPPORT_MODULE.md) | Support database configuration, updates, and API |
-| [Logging](docs/LOGGING.md) | Standard Logging and Other Logging Libraries |
-
+| [Getting Started](https://brian-ruf.github.io/oscal-class/GETTING_STARTED.html) | Installation, loading patterns, saving, and a walkthrough example |
+| [OSCAL Class API](https://brian-ruf.github.io/oscal-class/CONTENT.html) | Complete class reference: factory methods, states, querying, mutation, import handling |
+| [Querying Content](https://brian-ruf.github.io/oscal-class/QUERY_CONTENT.html) | Full path syntax for `query()` and `json_query()` |
+| [Import Resolution](https://brian-ruf.github.io/oscal-class/IMPORTS.html) | How imports are resolved, failure codes, and retry API |
+| [Profile Processing](https://brian-ruf.github.io/oscal-class/PROFILE_PROCESSING.html) | How imports are resolved, failure codes, and retry API |
+| [Format Converters](https://brian-ruf.github.io/oscal-class/CONVERTERS.html) | `OSCALConverter` and markup conversion internals |
+| [Support Module](https://brian-ruf.github.io/oscal-class/SUPPORT_MODULE.html) | Support database configuration, updates, and API |
+| [Logging](https://brian-ruf.github.io/oscal-class/LOGGING.html) | Standard Logging and Other Logging Libraries |
 
 ---
 
 ## Installation
 
+### Latest Release
+
 ```bash
 pip install oscal
 ```
 
-Latest pre-released development version:
+### Latest Development:
 
 ```bash
 pip install git+https://github.com/brian-ruf/oscal-class.git@develop
@@ -82,7 +82,6 @@ pip install git+https://github.com/brian-ruf/oscal-class.git@develop
 | `POAM` | `plan-of-action-and-milestones` |
 
 Use the base `OSCAL` class when the model is not known in advance. It will return the appropriate model-specific class.
-
 
 ---
 
@@ -170,7 +169,7 @@ catalog.dump("catalog.yaml", format="yaml")
 
 
 
-### Load in-memory content
+### Loading in-memory content
 
 ```python
 from oscal import OSCAL
@@ -229,8 +228,6 @@ group  = content.get_group_by_id("ac", depth=0)      # Returns a Python Dict wit
 control = content.get_control_by_id("ac-2", depth=0)  # Returns a Python Dict with the control's title, props, parts and links
 
 ```
-
-
 
 ---
 

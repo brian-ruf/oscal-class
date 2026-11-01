@@ -71,3 +71,8 @@
     - Fully Compliant (not yet implemented):
         - convert to XML and apply xPath 3 to interpret remaining constraints
 
+## Version 4.1.0
+
+- Added common getters, which enumerate across all imports by default, or can be constrained to enumerate only for the current OSCAL object: `.resources()`, `.roles()`, `.parties()`, `.locations()`, `.responsible_parties()`, `.actions()`
+- Added common getter, `.action()` which fetches a specific metadata action.
+- Fixed a bug in `SSP.control()` that prevented control references from being populated when they existed in an imported profile or catalog.

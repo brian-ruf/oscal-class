@@ -1,0 +1,30 @@
+{%- comment -%}
+  Custom left-sidebar navigation. This file SHADOWS Minima's stock _includes/header.html
+  (the one that renders the wrapping top "word-cloud" of page links). Minima's default
+  layout pulls in header.html, so dropping this file in docs/_includes/ replaces the
+  header site-wide with no workflow or layout changes.
+
+  Links are plain relative *.html paths. Every guide builds to a .html at the site root,
+  so a bare relative link resolves correctly regardless of the project-pages baseurl --
+  the same convention index.md documents. Edit the nav_items list below to add, remove,
+  reorder, or rename entries (format: "Label|file.html", comma-separated).
+{%- endcomment -%}
+{%- assign nav_items = "Home|index.html,API Reference (human)|api.html,API Reference (LLM)|api-llm.html,Overview|OVERVIEW.html,Getting Started|GETTING_STARTED.html,Concept of Operations|CONOPS.html,OSCAL Class|CONTENT.html,Tiered Validation|VALIDATION.html,Format Converters|CONVERTERS.html,Import Resolution|IMPORTS.html,Importing Controls|IMPORTING_CONTROLS.html,Profile Processing|PROFILE_PROCESSING.html,Querying Content|QUERY_CONTENT.html,Support Module|SUPPORT_MODULE.html,Shared Mode|SHARED_MODE.html,Logging|LOGGING.html,ROADMAP|ROADMAP.html" | split: "," -%}
+<aside class="site-sidebar" role="navigation" aria-label="Documentation menu">
+  <a class="sidebar-brand" href="index.html">
+    <img src="assets/rr_logo.png" alt="">
+    <span>{{ site.title | default: "Documentation" | escape }}</span>
+  </a>
+  <nav class="sidebar-nav">
+    {%- for item in nav_items -%}
+      {%- assign parts = item | split: "|" -%}
+      {%- assign label = parts[0] -%}
+      {%- assign file = parts[1] -%}
+      {%- assign target = "/" | append: file -%}
+      {%- assign is_active = false -%}
+      {%- if page.url == target -%}{%- assign is_active = true -%}{%- endif -%}
+      {%- if file == "index.html" and page.url == "/" -%}{%- assign is_active = true -%}{%- endif -%}
+      <a class="sidebar-link{% if is_active %} active{% endif %}" href="{{ file }}">{{ label }}</a>
+    {%- endfor -%}
+  </nav>
+</aside>
