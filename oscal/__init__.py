@@ -6,17 +6,13 @@ and assessment content.
 
 """
 import logging
-from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
-# Package version, read from the installed distribution metadata (baked in from
-# pyproject.toml's [project] version at build time). pyproject.toml is a build
-# input, not a runtime artifact, so we never parse it directly — importlib.metadata
-# is the single, install-agnostic source. Falls back when running from a source
-# tree that was never installed (e.g. no egg-info/dist-info present).
-try:
-    __version__ = _pkg_version("oscal")
-except PackageNotFoundError:  # pragma: no cover - only when not installed
-    __version__ = "0.0.0+unknown"
+# Package version. The single authoritative value lives in oscal/_version.py and is
+# imported directly here — so the version is correct at runtime without depending on
+# installed distribution metadata (which goes stale in editable installs until a
+# reinstall). pyproject.toml derives its published version from the same literal at
+# build time via [tool.setuptools.dynamic]. To change the version, edit oscal/_version.py.
+from ._version import __version__
 
 # The library emits log records but installs no handler of its own, so it stays
 # silent unless the calling application configures logging. Consumers enable it

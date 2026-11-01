@@ -1,10 +1,17 @@
 ---
+---
 
-# ROADMAP (_Updated October 30, 2026_)
+# ROADMAP (_Updated November 1, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## CURRENT: Version 4.0.0 
+## CURRENT: Version 4.1.0
+
+- Added common getters, which enumerate across all imports by default, or can be constrained to enumerate only for the current OSCAL object: `.resources()`, `.roles()`, `.parties()`, `.locations()`, `.responsible_parties()`, `.actions()`
+- Added common getter, `.action()` which fetches a specific metadata action.
+- Fixed a bug in `SSP.control()` that prevented control references from being populated when they existed in an imported profile or catalog.
+
+## Builds on Version 4.0.0
 
 - Revised metaschema index
 - increased coverage of metaschema validation
@@ -15,7 +22,7 @@ The sequencing of releases may change in response to client needs and other exte
     - Significantly exceeds validation based on INST-published XML or JSON schema files
     - Greater than 80% of the metaschema constraints now enforced
     - Referential integrity validated
-- Three validation levels defined defined:
+- Three validation levels defined:
     - Minimally Valid: 
         - well-formed, valid syntax
         - sufficient for processing
@@ -26,13 +33,14 @@ The sequencing of releases may change in response to client needs and other exte
         - All metaschema constraints handled except those that require xPath 3 to interpret
     - Fully Compliant (not yet implemented):
         - convert to XML and apply xPath 3 to interpret remaining constraints
+- getters span import tree where appropriate
+
+
 
 ## Up Next:
 
 - [ ] POA&M, AP and AR Getters
-
 - [ ] Generate and maintain metaschema-defined indexes
-
 - [ ] Handle metaschema-defined uniqueness constraints
 
 
@@ -56,6 +64,13 @@ The sequencing of releases may change in response to client needs and other exte
 - [ ] Automatic cache refresh based on TTL
 - [ ] Manually triggered refresh
 - [ ] Fallback to cache after expiration when remote content is not available.
+
+### Indexes and Robust Addressibility
+
+- [ ] Generate and maintain extra-metaschema indexes 
+- [ ] Enable robust addressibility across project files
+  - Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements
+
 
 ## Future:
 
@@ -112,13 +127,6 @@ The sequencing of releases may change in response to client needs and other exte
       `get_party_by_uuid` / `get_location_by_uuid`), which already cascade the import tree for a
       single match and expose owning-document info via `with_source`.
 
-
-
-### Indexes and Robust Addressibility
-
-- [ ] Generate and maintain extra-metaschema indexes 
-- [ ] Enable robust addressibility across project files
-  - Easily search for ID/UUID referencess across a project, consistent with OSCAL addressibility scope and requirements
 
 ---
 

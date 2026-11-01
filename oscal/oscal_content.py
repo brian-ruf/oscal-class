@@ -5547,15 +5547,35 @@ class OSCAL:
     # Kinds of element the import-tree resolver can locate, mapped to how they are
     # identified (uuid vs id). Extensible for model-specific needs.
     _RESOLVE_KINDS = ("resource", "role", "party", "location", "responsible-party",
-                      "control", "group", "param", "part")
+                      "action", "control", "group", "param", "part")
+
+    # The flat, container-backed kinds common to every OSCAL model: each lives in a
+    # named list under a fixed path from the model root and is identified by one key
+    # field. This single table drives BOTH the singular by-id lookup
+    # (:meth:`_find_local_element`) and the plural in-scope enumeration
+    # (:meth:`_collect_in_scope`), so the two never drift. ``control``/``group``/
+    # ``param``/``part`` are NOT here — they nest arbitrarily in the control tree and
+    # are handled separately by :func:`_find_model_element`.
+    # Ordering matters: it fixes the search/collection order (and is relied on by
+    # :meth:`_find_local_element`'s first-match behavior).
+    _COLLECTION_SPEC = {
+        # kind:               ((path, from, root),            key field)
+        "resource":          (("back-matter", "resources"),         "uuid"),
+        "role":              (("metadata", "roles"),                "id"),
+        "party":             (("metadata", "parties"),              "uuid"),
+        "location":          (("metadata", "locations"),            "uuid"),
+        "responsible-party": (("metadata", "responsible-parties"),  "role-id"),
+        "action":            (("metadata", "actions"),              "uuid"),
+    }
 
     def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None) -> Optional[dict]:
         """Resolve an id/uuid by searching this document and its import tree.
 
         OSCAL cross-references (``href="#..."``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -5964,6 +5984,140 @@ class OSCAL:
         return self._lookup_in_scope(role_id, "responsible-party", with_source, local_only)
 
     # -------------------------------------------------------------------------
+    def get_action_by_uuid(self, action_uuid: str, with_source: bool = False,
+                           local_only: bool = False) -> Optional[dict]:
+        """Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document's ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.
+        """
+        return self._lookup_in_scope(action_uuid, "action", with_source, local_only)
+
+    # -------------------------------------------------------------------------
+    # Plural in-scope collection getters
+    # -------------------------------------------------------------------------
+    def _collect_in_scope(self, kind: str, include_imports: bool = False,
+                          _seen=None, _dedup=None, _imported: bool = False) -> list:
+        """Collect every element of one ``kind`` from this document (and, optionally, imports).
+
+        The plural companion to :meth:`_lookup_in_scope`: instead of returning the first
+        match for an id, it returns ALL elements of ``kind`` in scope. ``kind`` is one of
+        the flat, container-backed kinds in :attr:`_COLLECTION_SPEC` (``resource``,
+        ``role``, ``party``, ``location``, ``responsible-party``, ``action``).
+
+        Each returned element is a detached safe copy carrying an added ``source-document``
+        annotation — ``{"uuid", "href", "imported"}`` naming the document it came from (its
+        root uuid, resolved href, and whether it was reached through an import) — so a
+        top-level vs imported element is unambiguous from the returned list alone. The
+        annotation is a library-added sibling, not part of the OSCAL element's own shape.
+
+        De-duplication is **first-wins on the key field** (uuid / id / role-id): this
+        document is collected before its imports and nearer imports before farther ones, so
+        an element shared across files appears once, attributed to the nearest document.
+        Elements with a missing/blank key are never de-duplicated (each is kept). The walk
+        is cycle-safe across the import graph.
+
+        Args:
+            kind (str, required): A member of :attr:`_COLLECTION_SPEC`.
+            include_imports (bool, optional): When False (default) collect only THIS
+                document; when True also cascade the import tree.
+            _seen / _dedup / _imported: Internal recursion state (visited objects, seen
+                key values, and whether the current document was reached via import).
+
+        Returns:
+            list[dict]: Safe copies with ``source-document`` annotations (possibly empty).
+        """
+        spec = self._COLLECTION_SPEC.get(kind)
+        if spec is None:
+            return []
+        (c1, c2), key = spec
+        if _seen is None:
+            _seen = set()
+        if _dedup is None:
+            _dedup = set()
+        if id(self) in _seen:
+            return []
+        _seen.add(id(self))
+
+        results: list = []
+        root = self._dict.get(self.model, {}) if isinstance(self._dict, dict) else {}
+        container = root.get(c1, {}) if isinstance(root, dict) else {}
+        items = container.get(c2, []) if isinstance(container, dict) else []
+        href = self.href or self.href_original or ""
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            kv = item.get(key, "")
+            if kv and kv in _dedup:
+                continue
+            if kv:
+                _dedup.add(kv)
+            copied = copy.deepcopy(item)
+            copied["source-document"] = {"uuid": self.uuid, "href": href,
+                                         "imported": _imported}
+            results.append(copied)
+
+        if include_imports:
+            for entry in self.import_list:
+                obj = entry.get("object")
+                if obj is None:
+                    continue
+                results.extend(obj._collect_in_scope(
+                    kind, include_imports=True, _seen=_seen, _dedup=_dedup, _imported=True))
+        return results
+
+    def resources(self, include_imports: bool = False) -> list:
+        """Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.
+        """
+        return self._collect_in_scope("resource", include_imports)
+
+    def roles(self, include_imports: bool = False) -> list:
+        """Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).
+        """
+        return self._collect_in_scope("role", include_imports)
+
+    def parties(self, include_imports: bool = False) -> list:
+        """Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).
+        """
+        return self._collect_in_scope("party", include_imports)
+
+    def locations(self, include_imports: bool = False) -> list:
+        """Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).
+        """
+        return self._collect_in_scope("location", include_imports)
+
+    def responsible_parties(self, include_imports: bool = False) -> list:
+        """Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).
+        """
+        return self._collect_in_scope("responsible-party", include_imports)
+
+    def actions(self, include_imports: bool = False) -> list:
+        """Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).
+        """
+        return self._collect_in_scope("action", include_imports)
+
+    # -------------------------------------------------------------------------
     def reachable_ids(self, _seen=None) -> set:
         """Return every ``id``/``uuid`` value in this document and its import tree.
 
@@ -5991,28 +6145,19 @@ class OSCAL:
         if not isinstance(root, dict):
             return None
 
-        if "resource" in wanted:
-            for res in root.get("back-matter", {}).get("resources", []):
-                if isinstance(res, dict) and res.get("uuid") == fragment_id:
-                    return {"element": copy.deepcopy(res), "kind": "resource", "id": fragment_id}
-        metadata = root.get("metadata", {}) if isinstance(root.get("metadata"), dict) else {}
-        if "role" in wanted:
-            for role in metadata.get("roles", []):
-                if isinstance(role, dict) and role.get("id") == fragment_id:
-                    return {"element": copy.deepcopy(role), "kind": "role", "id": fragment_id}
-        if "party" in wanted:
-            for party in metadata.get("parties", []):
-                if isinstance(party, dict) and party.get("uuid") == fragment_id:
-                    return {"element": copy.deepcopy(party), "kind": "party", "id": fragment_id}
-        if "location" in wanted:
-            for loc in metadata.get("locations", []):
-                if isinstance(loc, dict) and loc.get("uuid") == fragment_id:
-                    return {"element": copy.deepcopy(loc), "kind": "location", "id": fragment_id}
-        if "responsible-party" in wanted:
-            # responsible-party is keyed by the role it fulfills (role-id), not a uuid.
-            for rp in metadata.get("responsible-parties", []):
-                if isinstance(rp, dict) and rp.get("role-id") == fragment_id:
-                    return {"element": copy.deepcopy(rp), "kind": "responsible-party", "id": fragment_id}
+        # Flat container-backed kinds (resource / role / party / location /
+        # responsible-party / action), driven by the shared _COLLECTION_SPEC so this
+        # lookup and _collect_in_scope stay in lock-step. responsible-party is keyed by
+        # the role it fulfills (role-id), not a uuid; action by uuid.
+        for kind, ((c1, c2), key) in self._COLLECTION_SPEC.items():
+            if kind not in wanted:
+                continue
+            container = root.get(c1, {})
+            if not isinstance(container, dict):
+                continue
+            for item in container.get(c2, []) or []:
+                if isinstance(item, dict) and item.get(key) == fragment_id:
+                    return {"element": copy.deepcopy(item), "kind": kind, "id": fragment_id}
         if any(k in wanted for k in ("control", "group", "param", "part")):
             found = _find_model_element(root, fragment_id, wanted)
             if found is not None:

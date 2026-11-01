@@ -1,0 +1,113 @@
+---
+# Empty front matter (required) tells Jekyll to compile this SCSS to /assets/main.css,
+# which Minima's head.html already links. Because the file lives at the same path the
+# theme uses, it overrides the theme's stylesheet while still pulling in all of Minima
+# via the @import below, then layering the sidebar styles on top.
+---
+
+@import "minima";
+
+// --- Left-sidebar navigation -------------------------------------------------
+$sidebar-width: 260px;
+$sidebar-bg: #1f2d3d;
+$sidebar-fg: #c7d2dd;
+$sidebar-accent: #4a90d9;
+
+.site-sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: $sidebar-width;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 24px 0;
+  background: $sidebar-bg;
+  box-sizing: border-box;
+  z-index: 100;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 18px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 600;
+  font-size: 1.05rem;
+  line-height: 1.25;
+  text-decoration: none;
+
+  &:hover { color: #fff; text-decoration: none; }
+  img { width: 32px; height: auto; flex: 0 0 auto; }
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+
+  .sidebar-link {
+    display: block;
+    padding: 8px 20px;
+    color: $sidebar-fg;
+    font-size: 0.95rem;
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.06);
+      text-decoration: none;
+    }
+
+    &.active {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.10);
+      border-left-color: $sidebar-accent;
+      font-weight: 600;
+    }
+  }
+}
+
+// Offset the main content and footer so they clear the fixed sidebar, and keep the
+// reading column a comfortable width within the offset area (Minima centers .wrapper).
+.page-content,
+.site-footer {
+  margin-left: $sidebar-width;
+}
+
+.page-content .wrapper {
+  max-width: 860px;
+}
+
+// Safety: if Minima's stock top header ever renders, keep it hidden.
+.site-header { display: none; }
+
+// --- Narrow screens: sidebar becomes a stacked top bar -----------------------
+@media screen and (max-width: 800px) {
+  .site-sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
+    border-bottom: 1px solid darken($sidebar-bg, 6%);
+  }
+
+  .page-content,
+  .site-footer {
+    margin-left: 0;
+  }
+
+  .sidebar-nav {
+    flex-flow: row wrap;
+
+    .sidebar-link {
+      border-left: none;
+      padding: 6px 12px;
+    }
+  }
+}
