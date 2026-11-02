@@ -31,4 +31,6 @@ Guides and reference material for the OSCAL Python library.
 - [The OSCAL Support Module](SUPPORT_MODULE.html)
 - [Logging in `oscal`](LOGGING.html)
 - [Shared Mode (multi-process / multi-user workspaces)](SHARED_MODE.html)
+- [Software Bill of Materials (SBOM)](SBOM.html)
+- [Releasing](RELEASING.html)
 - [ROADMAP](ROADMAP.html)

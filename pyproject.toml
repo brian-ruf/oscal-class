@@ -32,7 +32,9 @@ dependencies = [
     "xmlschema       >= 3.4.3",
     "PyYAML          >= 6.0",
     "markdown        >= 3.0.0",
-    "ruf-common      >= 2.1.0",
+    "requests        >= 2.31.0",
+    "elementpath     >= 4.7.0",
+    "packaging       >= 23.1",
 ]
 
 [project.urls]
@@ -40,6 +42,10 @@ Homepage = "https://github.com/brian-ruf/oscal-class"
 Repository = "https://github.com/brian-ruf/oscal-class.git"
 Documentation = "https://github.com/brian-ruf/oscal-class#readme"
 Issues = "https://github.com/brian-ruf/oscal-class/issues"
+# Per-version CycloneDX SBOMs are attached to each GitHub Release (see publish.yml).
+# This points at the releases list rather than a single version because project.urls is
+# static per build and cannot be version-specific; find the SBOM under the matching tag.
+SBOM = "https://github.com/brian-ruf/oscal-class/releases"
 
 [project.optional-dependencies]
 dev = [

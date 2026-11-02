@@ -44,7 +44,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build, sbom]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -58,3 +58,57 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  sbom:
+    name: SBOM and third-party licenses
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # required to upload assets onto the published Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install the built wheel into a clean, runtime-only venv
+        run: |
+          python -m venv .rtenv
+          .rtenv/bin/pip install --upgrade pip
+          .rtenv/bin/pip install dist/*.whl      # runtime deps only — no [dev]
+
+      - name: Generate CycloneDX SBOM from the wheel's runtime closure
+        run: |
+          python -m pip install cyclonedx-bom
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Introspect the clean venv (keeps cyclonedx's own deps out of the SBOM),
+          # and use `environment` mode so dependency *relationships* are included.
+          cyclonedx-py environment .rtenv/bin/python \
+            --output-format JSON \
+            --outfile "oscal-${VERSION}.cdx.json"
+
+      - name: Regenerate THIRD-PARTY-LICENSES.md from the wheel closure
+        run: .rtenv/bin/python scripts/generate_thirdparty_licenses.py -o THIRD-PARTY-LICENSES.md
+
+      - name: Attach SBOM and license manifest to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release upload "${GITHUB_REF_NAME}" \
+            "oscal-${VERSION}.cdx.json" THIRD-PARTY-LICENSES.md --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            oscal-*.cdx.json
+            THIRD-PARTY-LICENSES.md
+

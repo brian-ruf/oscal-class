@@ -55,11 +55,11 @@ import time
 from time import sleep
 from typing import Optional
 from functools import cmp_to_key
-from ruf_common.lfs import chkdir, putfile, chkfile
-from ruf_common import helper
-from ruf_common.helper import compare_semver
-from ruf_common import database
-from ruf_common import network
+from .helpers.lfs import chkdir, putfile, chkfile
+from .helpers import helper
+from .helpers.helper import compare_semver
+from .helpers import database
+from .helpers import network
 from .oscal_datatypes import oscal_date_time_with_timezone, OSCAL_DATATYPES
 
 logger = logging.getLogger(__name__)

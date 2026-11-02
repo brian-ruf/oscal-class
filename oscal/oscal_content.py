@@ -49,8 +49,8 @@ from enum               import Enum, IntEnum
 from urllib.parse       import urlparse
 from xml.etree          import ElementTree
 
-from ruf_common.data    import detect_data_format, safe_load, safe_load_xml, xpath_atomic
-from ruf_common.lfs     import getfile, chkdir, putfile, normalize_content
+from .helpers.data    import detect_data_format, safe_load, safe_load_xml, xpath_atomic
+from .helpers.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
 from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES, normalize_uri_reference
 from .oscal_registry    import get_registry
