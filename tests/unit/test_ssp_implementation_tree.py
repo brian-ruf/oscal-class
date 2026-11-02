@@ -1104,3 +1104,62 @@ class TestControlByComponentAnnotation:
         stored_bc = ci["implemented-requirements"][0]["by-components"][0]
         assert "title" not in stored_bc
         assert "type" not in stored_bc
+
+
+# ===========================================================================
+# control(include_resources=...) — link-resource embedding across the import tree
+# ===========================================================================
+_CTRL_RES = "90000000-0000-4000-8000-000000000001"
+
+
+def _catalog_with_resource():
+    """A catalog whose ac-1 carries a reference link to a back-matter resource."""
+    return {"catalog": {
+        "uuid": "10000000-0000-4000-8000-000000000011",
+        "metadata": _meta("Cat"),
+        "groups": [{"id": "ac", "title": "Access Control", "controls": [
+            {"id": "ac-1", "title": "Policy",
+             "links": [{"href": "#" + _CTRL_RES, "rel": "reference"}]}]}],
+        "back-matter": {"resources": [
+            {"uuid": _CTRL_RES, "title": "Cited Doc",
+             "base64": {"filename": "x.pdf", "media-type": "application/pdf",
+                        "value": "QUJD"}}]},
+    }}
+
+
+@pytest.fixture
+def ssp_res():
+    """SSP -> profile -> catalog chain; the catalog owns the referenced resource."""
+    with tempfile.TemporaryDirectory() as d:
+        for name, doc in [("catalog.json", _catalog_with_resource()),
+                          ("profile.json", _profile()),
+                          ("ssp.json", _ssp_doc())]:
+            with open(os.path.join(d, name), "w") as fh:
+                json.dump(doc, fh)
+        yield SSP.load(os.path.join(d, "ssp.json"))
+
+
+class TestControlIncludeResources:
+    """The referenced resource lives in the IMPORTED catalog, so embedding it proves the
+    getter resolves links through the import tree, not just the SSP's own back-matter."""
+
+    def test_default_does_not_embed(self, ssp_res):
+        link = ssp_res.control("ac-1")["control"]["links"][0]
+        assert "resource" not in link
+
+    def test_include_resources_embeds_imported_resource(self, ssp_res):
+        link = ssp_res.control("ac-1", include_resources=True)["control"]["links"][0]
+        assert link["resource"]["uuid"] == _CTRL_RES
+        assert link["resource"]["title"] == "Cited Doc"
+
+    def test_embedded_base64_payload_stripped_to_stub(self, ssp_res):
+        b64 = ssp_res.control("ac-1", include_resources=True)[
+            "control"]["links"][0]["resource"]["base64"]
+        assert b64.get("filename") == "x.pdf" and b64.get("media-type") == "application/pdf"
+        assert "value" not in b64          # the heavy payload is not inlined
+
+    def test_dangling_link_left_untouched(self, ssp_res):
+        # with_control=False drops the control; the requirement itself has no links here,
+        # so include_resources must be a harmless no-op (no crash, requirement returned).
+        req = ssp_res.control("ac-1", with_control=False, include_resources=True)
+        assert req is not None and "control" not in req

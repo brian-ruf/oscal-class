@@ -1191,3 +1191,60 @@ class TestReverseControlGetter:
         stored = cdef_ci._dict["component-definition"]["components"][0]
         req = stored["control-implementations"][0]["implemented-requirements"][1]
         assert "control" not in req
+
+
+# ===========================================================================
+# include_resources — link-resource embedding on the cDef getters (parity with SSP)
+# ===========================================================================
+_IR_RES = "cccccccc-0000-4000-8000-0000000000aa"
+_IR_UUID = "11111111-0000-4000-8000-0000000000aa"
+_CI_RES = "dddddddd-0000-4000-8000-0000000000aa"
+
+
+@pytest.fixture
+def cdef_with_resource():
+    """A cDef whose implemented-requirement links to a resource in its own back-matter.
+    (Cross-import resource resolution is covered by the SSP suite and the shared
+    get_resource_by_uuid cascade; here we verify the getters invoke the embed step.)"""
+    doc = {"component-definition": {
+        "uuid": "88888888-8888-4888-8888-88888888888a",
+        "metadata": {"title": "cDef", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.1.3"},
+        "components": [
+            {"uuid": "aaaaaaaa-0000-4000-8000-00000000c001", "type": "software",
+             "title": "C", "description": "x",
+             "control-implementations": [
+                 {"uuid": _CI_RES, "source": "#missing", "description": "ci",
+                  "implemented-requirements": [
+                      {"uuid": _IR_UUID, "control-id": "ac-1",
+                       "links": [{"href": "#" + _IR_RES, "rel": "reference"}]}]}]},
+        ],
+        "back-matter": {"resources": [
+            {"uuid": _IR_RES, "title": "Doc",
+             "base64": {"filename": "a.pdf", "media-type": "application/pdf",
+                        "value": "QUJD"}}]},
+    }}
+    return _load(doc)
+
+
+class TestCdefIncludeResources:
+
+    def test_implemented_requirement_default_no_embed(self, cdef_with_resource):
+        link = cdef_with_resource.implemented_requirement(_IR_UUID)["links"][0]
+        assert "resource" not in link
+
+    def test_implemented_requirement_embeds(self, cdef_with_resource):
+        link = cdef_with_resource.implemented_requirement(
+            _IR_UUID, include_resources=True)["links"][0]
+        assert link["resource"]["uuid"] == _IR_RES
+        assert "value" not in link["resource"]["base64"]   # payload stripped to stub
+
+    def test_control_implementation_embeds(self, cdef_with_resource):
+        ci = cdef_with_resource.control_implementation(_CI_RES, include_resources=True)
+        link = ci["implemented-requirements"][0]["links"][0]
+        assert link["resource"]["uuid"] == _IR_RES
+
+    def test_reverse_control_embeds(self, cdef_with_resource):
+        entry = cdef_with_resource.control("ac-1", include_resources=True)["components"][0]
+        link = entry["implemented-requirement"]["links"][0]
+        assert link["resource"]["uuid"] == _IR_RES

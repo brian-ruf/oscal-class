@@ -1,9 +1,11 @@
 ---
 ---
 
-# Phase 5d — Shared Mode (multi-process / multi-user workspaces)
+# Shared Mode (multi-process / multi-user workspaces)
 
-Status: **not started.** This document captures the intention for 5d and the
+Status: **Not Started.** 
+
+This document captures the intention for 5d and the
 groundwork already in place, so it can be picked up in a later session.
 
 ---
