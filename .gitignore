@@ -4,6 +4,7 @@ venv/
 HOLD/
 __pycache__/
 support/
+*.cdx.json
 *.pyc
 *.pyo
 *.pyd

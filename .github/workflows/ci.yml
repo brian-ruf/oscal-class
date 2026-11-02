@@ -60,6 +60,31 @@ jobs:
       - name: Run tests
         run: pytest tests/unit -v
 
+  # Exercises the exact SBOM + license-manifest generation used at release time, so the
+  # pipeline is validated on every push/PR without having to cut a release. It builds a
+  # wheel, runs scripts/generate_sbom.sh against it, and uploads the results as workflow
+  # artifacts. Non-gating (nothing depends on it) and never touches a Release or PyPI.
+  sbom-smoke:
+    name: SBOM generation (smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate SBOM and license manifest (no release)
+        run: bash scripts/generate_sbom.sh   # no wheel arg -> builds one, then describes it
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-smoke
+          path: |
+            oscal-*.cdx.json
+            THIRD-PARTY-LICENSES.md
+
   # Refreshes the OSCAL support database and API docs on main so that both are
   # current *before* a release is tagged. Runs once, only after every lint and
   # test matrix leg has passed, and only for an actual push landing on main
