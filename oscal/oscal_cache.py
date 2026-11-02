@@ -37,8 +37,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import logging
-from ruf_common.lfs import chkdir, normalize_content
-from ruf_common import database
+from .helpers.lfs import chkdir, normalize_content
+from .helpers import database
 
 logger = logging.getLogger(__name__)
 

@@ -47,8 +47,8 @@ from typing import cast
 import logging
 from .oscal_support import get_support, METASCHEMA_INDEX_VERSION
 from xml.etree import ElementTree as ET
-from ruf_common.helper import iif, compare_semver
-from ruf_common.data import deserialize_xml, xpath, xpath_atomic, get_markup_content
+from .helpers.helper import iif, compare_semver
+from .helpers.data import deserialize_xml, xpath, xpath_atomic, get_markup_content
 
 logger = logging.getLogger(__name__)
 

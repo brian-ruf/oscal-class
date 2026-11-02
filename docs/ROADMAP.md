@@ -74,6 +74,31 @@ The sequencing of releases may change in response to client needs and other exte
 
 ## Future:
 
+### SBOM Packaging — PEP 770 Alignment
+
+- [ ] Embed a CycloneDX SBOM inside the published wheel/sdist per **PEP 770**
+      (SBOM documents under `.dist-info/sboms/`, recorded in core metadata) once
+      build-backend (setuptools) support has matured.
+    - Motivation: today the per-release CycloneDX SBOM is attached to the GitHub Release
+      and pointed at from `[project.urls]`. A static `project.urls` link cannot be
+      version-specific (the value is baked into each build and setuptools does not allow
+      `urls` to be dynamic), so a consumer viewing an *older* version on PyPI is sent to a
+      generic releases page rather than that exact version's SBOM. PEP 770 fixes this
+      structurally: the SBOM travels *inside* the versioned artifact, so it is always the
+      right one for whatever wheel a (e.g. federal) consumer actually downloaded.
+    - Requirements:
+        - Generate the SBOM as part of the build and place it where PEP 770 specifies, so
+          standard tooling discovers it from the installed/downloaded distribution.
+        - Keep the existing GitHub-Release CycloneDX asset and `[project.urls]` link as the
+          interim mechanism until PEP 770 is in place.
+    - Open design points: whether to also embed SPDX; build-backend support status (this is
+      the gating factor — do not adopt until setuptools support is solid); and interaction
+      with the release workflow that currently builds the SBOM from the installed wheel
+      (PEP 770 wants it produced during the build, not post-install).
+    - Note: lower urgency for a pure-Python library whose dependencies are fully declared in
+      `Requires-Dist` (the wheel is already measurable from metadata); PEP 770 matters most
+      when a package bundles undeclared/non-Python components.
+
 ### Re-base Document Origin (relative-import resolution after local load)
 
 - [ ] Allow a document's origin href to be set/overridden **after** load, re-resolving its

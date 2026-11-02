@@ -28,8 +28,8 @@ import uuid as uuid_module
 from typing import Any, Optional
 
 import logging
-from ruf_common.lfs import chkdir, normalize_content
-from ruf_common import database
+from .helpers.lfs import chkdir, normalize_content
+from .helpers import database
 
 from .oscal_registry import ObjectRegistry, use_registry
 from .oscal_content import OSCAL, ContentState, ImportState, _canonicalize_ref, current_actor, use_actor

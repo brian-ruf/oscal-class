@@ -22,11 +22,12 @@ Key conventions reflected from the index:
   wrapped-in-xml  True/False — whether this element is enclosed in an XML wrapper
 
 Markup-typed fields (markup-line, markup-multiline):
-  XML → JSON  inner XML content is converted to CommonMark via html2text
+  XML → JSON  inner XML content is converted to CommonMark by this module's own
+              ``oscal_html_to_markdown`` (pure standard-library, no extra dependency)
   JSON → XML  CommonMark is converted to HTML via the markdown library, then
               parsed into ET sub-elements
-  Both libraries are project dependencies; conversion degrades to plain text
-  only if they cannot be imported.
+  The markdown library is a project dependency; conversion degrades to plain
+  text only if it cannot be imported.
 
 Unmodeled content (declared via <any/> in the metaschema):
   XML → JSON  unknown child elements are captured in a "_unmodeled" key
@@ -47,7 +48,7 @@ from markdown.inlinepatterns import InlineProcessor
 from markdown.treeprocessors import Treeprocessor
 
 from .oscal_support import get_support, METASCHEMA_MIN_VERSION
-from ruf_common.helper import compare_semver
+from .helpers.helper import compare_semver
 
 logger = logging.getLogger(__name__)
 

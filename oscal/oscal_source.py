@@ -30,8 +30,8 @@ from urllib.parse     import urlparse, urljoin, urlunparse
 from urllib.request   import urlopen
 from urllib.error     import HTTPError, URLError
 
-from ruf_common.network import download_file
-from ruf_common.lfs     import getfile, normalize_content
+from .helpers.network import download_file
+from .helpers.lfs     import getfile, normalize_content
 from .oscal_cache       import get_local_cache, CacheDirective  # noqa: F401  (CacheDirective used in annotations)
 
 logger = logging.getLogger(__name__)

@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Union
 
-from ruf_common.helper import compare_semver
+from .helpers.helper import compare_semver
 
 from .oscal_support import get_support, METASCHEMA_MIN_VERSION
 

@@ -18,7 +18,7 @@ from oscal.oscal_support import configure_support
 import os
 import argparse
 import logging
-from ruf_common.lfs import zip_file
+from .helpers.lfs import zip_file
 from pathlib import Path
 
 logging.basicConfig(
