@@ -1,8 +1,24 @@
 name: Publish to PyPI
 
+# Triggered by pushing a version tag (vX.Y.Z) -- NOT by creating a GitHub Release.
+#
+# This repository uses immutable releases: a release's assets are frozen the moment it
+# is published, and a published version tag can never be reused. Two consequences shape
+# this workflow:
+#   1. The SBOM cannot be attached to an already-published release (HTTP 422). So the
+#      workflow builds everything first and creates the release with the SBOM already
+#      attached, using draft -> upload -> publish (a draft is mutable until published,
+#      and publishing seals it together with its assets).
+#   2. Publishing the release is what consumes the version tag. So the release is created
+#      LAST, only after PyPI publishing has succeeded -- if build/sbom/publish fail, the
+#      tag is never consumed and can be deleted and re-pushed for the same version.
+#
+# Release flow for a maintainer: bump oscal/_version.py, merge to main, then
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+# Do not create the GitHub Release by hand; this workflow creates it.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 jobs:
   build:
@@ -16,7 +32,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Verify release tag matches package version
+      - name: Verify tag matches package version
         run: |
           PKG=$(python -c "import re,pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('oscal/_version.py').read_text()).group(1))")
           TAG="${GITHUB_REF_NAME#v}"
@@ -42,6 +58,33 @@ jobs:
           name: dist
           path: dist/
 
+  sbom:
+    name: SBOM and third-party licenses
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Generate SBOM and license manifest
+        run: bash scripts/generate_sbom.sh dist/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            oscal-*.cdx.json
+            THIRD-PARTY-LICENSES.md
+
   publish:
     name: Publish to PyPI
     needs: [build, sbom]
@@ -59,44 +102,33 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  sbom:
-    name: SBOM and third-party licenses
-    needs: build
+  github-release:
+    name: Create GitHub Release (with SBOM)
+    # LAST: creating the immutable release consumes the version tag, so only do it once
+    # build, sbom, and the PyPI publish have all succeeded.
+    needs: [build, sbom, publish]
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # required to upload assets onto the published Release
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
-      # Builds the CycloneDX SBOM (oscal-<version>.cdx.json) and regenerates
-      # THIRD-PARTY-LICENSES.md from the built wheel's runtime closure. The script
-      # handles the clean runtime venv + a separate cyclonedx tool venv, so this is the
-      # same command you can run locally to test without cutting a release.
-      - name: Generate SBOM and license manifest
-        run: bash scripts/generate_sbom.sh dist/*.whl
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: .
 
-      - name: Attach SBOM and license manifest to the Release
+      - name: Create immutable release with SBOM + license manifest attached
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release upload "${GITHUB_REF_NAME}" \
-            "oscal-${VERSION}.cdx.json" THIRD-PARTY-LICENSES.md --clobber
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: |
-            oscal-*.cdx.json
-            THIRD-PARTY-LICENSES.md
-
+          TAG="${GITHUB_REF_NAME}"
+          # Draft (mutable) -> upload assets -> publish (seals immutably WITH the assets).
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "$TAG" --generate-notes
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            oscal-*.cdx.json THIRD-PARTY-LICENSES.md dist/*
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
