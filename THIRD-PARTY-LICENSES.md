@@ -14,19 +14,19 @@ those licenses' attribution requirements.
 
 | Component | Version | License |
 |---|---|---|
-| certifi | 2026.6.17 | Mozilla Public License 2.0 (MPL 2.0) |
-| charset-normalizer | 3.4.9 | MIT |
-| elementpath | 5.1.3 | MIT |
-| idna | 3.18 | BSD-3-Clause |
+| certifi | 2026.10.23 | Mozilla Public License 2.0 (MPL 2.0) |
+| charset-normalizer | 3.5.2 | MIT |
+| elementpath | 5.1.4 | MIT |
+| idna | 3.20 | BSD-3-Clause |
 | jsonpath-python | 1.1.6 | MIT License |
-| Markdown | 3.10.2 | BSD-3-Clause |
-| packaging | 26.2 | Apache-2.0 OR BSD-2-Clause |
+| Markdown | 3.11.2 | BSD-3-Clause |
+| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause |
 | PyYAML | 6.0.3 | MIT License |
 | requests | 2.34.2 | Apache Software License |
-| urllib3 | 2.7.0 | MIT |
+| urllib3 | 2.8.0 | MIT |
 | xmlschema | 4.3.2 | MIT |
 
-### certifi 2026.6.17
+### certifi 2026.10.23
 
 - License: Mozilla Public License 2.0 (MPL 2.0)
 - Homepage: https://github.com/certifi/python-certifi
@@ -58,7 +58,7 @@ one at http://mozilla.org/MPL/2.0/.
 
 </details>
 
-### charset-normalizer 3.4.9
+### charset-normalizer 3.5.2
 
 - License: MIT
 
@@ -90,7 +90,7 @@ SOFTWARE.
 
 </details>
 
-### elementpath 5.1.3
+### elementpath 5.1.4
 
 - License: MIT
 - Homepage: https://github.com/sissaschool/elementpath
@@ -123,7 +123,7 @@ SOFTWARE.
 
 </details>
 
-### idna 3.18
+### idna 3.20
 
 - License: BSD-3-Clause
 - Homepage: https://github.com/kjd/idna
@@ -199,7 +199,7 @@ SOFTWARE.
 
 </details>
 
-### Markdown 3.10.2
+### Markdown 3.11.2
 
 - License: BSD-3-Clause
 - Homepage: https://Python-Markdown.github.io/
@@ -241,7 +241,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 </details>
 
-### packaging 26.2
+### packaging 26.3
 
 - License: Apache-2.0 OR BSD-2-Clause
 - Homepage: https://github.com/pypa/packaging
@@ -696,7 +696,7 @@ Copyright 2019 Kenneth Reitz
 
 </details>
 
-### urllib3 2.7.0
+### urllib3 2.8.0
 
 - License: MIT
 
