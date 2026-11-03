@@ -1,0 +1,86 @@
+name: Docs
+
+# Generates the API reference, commits the regenerated api*.html, builds the Jekyll site,
+# and deploys it to GitHub Pages. Runs on every push to main AND can be triggered manually
+# (workflow_dispatch) to regenerate/redeploy on demand.
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Generate API docs and build site
+    # Only commit/deploy for real pushes to main or a manual run (not for anything else).
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # to commit regenerated api*.html
+    # Shared with ci.yml's support-data job so the two main-committing jobs are serialized
+    # (never push to main concurrently). cancel-in-progress: false => queue, don't cancel.
+    concurrency:
+      group: main-asset-commit
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Generate API docs
+        run: |
+          python -m oscal.gendocs --mode llm   --output docs/api-llm.html
+          python -m oscal.gendocs --mode human --output docs/api.html
+
+      - name: Commit regenerated API docs if changed
+        run: |
+          if git diff --quiet -- docs/api-llm.html docs/api.html; then
+            echo "No API-doc changes; nothing to commit."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/api-llm.html docs/api.html
+            git commit -m "chore: refresh API docs [skip ci]"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+      # Built from this run's own workspace, so the site reflects the API docs just
+      # generated. The guide .md files under docs/ carry Jekyll front matter (see
+      # docs/_config.yml) and are rendered to HTML on the fly.
+      - name: Build Jekyll site
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs
+          destination: ./_site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

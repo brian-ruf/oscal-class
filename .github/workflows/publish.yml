@@ -1,21 +1,17 @@
-name: Publish to PyPI
+name: Release
 
-# Triggered by pushing a version tag (vX.Y.Z) -- NOT by creating a GitHub Release.
+# Triggered by pushing a version tag (vX.Y.Z). Builds the artifact, generates its SBOM,
+# and creates the immutable GitHub Release with the wheel, sdist, SBOM, and license
+# manifest attached. It does NOT publish to PyPI -- that is a separate, manually dispatched,
+# re-runnable workflow (pypi.yml) that uploads the exact assets attached here.
 #
-# This repository uses immutable releases: a release's assets are frozen the moment it
-# is published, and a published version tag can never be reused. Two consequences shape
-# this workflow:
-#   1. The SBOM cannot be attached to an already-published release (HTTP 422). So the
-#      workflow builds everything first and creates the release with the SBOM already
-#      attached, using draft -> upload -> publish (a draft is mutable until published,
-#      and publishing seals it together with its assets).
-#   2. Publishing the release is what consumes the version tag. So the release is created
-#      LAST, only after PyPI publishing has succeeded -- if build/sbom/publish fail, the
-#      tag is never consumed and can be deleted and re-pushed for the same version.
+# Because this repository uses immutable releases, assets are frozen at publish time, so
+# the release is assembled as a draft (mutable) and only sealed (published) once all assets
+# are attached. Sealing consumes the version tag; if build/sbom fail, the tag stays reusable.
 #
-# Release flow for a maintainer: bump oscal/_version.py, merge to main, then
-#   git tag vX.Y.Z && git push origin vX.Y.Z
-# Do not create the GitHub Release by hand; this workflow creates it.
+# Release flow for a maintainer: bump oscal/_version.py, merge to main, let CI refresh and
+# commit the support database, then: git tag vX.Y.Z && git push origin vX.Y.Z
+# (The GitHub Release is created by this workflow; do not create it by hand.)
 on:
   push:
     tags: ["v*"]
@@ -63,13 +59,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - uses: actions/download-artifact@v4
         with:
           name: dist
@@ -85,28 +74,9 @@ jobs:
             oscal-*.cdx.json
             THIRD-PARTY-LICENSES.md
 
-  publish:
-    name: Publish to PyPI
-    needs: [build, sbom]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write  # Required for OIDC trusted publisher
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
   github-release:
     name: Create GitHub Release (with SBOM)
-    # LAST: creating the immutable release consumes the version tag, so only do it once
-    # build, sbom, and the PyPI publish have all succeeded.
-    needs: [build, sbom, publish]
+    needs: [build, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,12 +91,13 @@ jobs:
           name: sbom
           path: .
 
-      - name: Create immutable release with SBOM + license manifest attached
+      - name: Create immutable release with artifacts + SBOM attached
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           # Draft (mutable) -> upload assets -> publish (seals immutably WITH the assets).
+          # The wheel + sdist are attached so pypi.yml can publish the exact same artifacts.
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
             --title "$TAG" --generate-notes
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
