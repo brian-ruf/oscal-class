@@ -43,12 +43,13 @@ A Python library for working with [Open Security Controls Assessment Language (O
 | [API Reference (LLM Oriented)](https://brian-ruf.github.io/oscal-class/api-llm.html) | Reference: Functions, Classes, Methods, Attributes |
 | [Getting Started](https://brian-ruf.github.io/oscal-class/GETTING_STARTED.html) | Installation, loading patterns, saving, and a walkthrough example |
 | [OSCAL Class API](https://brian-ruf.github.io/oscal-class/CONTENT.html) | Complete class reference: factory methods, states, querying, mutation, import handling |
+| [Format Converters](https://brian-ruf.github.io/oscal-class/CONVERTERS.html) | `OSCALConverter` and markup conversion internals |
 | [Querying Content](https://brian-ruf.github.io/oscal-class/QUERY_CONTENT.html) | Full path syntax for `query()` and `json_query()` |
 | [Import Resolution](https://brian-ruf.github.io/oscal-class/IMPORTS.html) | How imports are resolved, failure codes, and retry API |
-| [Profile Processing](https://brian-ruf.github.io/oscal-class/PROFILE_PROCESSING.html) | How imports are resolved, failure codes, and retry API |
-| [Format Converters](https://brian-ruf.github.io/oscal-class/CONVERTERS.html) | `OSCALConverter` and markup conversion internals |
-| [Support Module](https://brian-ruf.github.io/oscal-class/SUPPORT_MODULE.html) | Support database configuration, updates, and API |
 | [Logging](https://brian-ruf.github.io/oscal-class/LOGGING.html) | Standard Logging and Other Logging Libraries |
+| [Profile Processing](https://brian-ruf.github.io/oscal-class/PROFILE_PROCESSING.html) | How imports are resolved, failure codes, and retry API |
+| [Support Module](https://brian-ruf.github.io/oscal-class/SUPPORT_MODULE.html) | Support database configuration, updates, and API |
+| [SBOM](https://brian-ruf.github.io/oscal-class/SBOM.html) | SBOM Generation Details |
 
 ---
 

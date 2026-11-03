@@ -85,19 +85,23 @@ jobs:
             oscal-*.cdx.json
             THIRD-PARTY-LICENSES.md
 
-  # Refreshes the OSCAL support database and API docs on main so that both are
-  # current *before* a release is tagged. Runs once, only after every lint and
-  # test matrix leg has passed, and only for an actual push landing on main
-  # (never for a pull_request run, even one whose base is main -- a PR's
-  # github.ref is refs/pull/<n>/merge, never refs/heads/main, but the explicit
-  # event_name check makes that intent unambiguous rather than incidental).
-  sync-release-assets:
-    name: Refresh support data and API docs
+  # Refreshes the OSCAL support database on main so the fresh oscal_support.zip is committed
+  # *before* a release is tagged (the release build bundles whatever is in the tagged commit).
+  # API-doc generation now lives in docs.yml; this job owns only the support database.
+  #
+  # Runs only for an actual push landing on main (never a pull_request, whose github.ref is
+  # refs/pull/<n>/merge, not refs/heads/main). The shared `main-asset-commit` concurrency
+  # group serializes this with docs.yml's commit so the two never push to main concurrently.
+  support-data:
+    name: Refresh OSCAL support database
     needs: [lint, test]
     if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: main-asset-commit
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -113,57 +117,17 @@ jobs:
           pip install -e .
 
       - name: Rebuild OSCAL support database
-        run: python oscal/update_support.py --all
+        run: python -m oscal.update_support --all
 
-      - name: Generate LLM-oriented API docs
-        run: python -m oscal.gendocs --mode llm --output docs/api-llm.html
-
-      - name: Generate human-oriented API docs
-        run: python -m oscal.gendocs --mode human --output docs/api.html
-
-      - name: Commit refreshed assets if changed
+      - name: Commit refreshed support database if changed
         run: |
-          if git diff --quiet -- oscal/data/oscal_support.zip docs/api-llm.html docs/api.html; then
-            echo "No changes to support data or API docs; nothing to commit."
+          if git diff --quiet -- oscal/data/oscal_support.zip; then
+            echo "No support-data changes; nothing to commit."
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add oscal/data/oscal_support.zip docs/api-llm.html docs/api.html
-            git commit -m "chore: refresh support data and API docs [skip ci]"
+            git add oscal/data/oscal_support.zip
+            git commit -m "chore: refresh OSCAL support database [skip ci]"
+            git pull --rebase origin main
             git push origin HEAD:main
           fi
-
-      # Built from this run's own workspace, not re-checked-out from main, so the
-      # site always reflects the api docs this job just generated -- no race with
-      # the commit above landing or with GitHub's own branch-watching Pages build
-      # (which this Actions-based deployment replaces; see repo Settings -> Pages
-      # -> Source: GitHub Actions). The guide .md files under docs/ carry minimal
-      # Jekyll front matter (see docs/_config.yml) so this build renders them to
-      # HTML on the fly -- no generated .html twin is ever committed to the repo.
-      - name: Build Jekyll site
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: docs
-          destination: ./_site
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./_site
-
-  deploy-pages:
-    name: Deploy API docs to GitHub Pages
-    needs: sync-release-assets
-    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

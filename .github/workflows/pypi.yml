@@ -1,0 +1,51 @@
+name: Publish to PyPI
+
+# Manually dispatched, re-runnable PyPI publish. Decoupled from the Release workflow so a
+# failed upload (transient network, PyPI outage, OIDC hiccup) can simply be run again
+# without burning a version. It publishes the EXACT wheel + sdist attached to the GitHub
+# Release for the given tag, so PyPI gets the same artifacts the SBOM describes.
+#
+# Access control:
+#   * workflow_dispatch already requires write access to the repo;
+#   * the `pypi` environment's required reviewer is the real gate -- configure it in
+#     Settings -> Environments -> pypi with yourself as the sole required reviewer;
+#   * the job-level `if` additionally restricts runs to the repository owner.
+#
+# IMPORTANT: PyPI trusted publishing is scoped to the workflow filename. Update the PyPI
+# project's trusted publisher to reference THIS file (pypi.yml) and the `pypi` environment,
+# or OIDC publishing will be rejected.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish to PyPI (e.g. v4.1.2)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish release artifacts to PyPI
+    if: github.triggering_actor == github.repository_owner
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read       # download the release's assets
+      id-token: write      # OIDC trusted publishing
+
+    steps:
+      - name: Download the release's distribution artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" \
+            --pattern "*.whl" --pattern "*.tar.gz" --dir dist
+          ls -l dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true

@@ -1,8 +1,20 @@
-name: Publish to PyPI
+name: Release
 
+# Triggered by pushing a version tag (vX.Y.Z). Builds the artifact, generates its SBOM,
+# and creates the immutable GitHub Release with the wheel, sdist, SBOM, and license
+# manifest attached. It does NOT publish to PyPI -- that is a separate, manually dispatched,
+# re-runnable workflow (pypi.yml) that uploads the exact assets attached here.
+#
+# Because this repository uses immutable releases, assets are frozen at publish time, so
+# the release is assembled as a draft (mutable) and only sealed (published) once all assets
+# are attached. Sealing consumes the version tag; if build/sbom fail, the tag stays reusable.
+#
+# Release flow for a maintainer: bump oscal/_version.py, merge to main, let CI refresh and
+# commit the support database, then: git tag vX.Y.Z && git push origin vX.Y.Z
+# (The GitHub Release is created by this workflow; do not create it by hand.)
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 jobs:
   build:
@@ -16,7 +28,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Verify release tag matches package version
+      - name: Verify tag matches package version
         run: |
           PKG=$(python -c "import re,pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('oscal/_version.py').read_text()).group(1))")
           TAG="${GITHUB_REF_NAME#v}"
@@ -42,29 +54,10 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
-    name: Publish to PyPI
-    needs: [build, sbom]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write  # Required for OIDC trusted publisher
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
   sbom:
     name: SBOM and third-party licenses
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write          # required to upload assets onto the published Release
     steps:
       - uses: actions/checkout@v4
 
@@ -78,20 +71,8 @@ jobs:
           name: dist
           path: dist/
 
-      # Builds the CycloneDX SBOM (oscal-<version>.cdx.json) and regenerates
-      # THIRD-PARTY-LICENSES.md from the built wheel's runtime closure. The script
-      # handles the clean runtime venv + a separate cyclonedx tool venv, so this is the
-      # same command you can run locally to test without cutting a release.
       - name: Generate SBOM and license manifest
         run: bash scripts/generate_sbom.sh dist/*.whl
-
-      - name: Attach SBOM and license manifest to the Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release upload "${GITHUB_REF_NAME}" \
-            "oscal-${VERSION}.cdx.json" THIRD-PARTY-LICENSES.md --clobber
 
       - uses: actions/upload-artifact@v4
         with:
@@ -100,3 +81,32 @@ jobs:
             oscal-*.cdx.json
             THIRD-PARTY-LICENSES.md
 
+  github-release:
+    name: Create GitHub Release (with SBOM)
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: .
+
+      - name: Create immutable release with artifacts + SBOM attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Draft (mutable) -> upload assets -> publish (seals immutably WITH the assets).
+          # The wheel + sdist are attached so pypi.yml can publish the exact same artifacts.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "$TAG" --generate-notes
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            oscal-*.cdx.json THIRD-PARTY-LICENSES.md dist/*
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
