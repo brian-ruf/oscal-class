@@ -8,4 +8,4 @@ Keep this module trivial — just the assignment, no imports from the rest of th
 so the build backend can read the literal without importing ``oscal`` (and its
 dependencies).
 """
-__version__ = "4.1.2"
+__version__ = "4.1.3"
