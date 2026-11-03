@@ -29,21 +29,25 @@ Each release produces two companion artifacts:
 
 ## How and when it is generated
 
-Generation is fully automated in the release workflow (`publish.yml`), triggered when a
-GitHub Release is **published**. The `sbom` job:
+Generation is automated in the **Release** workflow (`publish.yml`), which is triggered by
+pushing a version tag (`vX.Y.Z`) — the workflow itself creates the GitHub Release. Two jobs
+are involved:
 
-1. Takes the exact wheel built earlier in the same run (it does not re-resolve).
-2. Installs that wheel into a clean, runtime-only virtual environment (no dev/test tools),
-   so the SBOM reflects precisely what ships.
-3. Generates the CycloneDX document with
+1. The `sbom` job takes the exact wheel built earlier in the same run (it does not
+   re-resolve), installs it into a clean, runtime-only virtual environment (no dev/test
+   tools) so the SBOM reflects precisely what ships, generates the CycloneDX document with
    [`cyclonedx-py`](https://github.com/CycloneDX/cyclonedx-python) in `environment` mode
-   (which captures dependency relationships).
-4. Regenerates `THIRD-PARTY-LICENSES.md` from that same closure using
+   (which captures dependency relationships), and regenerates `THIRD-PARTY-LICENSES.md` from
+   that same closure using
    [`scripts/generate_thirdparty_licenses.py`](https://github.com/brian-ruf/oscal-class/blob/main/scripts/generate_thirdparty_licenses.py).
-5. Attaches both files to the GitHub Release.
+2. The `github-release` job (`needs: [build, sbom]`) creates the GitHub Release and attaches
+   the SBOM, the license manifest, and the wheel/sdist. Because releases are immutable, it
+   assembles the release as a draft, uploads the assets, then publishes — so the SBOM is
+   sealed into the release at publish time.
 
-Publishing to PyPI is gated on this job: the `publish` job declares `needs: [build, sbom]`,
-so a version is never released to PyPI unless its SBOM was generated and attached.
+A version therefore cannot reach PyPI without its SBOM: the separate, manually dispatched
+**Publish to PyPI** workflow (`pypi.yml`) uploads the *release's own* attached artifacts,
+which only exist once the `sbom` job has succeeded and the release has been created.
 
 ## Where to find it
 
@@ -52,8 +56,9 @@ so a version is never released to PyPI unless its SBOM was generated and attache
   <https://github.com/brian-ruf/oscal-class/releases> and open the release whose tag is
   `v<version>` (e.g. `v4.1.0`). The SBOM is **not** committed to the repository; it is a
   per-release artifact that travels with the versioned Release.
-- **Third-party license manifest** — committed in the repository root and regenerated at
-  each release:
+- **Third-party license manifest (`THIRD-PARTY-LICENSES.md`)** — generated fresh from the
+  release's runtime closure and attached to each GitHub Release alongside the SBOM. A
+  snapshot is also committed at the repository root for convenient browsing:
   <https://github.com/brian-ruf/oscal-class/blob/main/THIRD-PARTY-LICENSES.md>.
 - **From PyPI** — the project's `SBOM` project-URL (shown in the PyPI sidebar) links to the
   GitHub Releases list. Because PyPI `project.urls` values are static per build and cannot be
