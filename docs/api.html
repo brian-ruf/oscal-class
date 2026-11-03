@@ -47,7 +47,7 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 </style></head><body>
 <div class="layout">
 <aside class="sidebar">
-<div class="brand">oscal <span>4.0.0</span></div>
+<div class="brand">oscal </div>
 <div class="muted">API reference</div>
 <input id="filter" type="search" placeholder="Filter symbols…" aria-label="Filter symbols">
 <nav id="nav">
@@ -148,7 +148,7 @@ pre.doc{white-space:pre-wrap;background:var(--code);border-left:3px solid var(--
 <main>
 <div class="page-header">
 <h1>oscal — API reference</h1>
-<div class="muted">Version 4.0.0 · Generated 2026-10-30T16:41:30Z · 12 modules · 36 classes · 777 methods · 33 functions</div>
+<div class="muted">Generated 2026-11-03T06:07:54Z · 12 modules · 36 classes · 840 methods · 33 functions</div>
 </div>
 <section class="module" id="oscal.oscal_support">
 <h2 class="module-title">oscal.oscal_support<a class="anchor" href="#oscal.oscal_support" title="Link to this item">#</a></h2>
@@ -1615,6 +1615,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_content.OSCAL.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_content.OSCAL.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -1758,8 +1765,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -1785,6 +1793,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_content.OSCAL.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_content.OSCAL.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.get_location_by_uuid" title="Link to this item">#</a>
@@ -2164,6 +2181,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_content.OSCAL.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_content.OSCAL.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_content.OSCAL.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -2210,6 +2234,13 @@ Module constants:
 <div class="member" id="oscal.oscal_content.OSCAL.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_content.OSCAL.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_content.OSCAL.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_content.OSCAL.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.put" title="Link to this item">#</a>
@@ -2402,6 +2433,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_content.OSCAL.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_content.OSCAL.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_content.OSCAL.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -2427,6 +2473,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_content.OSCAL.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_content.OSCAL.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_content.OSCAL.set_metadata" title="Link to this item">#</a>
@@ -3148,6 +3201,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Catalog.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Catalog.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -3380,8 +3440,9 @@ backward compatibility.</pre>
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -3407,6 +3468,15 @@ backward compatibility.</pre>
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Catalog.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Catalog.get_control_by_id">
 <span class="badge method">method</span><code class="sig">def get_control_by_id(self, control_id: str, depth: Optional[int] = None) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Catalog.get_control_by_id" title="Link to this item">#</a>
@@ -3892,6 +3962,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Catalog.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Catalog.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_controls.Catalog.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -3938,6 +4015,13 @@ backward compatibility.</pre>
 <div class="member" id="oscal.oscal_controls.Catalog.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_controls.Catalog.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Catalog.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Catalog.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.put" title="Link to this item">#</a>
@@ -4170,6 +4254,21 @@ backward compatibility.</pre>
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Catalog.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Catalog.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Catalog.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -4195,6 +4294,13 @@ backward compatibility.</pre>
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Catalog.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Catalog.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Catalog.set_label">
 <span class="badge method">method</span><code class="sig">def set_label(self, id: str, label: str, class_: str = &#x27;&#x27;, group: str = &#x27;&#x27;) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Catalog.set_label" title="Link to this item">#</a>
@@ -4552,6 +4658,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Mapping.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Mapping.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -4695,8 +4808,9 @@ backward compatibility.</pre>
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -4722,6 +4836,15 @@ backward compatibility.</pre>
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Mapping.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Mapping.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.get_location_by_uuid" title="Link to this item">#</a>
@@ -5101,6 +5224,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Mapping.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Mapping.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_controls.Mapping.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -5147,6 +5277,13 @@ backward compatibility.</pre>
 <div class="member" id="oscal.oscal_controls.Mapping.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_controls.Mapping.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Mapping.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Mapping.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.put" title="Link to this item">#</a>
@@ -5339,6 +5476,21 @@ backward compatibility.</pre>
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Mapping.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Mapping.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Mapping.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -5364,6 +5516,13 @@ backward compatibility.</pre>
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Mapping.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Mapping.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Mapping.set_metadata" title="Link to this item">#</a>
@@ -5729,6 +5888,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Profile.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Profile.add_alter">
 <span class="badge method">method</span><code class="sig">def add_alter(self, control_id: str) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.add_alter" title="Link to this item">#</a>
 <pre class="doc">Ensure a ``modify.alters`` entry exists for *control_id* and return a safe copy.
@@ -5978,8 +6144,9 @@ backward compatibility.</pre>
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -6005,6 +6172,15 @@ backward compatibility.</pre>
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.get_alter">
 <span class="badge method">method</span><code class="sig">def get_alter(self, control_id: str) -&gt; Optional[dict]</code><a class="anchor" href="#oscal.oscal_controls.Profile.get_alter" title="Link to this item">#</a>
@@ -6479,6 +6655,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Profile.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Profile.merge_strategy">
 <span class="badge property">property</span><code class="sig">property merge_strategy</code><a class="anchor" href="#oscal.oscal_controls.Profile.merge_strategy" title="Link to this item">#</a>
 <pre class="doc">The control-tree assembly strategy (:class:`MergeStrategy`).
@@ -6533,6 +6716,13 @@ backward compatibility.</pre>
 <div class="member" id="oscal.oscal_controls.Profile.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_controls.Profile.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.put" title="Link to this item">#</a>
@@ -6875,6 +7065,21 @@ backward compatibility.</pre>
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_controls.Profile.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_controls.Profile.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -6900,6 +7105,13 @@ backward compatibility.</pre>
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_controls.Profile.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_controls.Profile.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_controls.Profile.set_directives">
 <span class="badge method">method</span><code class="sig">def set_directives(self, combine: Optional[str] = None, hierarchy: Optional[str] = None, custom: Optional[dict] = None) -&gt; bool</code><a class="anchor" href="#oscal.oscal_controls.Profile.set_directives" title="Link to this item">#</a>
@@ -7472,6 +7684,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -7631,7 +7850,7 @@ Module constants:
                 are excluded — use :meth:`capabilities`.</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.control">
-<span class="badge method">method</span><code class="sig">def control(self, control_id: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.control" title="Link to this item">#</a>
+<span class="badge method">method</span><code class="sig">def control(self, control_id: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.control" title="Link to this item">#</a>
 <pre class="doc">Reverse-map a ``control-id`` to every component/capability that implements it.
 
         The cDef analog of :meth:`SSP.control`: rather than looking up one
@@ -7650,6 +7869,13 @@ Module constants:
             depth (int | None, optional): Enhancement depth of each inserted control
                 (``None`` full subtree, ``0`` control only, ``N`` N levels), following the
                 library-wide convention. Ignored when ``with_control`` is False.
+            include_resources (bool, optional): When True, every ``link`` anywhere in each
+                returned entry (including on the inserted ``control``, whose links reference
+                the source catalog/profile&#x27;s back-matter) whose ``href`` is a ``#uuid``
+                fragment resolving to a ``back-matter.resource`` **in scope** (this cDef or
+                any imported document) gains a ``resource`` key holding that resource, with
+                its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: ``{&quot;control-id&quot;, &quot;components&quot;}`` where ``components`` is one
@@ -7661,7 +7887,7 @@ Module constants:
                 *control_id*.</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.control_implementation">
-<span class="badge method">method</span><code class="sig">def control_implementation(self, uuid: &#x27;str&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.control_implementation" title="Link to this item">#</a>
+<span class="badge method">method</span><code class="sig">def control_implementation(self, uuid: &#x27;str&#x27;, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.control_implementation" title="Link to this item">#</a>
 <pre class="doc">Retrieve a ``control-implementation`` by its ``uuid``, as a safe copy.
 
         Searches every component and capability in this cDef for a control-implementation
@@ -7681,6 +7907,13 @@ Module constants:
 
         Args:
             uuid (str, required): The ``uuid`` of the control-implementation.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned control-implementation (including on each inserted ``control``,
+                whose links reference the source catalog/profile&#x27;s back-matter) whose
+                ``href`` is a ``#uuid`` fragment resolving to a ``back-matter.resource``
+                **in scope** (this cDef or any imported document) gains a ``resource`` key
+                holding that resource, with its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the control-implementation with each
@@ -7755,8 +7988,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -7782,6 +8016,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.get_location_by_uuid" title="Link to this item">#</a>
@@ -7901,7 +8144,7 @@ Module constants:
             True if an entry was found and updated, False if no match was found.</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.implemented_requirement">
-<span class="badge method">method</span><code class="sig">def implemented_requirement(self, uuid: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = 0) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.implemented_requirement" title="Link to this item">#</a>
+<span class="badge method">method</span><code class="sig">def implemented_requirement(self, uuid: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = 0, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.implemented_requirement" title="Link to this item">#</a>
 <pre class="doc">Retrieve a single ``implemented-requirement`` by its own ``uuid``, as a safe copy.
 
         An ``implemented-requirement`` is the child of a ``control-implementation`` (which
@@ -7939,6 +8182,13 @@ Module constants:
             depth (int | None, optional): Enhancement depth of the attached control
                 (``0`` the control alone, ``None`` the full subtree, ``N`` N levels),
                 following the library-wide convention. Ignored when ``with_control`` is False.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned requirement (including on the inserted ``control`` and the parent&#x27;s
+                ``control-implementation-links``) whose ``href`` is a ``#uuid`` fragment
+                resolving to a ``back-matter.resource`` **in scope** (this cDef or any
+                imported document) gains a ``resource`` key holding that resource, with its
+                ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement augmented as above, or
@@ -8206,6 +8456,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -8252,6 +8509,13 @@ Module constants:
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.put" title="Link to this item">#</a>
@@ -8444,6 +8708,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -8469,6 +8748,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.ComponentDefinition.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.ComponentDefinition.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.ComponentDefinition.set_metadata" title="Link to this item">#</a>
@@ -8790,6 +9076,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.SSP.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.SSP.add_by_component">
 <span class="badge method">method</span><code class="sig">def add_by_component(self, implemented_requirement_uuid: &#x27;str&#x27;, component_uuid: &#x27;str&#x27;, description: &#x27;str&#x27;, by_component_uuid: &#x27;str&#x27; = &#x27;&#x27;, implementation_status: &#x27;str&#x27; = &#x27;implemented&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.add_by_component" title="Link to this item">#</a>
 <pre class="doc">Add a by-component statement to one of the SSP&#x27;s implemented-requirements.
@@ -8963,7 +9256,7 @@ Module constants:
                 when ``include_controls``), or None when no component has that uuid.</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.SSP.control">
-<span class="badge method">method</span><code class="sig">def control(self, identifier: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None, by_component_uuids: &#x27;list&#x27; = []) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.control" title="Link to this item">#</a>
+<span class="badge method">method</span><code class="sig">def control(self, identifier: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None, by_component_uuids: &#x27;list&#x27; = [], include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.control" title="Link to this item">#</a>
 <pre class="doc">Retrieve an SSP implemented-requirement by control-id or its uuid, as a safe copy.
 
         Looks up ``control-implementation.implemented-requirements`` for the first entry
@@ -9016,6 +9309,13 @@ Module constants:
             by_component_uuids (list, optional): When non-empty, keep only ``by-component``
                 entries (requirement-level and statement-level) whose ``component-uuid`` is
                 in this list. Empty (default) keeps all.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned requirement (including on the inserted ``control``, whose links
+                reference the imported catalog/profile&#x27;s back-matter) whose ``href`` is a
+                ``#uuid`` fragment resolving to a ``back-matter.resource`` **in scope**
+                (this SSP or any imported document) gains a ``resource`` key holding that
+                resource, with its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement (with a ``control``
@@ -9121,8 +9421,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -9148,6 +9449,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.SSP.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.SSP.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.get_location_by_uuid" title="Link to this item">#</a>
@@ -9600,6 +9910,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.SSP.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.SSP.network_architecture">
 <span class="badge method">method</span><code class="sig">def network_architecture(self, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.network_architecture" title="Link to this item">#</a>
 <pre class="doc">Return ``system-characteristics.network-architecture`` as a safe copy, or None.
@@ -9652,6 +9969,13 @@ Module constants:
 <div class="member" id="oscal.oscal_implementation.SSP.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_implementation.SSP.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.SSP.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.SSP.protocols">
 <span class="badge method">method</span><code class="sig">def protocols(self) -&gt; &#x27;list[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.protocols" title="Link to this item">#</a>
@@ -9858,6 +10182,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_implementation.SSP.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.SSP.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_implementation.SSP.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -9883,6 +10222,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_implementation.SSP.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_implementation.SSP.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_implementation.SSP.set_metadata" title="Link to this item">#</a>
@@ -10285,6 +10631,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -10428,8 +10781,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -10455,6 +10809,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.get_location_by_uuid" title="Link to this item">#</a>
@@ -10834,6 +11197,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -10880,6 +11250,13 @@ Module constants:
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.put" title="Link to this item">#</a>
@@ -11072,6 +11449,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -11097,6 +11489,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentPlan.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.AssessmentPlan.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentPlan.set_metadata" title="Link to this item">#</a>
@@ -11400,6 +11799,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -11543,8 +11949,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -11570,6 +11977,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.get_location_by_uuid" title="Link to this item">#</a>
@@ -11949,6 +12365,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -11995,6 +12418,13 @@ Module constants:
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.put" title="Link to this item">#</a>
@@ -12187,6 +12617,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -12212,6 +12657,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.AssessmentResults.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.AssessmentResults.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.AssessmentResults.set_metadata" title="Link to this item">#</a>
@@ -12515,6 +12967,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.POAM.actions">
+<span class="badge method">method</span><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.actions" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.POAM.add_import">
 <span class="badge method">method</span><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.add_import" title="Link to this item">#</a>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -12658,8 +13117,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -12685,6 +13145,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.POAM.get_action_by_uuid">
+<span class="badge method">method</span><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.get_action_by_uuid" title="Link to this item">#</a>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.POAM.get_location_by_uuid">
 <span class="badge method">method</span><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.get_location_by_uuid" title="Link to this item">#</a>
@@ -13064,6 +13533,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.POAM.locations">
+<span class="badge method">method</span><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.locations" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.POAM.new">
 <span class="badge classmethod">classmethod</span><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code><a class="anchor" href="#oscal.oscal_assessment.POAM.new" title="Link to this item">#</a>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -13110,6 +13586,13 @@ Module constants:
 <div class="member" id="oscal.oscal_assessment.POAM.origin_state">
 <span class="badge property">property</span><code class="sig">property origin_state</code><a class="anchor" href="#oscal.oscal_assessment.POAM.origin_state" title="Link to this item">#</a>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.POAM.parties">
+<span class="badge method">method</span><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.POAM.put">
 <span class="badge method">method</span><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.put" title="Link to this item">#</a>
@@ -13302,6 +13785,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </div>
+<div class="member" id="oscal.oscal_assessment.POAM.resources">
+<span class="badge method">method</span><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.resources" title="Link to this item">#</a>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.POAM.responsible_parties">
+<span class="badge method">method</span><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.responsible_parties" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</div>
 <div class="member" id="oscal.oscal_assessment.POAM.retry_import">
 <span class="badge method">method</span><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.retry_import" title="Link to this item">#</a>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -13327,6 +13825,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</div>
+<div class="member" id="oscal.oscal_assessment.POAM.roles">
+<span class="badge method">method</span><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.roles" title="Link to this item">#</a>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </div>
 <div class="member" id="oscal.oscal_assessment.POAM.set_metadata">
 <span class="badge method">method</span><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code><a class="anchor" href="#oscal.oscal_assessment.POAM.set_metadata" title="Link to this item">#</a>

@@ -7,7 +7,7 @@
 <style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.5;max-width:64rem;margin:1.5rem auto;padding:0 1rem;color:#111}h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #ccc}h3{font-size:1rem;margin-top:1.3rem}h4{font-size:.95rem;margin:.9rem 0 .2rem}.sig{background:#eef;padding:.15rem .4rem;border-radius:3px}pre.doc{white-space:pre-wrap;margin:.2rem 0 .7rem;padding:.4rem .6rem;background:#f6f6f6;border-left:3px solid #bbb;overflow-x:auto}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}#index ul{margin:.2rem 0;padding-left:1.1rem}.muted{color:#666}</style></head><body>
 <header>
 <h1>oscal — API reference</h1>
-<p class="muted">version 4.0.0 · generated 2026-10-30T16:41:29Z · 12 modules, 36 classes, 777 methods, 33 functions</p>
+<p class="muted">generated 2026-11-03T06:07:54Z · 12 modules, 36 classes, 840 methods, 33 functions</p>
 <p>Machine-oriented API reference for automated (agentic) consumption. Every symbol carries a stable <code>id</code> (its fully-qualified name) and <code>data-*</code> attributes; docstrings are preserved verbatim.</p>
 </header>
 <section id="index"><h2>Index</h2><ul>
@@ -133,6 +133,7 @@
 <li><a href="#oscal.oscal_content.OSCAL">class OSCAL</a>
 <ul>
 <li><a href="#oscal.oscal_content.OSCAL.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.actions">actions</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.append_resource">append_resource</a></li>
@@ -142,6 +143,7 @@
 <li><a href="#oscal.oscal_content.OSCAL.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -171,9 +173,11 @@
 <li><a href="#oscal.oscal_content.OSCAL.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.load">load</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.loads">loads</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.locations">locations</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.new">new</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.open">open</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.parties">parties</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.put">put</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.query">query</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.query_one">query_one</a></li>
@@ -183,8 +187,11 @@
 <li><a href="#oscal.oscal_content.OSCAL.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.resources">resources</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.roles">roles</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.supports">supports</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.transaction">transaction</a></li>
@@ -273,6 +280,7 @@
 <li><a href="#oscal.oscal_controls.Catalog">class Catalog</a>
 <ul>
 <li><a href="#oscal.oscal_controls.Catalog.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.actions">actions</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.add_part">add_part</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.append_child">append_child</a></li>
@@ -285,6 +293,7 @@
 <li><a href="#oscal.oscal_controls.Catalog.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.get_control_by_id">get_control_by_id</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.get_control_list">get_control_list</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.get_group_by_id">get_group_by_id</a></li>
@@ -319,9 +328,11 @@
 <li><a href="#oscal.oscal_controls.Catalog.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.load">load</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.loads">loads</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.locations">locations</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.new">new</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.open">open</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.parties">parties</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.put">put</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.query">query</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.query_one">query_one</a></li>
@@ -332,8 +343,11 @@
 <li><a href="#oscal.oscal_controls.Catalog.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.resources">resources</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.roles">roles</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.set_label">set_label</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.set_part_title">set_part_title</a></li>
@@ -353,6 +367,7 @@
 <li><a href="#oscal.oscal_controls.Mapping">class Mapping</a>
 <ul>
 <li><a href="#oscal.oscal_controls.Mapping.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.actions">actions</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.append_resource">append_resource</a></li>
@@ -362,6 +377,7 @@
 <li><a href="#oscal.oscal_controls.Mapping.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -391,9 +407,11 @@
 <li><a href="#oscal.oscal_controls.Mapping.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.load">load</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.loads">loads</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.locations">locations</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.new">new</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.open">open</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.parties">parties</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.put">put</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.query">query</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.query_one">query_one</a></li>
@@ -403,8 +421,11 @@
 <li><a href="#oscal.oscal_controls.Mapping.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.resources">resources</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.roles">roles</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.supports">supports</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.transaction">transaction</a></li>
@@ -423,6 +444,7 @@
 <li><a href="#oscal.oscal_controls.Profile">class Profile</a>
 <ul>
 <li><a href="#oscal.oscal_controls.Profile.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_controls.Profile.actions">actions</a></li>
 <li><a href="#oscal.oscal_controls.Profile.add_alter">add_alter</a></li>
 <li><a href="#oscal.oscal_controls.Profile.add_alter_adds">add_alter_adds</a></li>
 <li><a href="#oscal.oscal_controls.Profile.add_alter_removes">add_alter_removes</a></li>
@@ -438,6 +460,7 @@
 <li><a href="#oscal.oscal_controls.Profile.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_controls.Profile.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_controls.Profile.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_controls.Profile.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_controls.Profile.get_alter">get_alter</a></li>
 <li><a href="#oscal.oscal_controls.Profile.get_control_by_id">get_control_by_id</a></li>
 <li><a href="#oscal.oscal_controls.Profile.get_control_list">get_control_list</a></li>
@@ -474,10 +497,12 @@
 <li><a href="#oscal.oscal_controls.Profile.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_controls.Profile.load">load</a></li>
 <li><a href="#oscal.oscal_controls.Profile.loads">loads</a></li>
+<li><a href="#oscal.oscal_controls.Profile.locations">locations</a></li>
 <li><a href="#oscal.oscal_controls.Profile.merge_strategy">merge_strategy</a></li>
 <li><a href="#oscal.oscal_controls.Profile.new">new</a></li>
 <li><a href="#oscal.oscal_controls.Profile.open">open</a></li>
 <li><a href="#oscal.oscal_controls.Profile.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_controls.Profile.parties">parties</a></li>
 <li><a href="#oscal.oscal_controls.Profile.put">put</a></li>
 <li><a href="#oscal.oscal_controls.Profile.query">query</a></li>
 <li><a href="#oscal.oscal_controls.Profile.query_one">query_one</a></li>
@@ -495,8 +520,11 @@
 <li><a href="#oscal.oscal_controls.Profile.resolve_duplicate_group">resolve_duplicate_group</a></li>
 <li><a href="#oscal.oscal_controls.Profile.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_controls.Profile.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_controls.Profile.resources">resources</a></li>
+<li><a href="#oscal.oscal_controls.Profile.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_controls.Profile.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_controls.Profile.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_controls.Profile.roles">roles</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_directives">set_directives</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_import_selection">set_import_selection</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_merge">set_merge</a></li>
@@ -525,6 +553,7 @@
 <li><a href="#oscal.oscal_implementation.ComponentDefinition">class ComponentDefinition</a>
 <ul>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.actions">actions</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.append_resource">append_resource</a></li>
@@ -540,6 +569,7 @@
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -570,9 +600,11 @@
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.load">load</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.loads">loads</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.locations">locations</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.new">new</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.open">open</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.parties">parties</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.put">put</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.query">query</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.query_one">query_one</a></li>
@@ -582,8 +614,11 @@
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.resources">resources</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.roles">roles</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.supports">supports</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.transaction">transaction</a></li>
@@ -600,6 +635,7 @@
 <li><a href="#oscal.oscal_implementation.SSP">class SSP</a>
 <ul>
 <li><a href="#oscal.oscal_implementation.SSP.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.actions">actions</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.add_by_component">add_by_component</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.append_child">append_child</a></li>
@@ -617,6 +653,7 @@
 <li><a href="#oscal.oscal_implementation.SSP.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -649,10 +686,12 @@
 <li><a href="#oscal.oscal_implementation.SSP.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.load">load</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.loads">loads</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.locations">locations</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.network_architecture">network_architecture</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.new">new</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.open">open</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.parties">parties</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.protocols">protocols</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.put">put</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.query">query</a></li>
@@ -663,8 +702,11 @@
 <li><a href="#oscal.oscal_implementation.SSP.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.resources">resources</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.roles">roles</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.supports">supports</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.system_characteristics">system_characteristics</a></li>
@@ -691,6 +733,7 @@
 <li><a href="#oscal.oscal_assessment.AssessmentPlan">class AssessmentPlan</a>
 <ul>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.actions">actions</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.append_resource">append_resource</a></li>
@@ -700,6 +743,7 @@
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -729,9 +773,11 @@
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.load">load</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.loads">loads</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.locations">locations</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.new">new</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.open">open</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.parties">parties</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.put">put</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.query">query</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.query_one">query_one</a></li>
@@ -741,8 +787,11 @@
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.resources">resources</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.roles">roles</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.supports">supports</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.transaction">transaction</a></li>
@@ -759,6 +808,7 @@
 <li><a href="#oscal.oscal_assessment.AssessmentResults">class AssessmentResults</a>
 <ul>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.actions">actions</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.append_resource">append_resource</a></li>
@@ -768,6 +818,7 @@
 <li><a href="#oscal.oscal_assessment.AssessmentResults.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -797,9 +848,11 @@
 <li><a href="#oscal.oscal_assessment.AssessmentResults.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.load">load</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.loads">loads</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.locations">locations</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.new">new</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.open">open</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.parties">parties</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.put">put</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.query">query</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.query_one">query_one</a></li>
@@ -809,8 +862,11 @@
 <li><a href="#oscal.oscal_assessment.AssessmentResults.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.resources">resources</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.roles">roles</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.supports">supports</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.transaction">transaction</a></li>
@@ -827,6 +883,7 @@
 <li><a href="#oscal.oscal_assessment.POAM">class POAM</a>
 <ul>
 <li><a href="#oscal.oscal_assessment.POAM.acquire">acquire</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.actions">actions</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.add_import">add_import</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.append_resource">append_resource</a></li>
@@ -836,6 +893,7 @@
 <li><a href="#oscal.oscal_assessment.POAM.failed_imports">failed_imports</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.find_in_import_tree">find_in_import_tree</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.from_string">from_string</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.get_action_by_uuid">get_action_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.get_location_by_uuid">get_location_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.get_oscal_object">get_oscal_object</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.get_parameter_by_id">get_parameter_by_id</a></li>
@@ -865,9 +923,11 @@
 <li><a href="#oscal.oscal_assessment.POAM.link_content">link_content</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.load">load</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.loads">loads</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.locations">locations</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.new">new</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.open">open</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.origin_state">origin_state</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.parties">parties</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.put">put</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.query">query</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.query_one">query_one</a></li>
@@ -877,8 +937,11 @@
 <li><a href="#oscal.oscal_assessment.POAM.remove_import">remove_import</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.resolve_imports">resolve_imports</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.resource_content">resource_content</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.resources">resources</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.responsible_parties">responsible_parties</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.retry_import">retry_import</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.retry_imports">retry_imports</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.roles">roles</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.set_metadata">set_metadata</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.supports">supports</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.transaction">transaction</a></li>
@@ -2441,6 +2504,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_content.OSCAL.actions" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_content.OSCAL.add_import" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -2584,8 +2654,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -2611,6 +2682,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_content.OSCAL.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_content.OSCAL.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -2990,6 +3070,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_content.OSCAL.locations" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_content.OSCAL.new" data-kind="classmethod" data-fqname="oscal.oscal_content.OSCAL.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -3036,6 +3123,13 @@ Module constants:
 <section class="member" id="oscal.oscal_content.OSCAL.origin_state" data-kind="property" data-fqname="oscal.oscal_content.OSCAL.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_content.OSCAL.parties" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_content.OSCAL.put" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -3228,6 +3322,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_content.OSCAL.resources" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_content.OSCAL.responsible_parties" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_content.OSCAL.retry_import" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -3253,6 +3362,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_content.OSCAL.roles" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_content.OSCAL.set_metadata" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
@@ -3961,6 +4077,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Catalog.actions" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Catalog.add_import" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -4193,8 +4316,9 @@ backward compatibility.</pre>
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -4220,6 +4344,15 @@ backward compatibility.</pre>
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Catalog.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Catalog.get_control_by_id" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.get_control_by_id">
 <h4><code class="sig">def get_control_by_id(self, control_id: str, depth: Optional[int] = None) -&gt; Optional[dict]</code></h4>
@@ -4705,6 +4838,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Catalog.locations" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Catalog.new" data-kind="classmethod" data-fqname="oscal.oscal_controls.Catalog.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -4751,6 +4891,13 @@ backward compatibility.</pre>
 <section class="member" id="oscal.oscal_controls.Catalog.origin_state" data-kind="property" data-fqname="oscal.oscal_controls.Catalog.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Catalog.parties" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Catalog.put" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -4983,6 +5130,21 @@ backward compatibility.</pre>
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Catalog.resources" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Catalog.responsible_parties" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Catalog.retry_import" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -5008,6 +5170,13 @@ backward compatibility.</pre>
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Catalog.roles" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Catalog.set_label" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.set_label">
 <h4><code class="sig">def set_label(self, id: str, label: str, class_: str = &#x27;&#x27;, group: str = &#x27;&#x27;) -&gt; Optional[dict]</code></h4>
@@ -5365,6 +5534,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Mapping.actions" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Mapping.add_import" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -5508,8 +5684,9 @@ backward compatibility.</pre>
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -5535,6 +5712,15 @@ backward compatibility.</pre>
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Mapping.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Mapping.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -5914,6 +6100,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Mapping.locations" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Mapping.new" data-kind="classmethod" data-fqname="oscal.oscal_controls.Mapping.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -5960,6 +6153,13 @@ backward compatibility.</pre>
 <section class="member" id="oscal.oscal_controls.Mapping.origin_state" data-kind="property" data-fqname="oscal.oscal_controls.Mapping.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Mapping.parties" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Mapping.put" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -6152,6 +6352,21 @@ backward compatibility.</pre>
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Mapping.resources" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Mapping.responsible_parties" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Mapping.retry_import" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -6177,6 +6392,13 @@ backward compatibility.</pre>
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Mapping.roles" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Mapping.set_metadata" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
@@ -6541,6 +6763,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Profile.actions" data-kind="method" data-fqname="oscal.oscal_controls.Profile.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Profile.add_alter" data-kind="method" data-fqname="oscal.oscal_controls.Profile.add_alter">
 <h4><code class="sig">def add_alter(self, control_id: str) -&gt; Optional[dict]</code></h4>
 <pre class="doc">Ensure a ``modify.alters`` entry exists for *control_id* and return a safe copy.
@@ -6790,8 +7019,9 @@ backward compatibility.</pre>
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -6817,6 +7047,15 @@ backward compatibility.</pre>
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_controls.Profile.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Profile.get_alter" data-kind="method" data-fqname="oscal.oscal_controls.Profile.get_alter">
 <h4><code class="sig">def get_alter(self, control_id: str) -&gt; Optional[dict]</code></h4>
@@ -7291,6 +7530,13 @@ backward compatibility.</pre>
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Profile.locations" data-kind="method" data-fqname="oscal.oscal_controls.Profile.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Profile.merge_strategy" data-kind="property" data-fqname="oscal.oscal_controls.Profile.merge_strategy">
 <h4><code class="sig">property merge_strategy</code></h4>
 <pre class="doc">The control-tree assembly strategy (:class:`MergeStrategy`).
@@ -7345,6 +7591,13 @@ backward compatibility.</pre>
 <section class="member" id="oscal.oscal_controls.Profile.origin_state" data-kind="property" data-fqname="oscal.oscal_controls.Profile.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.parties" data-kind="method" data-fqname="oscal.oscal_controls.Profile.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Profile.put" data-kind="method" data-fqname="oscal.oscal_controls.Profile.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -7687,6 +7940,21 @@ backward compatibility.</pre>
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Profile.resources" data-kind="method" data-fqname="oscal.oscal_controls.Profile.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.responsible_parties" data-kind="method" data-fqname="oscal.oscal_controls.Profile.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Profile.retry_import" data-kind="method" data-fqname="oscal.oscal_controls.Profile.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -7712,6 +7980,13 @@ backward compatibility.</pre>
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.roles" data-kind="method" data-fqname="oscal.oscal_controls.Profile.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Profile.set_directives" data-kind="method" data-fqname="oscal.oscal_controls.Profile.set_directives">
 <h4><code class="sig">def set_directives(self, combine: Optional[str] = None, hierarchy: Optional[str] = None, custom: Optional[dict] = None) -&gt; bool</code></h4>
@@ -8282,6 +8557,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.actions" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.add_import" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -8441,7 +8723,7 @@ Module constants:
                 are excluded — use :meth:`capabilities`.</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.control" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.control">
-<h4><code class="sig">def control(self, control_id: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<h4><code class="sig">def control(self, control_id: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
 <pre class="doc">Reverse-map a ``control-id`` to every component/capability that implements it.
 
         The cDef analog of :meth:`SSP.control`: rather than looking up one
@@ -8460,6 +8742,13 @@ Module constants:
             depth (int | None, optional): Enhancement depth of each inserted control
                 (``None`` full subtree, ``0`` control only, ``N`` N levels), following the
                 library-wide convention. Ignored when ``with_control`` is False.
+            include_resources (bool, optional): When True, every ``link`` anywhere in each
+                returned entry (including on the inserted ``control``, whose links reference
+                the source catalog/profile&#x27;s back-matter) whose ``href`` is a ``#uuid``
+                fragment resolving to a ``back-matter.resource`` **in scope** (this cDef or
+                any imported document) gains a ``resource`` key holding that resource, with
+                its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: ``{&quot;control-id&quot;, &quot;components&quot;}`` where ``components`` is one
@@ -8471,7 +8760,7 @@ Module constants:
                 *control_id*.</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.control_implementation" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.control_implementation">
-<h4><code class="sig">def control_implementation(self, uuid: &#x27;str&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<h4><code class="sig">def control_implementation(self, uuid: &#x27;str&#x27;, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
 <pre class="doc">Retrieve a ``control-implementation`` by its ``uuid``, as a safe copy.
 
         Searches every component and capability in this cDef for a control-implementation
@@ -8491,6 +8780,13 @@ Module constants:
 
         Args:
             uuid (str, required): The ``uuid`` of the control-implementation.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned control-implementation (including on each inserted ``control``,
+                whose links reference the source catalog/profile&#x27;s back-matter) whose
+                ``href`` is a ``#uuid`` fragment resolving to a ``back-matter.resource``
+                **in scope** (this cDef or any imported document) gains a ``resource`` key
+                holding that resource, with its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the control-implementation with each
@@ -8565,8 +8861,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -8592,6 +8889,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -8711,7 +9017,7 @@ Module constants:
             True if an entry was found and updated, False if no match was found.</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.implemented_requirement" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.implemented_requirement">
-<h4><code class="sig">def implemented_requirement(self, uuid: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = 0) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<h4><code class="sig">def implemented_requirement(self, uuid: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = 0, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
 <pre class="doc">Retrieve a single ``implemented-requirement`` by its own ``uuid``, as a safe copy.
 
         An ``implemented-requirement`` is the child of a ``control-implementation`` (which
@@ -8749,6 +9055,13 @@ Module constants:
             depth (int | None, optional): Enhancement depth of the attached control
                 (``0`` the control alone, ``None`` the full subtree, ``N`` N levels),
                 following the library-wide convention. Ignored when ``with_control`` is False.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned requirement (including on the inserted ``control`` and the parent&#x27;s
+                ``control-implementation-links``) whose ``href`` is a ``#uuid`` fragment
+                resolving to a ``back-matter.resource`` **in scope** (this cDef or any
+                imported document) gains a ``resource`` key holding that resource, with its
+                ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement augmented as above, or
@@ -9016,6 +9329,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.locations" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.new" data-kind="classmethod" data-fqname="oscal.oscal_implementation.ComponentDefinition.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -9062,6 +9382,13 @@ Module constants:
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.origin_state" data-kind="property" data-fqname="oscal.oscal_implementation.ComponentDefinition.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.parties" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.put" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -9254,6 +9581,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.resources" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.responsible_parties" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.retry_import" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -9279,6 +9621,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.roles" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.set_metadata" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
@@ -9600,6 +9949,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.SSP.actions" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.SSP.add_by_component" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.add_by_component">
 <h4><code class="sig">def add_by_component(self, implemented_requirement_uuid: &#x27;str&#x27;, component_uuid: &#x27;str&#x27;, description: &#x27;str&#x27;, by_component_uuid: &#x27;str&#x27; = &#x27;&#x27;, implementation_status: &#x27;str&#x27; = &#x27;implemented&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
 <pre class="doc">Add a by-component statement to one of the SSP&#x27;s implemented-requirements.
@@ -9773,7 +10129,7 @@ Module constants:
                 when ``include_controls``), or None when no component has that uuid.</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.SSP.control" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.control">
-<h4><code class="sig">def control(self, identifier: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None, by_component_uuids: &#x27;list&#x27; = []) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<h4><code class="sig">def control(self, identifier: &#x27;str&#x27;, with_control: &#x27;bool&#x27; = True, depth: &#x27;Optional[int]&#x27; = None, by_component_uuids: &#x27;list&#x27; = [], include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
 <pre class="doc">Retrieve an SSP implemented-requirement by control-id or its uuid, as a safe copy.
 
         Looks up ``control-implementation.implemented-requirements`` for the first entry
@@ -9826,6 +10182,13 @@ Module constants:
             by_component_uuids (list, optional): When non-empty, keep only ``by-component``
                 entries (requirement-level and statement-level) whose ``component-uuid`` is
                 in this list. Empty (default) keeps all.
+            include_resources (bool, optional): When True, every ``link`` anywhere in the
+                returned requirement (including on the inserted ``control``, whose links
+                reference the imported catalog/profile&#x27;s back-matter) whose ``href`` is a
+                ``#uuid`` fragment resolving to a ``back-matter.resource`` **in scope**
+                (this SSP or any imported document) gains a ``resource`` key holding that
+                resource, with its ``base64.value`` stripped to a stub — see
+                :func:`~oscal.oscal_content._embed_link_resources`. Defaults to False.
 
         Returns:
             Optional[dict]: A safe copy of the implemented-requirement (with a ``control``
@@ -9931,8 +10294,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -9958,6 +10322,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.SSP.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.SSP.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -10410,6 +10783,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.SSP.locations" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.SSP.network_architecture" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.network_architecture">
 <h4><code class="sig">def network_architecture(self, include_resources: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
 <pre class="doc">Return ``system-characteristics.network-architecture`` as a safe copy, or None.
@@ -10462,6 +10842,13 @@ Module constants:
 <section class="member" id="oscal.oscal_implementation.SSP.origin_state" data-kind="property" data-fqname="oscal.oscal_implementation.SSP.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.SSP.parties" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.SSP.protocols" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.protocols">
 <h4><code class="sig">def protocols(self) -&gt; &#x27;list[dict]&#x27;</code></h4>
@@ -10668,6 +11055,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.SSP.resources" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.SSP.responsible_parties" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.SSP.retry_import" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -10693,6 +11095,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_implementation.SSP.roles" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_implementation.SSP.set_metadata" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
@@ -11093,6 +11502,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.actions" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.add_import" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -11236,8 +11652,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -11263,6 +11680,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -11642,6 +12068,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.locations" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.new" data-kind="classmethod" data-fqname="oscal.oscal_assessment.AssessmentPlan.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -11688,6 +12121,13 @@ Module constants:
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.origin_state" data-kind="property" data-fqname="oscal.oscal_assessment.AssessmentPlan.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.parties" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.put" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -11880,6 +12320,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.resources" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.responsible_parties" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.retry_import" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -11905,6 +12360,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.roles" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.set_metadata" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
@@ -12208,6 +12670,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.actions" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.add_import" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -12351,8 +12820,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -12378,6 +12848,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -12757,6 +13236,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.locations" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.new" data-kind="classmethod" data-fqname="oscal.oscal_assessment.AssessmentResults.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -12803,6 +13289,13 @@ Module constants:
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.origin_state" data-kind="property" data-fqname="oscal.oscal_assessment.AssessmentResults.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.parties" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.put" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -12995,6 +13488,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.resources" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.responsible_parties" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.retry_import" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -13020,6 +13528,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.roles" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.set_metadata" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
@@ -13323,6 +13838,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the first resolvable source.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.POAM.actions" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.actions">
+<h4><code class="sig">def actions(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``action`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.POAM.add_import" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.add_import">
 <h4><code class="sig">def add_import(self, href: &#x27;str&#x27;, uuid: &#x27;str&#x27; = &#x27;&#x27;, title: &#x27;str&#x27; = &#x27;&#x27;, description: &#x27;str&#x27; = &#x27;&#x27;, props: &#x27;list&#x27; = [], version: &#x27;str&#x27; = &#x27;&#x27;, remarks: &#x27;str&#x27; = &#x27;&#x27;, *, include_all: &#x27;bool&#x27; = False) -&gt; &#x27;ImportResult&#x27;</code></h4>
 <pre class="doc">Add a first-level import to this document, backed by a back-matter resource.
@@ -13466,8 +13988,9 @@ Module constants:
 
         OSCAL cross-references (``href=&quot;#...&quot;``) can point at content that lives in an
         imported document — a back-matter ``resource`` (by uuid), a metadata ``role`` (by
-        id), ``party`` (by uuid), ``location`` (by uuid), or ``responsible-party`` (by
-        role-id), or a ``control``/``group``/``param``/``part`` (by id). This walks
+        id), ``party`` (by uuid), ``location`` (by uuid), ``responsible-party`` (by
+        role-id), or ``action`` (by uuid), or a ``control``/``group``/``param``/``part``
+        (by id). This walks
         ``self`` first, then each imported document depth-first (de-duplicated,
         cycle-safe), and returns the first match together with the document that owns it.
 
@@ -13493,6 +14016,15 @@ Module constants:
 
         Returns:
             OSCAL: A new instance (delegates to :meth:`loads`).</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.POAM.get_action_by_uuid" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.get_action_by_uuid">
+<h4><code class="sig">def get_action_by_uuid(self, action_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
+<pre class="doc">Return a metadata ``action`` (by uuid) defined anywhere in scope, or None.
+
+        Looks in THIS document&#x27;s ``metadata.actions`` first, then (unless ``local_only``)
+        cascades depth-first through the import tree until an action with the given uuid is
+        found or every branch is exhausted. See :meth:`_lookup_in_scope` for
+        ``with_source`` and ``local_only``.</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.POAM.get_location_by_uuid" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.get_location_by_uuid">
 <h4><code class="sig">def get_location_by_uuid(self, location_uuid: &#x27;str&#x27;, with_source: &#x27;bool&#x27; = False, local_only: &#x27;bool&#x27; = False) -&gt; &#x27;Optional[dict]&#x27;</code></h4>
@@ -13872,6 +14404,13 @@ Module constants:
         Returns:
             OSCAL: A new instance populated from the content.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.POAM.locations" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.locations">
+<h4><code class="sig">def locations(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``location`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.POAM.new" data-kind="classmethod" data-fqname="oscal.oscal_assessment.POAM.new">
 <h4><code class="sig">classmethod new(cls, title: &#x27;str&#x27;, version: &#x27;str&#x27; = &#x27;&#x27;, published: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
 <pre class="doc">Create a new OSCAL document from a template.
@@ -13918,6 +14457,13 @@ Module constants:
 <section class="member" id="oscal.oscal_assessment.POAM.origin_state" data-kind="property" data-fqname="oscal.oscal_assessment.POAM.origin_state">
 <h4><code class="sig">property origin_state</code></h4>
 <pre class="doc">Computed from is_local, is_cached, and TTL. Changes over time for cached remote content.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.POAM.parties" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.parties">
+<h4><code class="sig">def parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``party`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.POAM.put" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
@@ -14110,6 +14656,21 @@ Module constants:
         Returns:
             dict: The acquisition result (``success`` True/False; see :meth:`link_content`).</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.POAM.resources" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.resources">
+<h4><code class="sig">def resources(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every back-matter ``resource`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for the ``include_imports`` cascade, the
+        ``source-document`` origin annotation, and the first-wins de-duplication.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.POAM.responsible_parties" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.responsible_parties">
+<h4><code class="sig">def responsible_parties(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``responsible-party`` in scope, as annotated safe copies.
+
+        Keyed by the ``role-id`` fulfilled. See :meth:`_collect_in_scope` for
+        ``include_imports``, the ``source-document`` annotation, and de-duplication
+        (first-wins by ``role-id``).</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.POAM.retry_import" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.retry_import">
 <h4><code class="sig">def retry_import(self, failed_href: &#x27;str&#x27;, replacement_href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Retry a failed import identified by href, using a replacement source.
@@ -14135,6 +14696,13 @@ Module constants:
 
         Returns:
             bool: True if the import was successfully resolved on retry, False otherwise.</pre>
+</section>
+<section class="member" id="oscal.oscal_assessment.POAM.roles" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.roles">
+<h4><code class="sig">def roles(self, include_imports: &#x27;bool&#x27; = False) -&gt; &#x27;list&#x27;</code></h4>
+<pre class="doc">Every metadata ``role`` in scope, as annotated safe copies.
+
+        See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
+        annotation, and de-duplication (first-wins by role ``id``).</pre>
 </section>
 <section class="member" id="oscal.oscal_assessment.POAM.set_metadata" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.set_metadata">
 <h4><code class="sig">def set_metadata(self, content: &#x27;dict&#x27; = {}) -&gt; &#x27;bool&#x27;</code></h4>
