@@ -14,8 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Lint and the full test matrix validate every change on develop and in PRs. They are
+  # SKIPPED on a push to main (a merge): the code was already linted and tested in the PR,
+  # and nothing about the code changes at merge time. Post-merge validation is handled by
+  # the support-data job below, which re-runs the unit tests *after* refreshing the support
+  # database -- the one thing that is new on main.
   lint:
     name: Ruff lint (Python ${{ matrix.python-version }})
+    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,6 +44,7 @@ jobs:
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
+    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -61,11 +68,12 @@ jobs:
         run: pytest tests/unit -v
 
   # Exercises the exact SBOM + license-manifest generation used at release time, so the
-  # pipeline is validated on every push/PR without having to cut a release. It builds a
-  # wheel, runs scripts/generate_sbom.sh against it, and uploads the results as workflow
-  # artifacts. Non-gating (nothing depends on it) and never touches a Release or PyPI.
+  # pipeline is validated on every push/PR without having to cut a release. Non-gating.
+  # Skipped on a push to main (a merge): it was already validated in the PR and does not
+  # depend on the support database, so there is nothing new to re-check at merge time.
   sbom-smoke:
     name: SBOM generation (smoke test)
+    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,17 +93,17 @@ jobs:
             oscal-*.cdx.json
             THIRD-PARTY-LICENSES.md
 
-  # Refreshes the OSCAL support database on main so the fresh oscal_support.zip is committed
-  # *before* a release is tagged (the release build bundles whatever is in the tagged commit).
-  # API-doc generation now lives in docs.yml; this job owns only the support database.
+  # On a push to main (a merge): rebuild the OSCAL support database, RE-RUN the unit tests
+  # against that freshly built database, and commit the refreshed oscal_support.zip only if
+  # the tests pass. The test step runs BEFORE the commit step, so a refresh that breaks the
+  # tests is never committed to main. Lint and the standalone test matrix are skipped on main
+  # (already validated in the PR); the refreshed database is the only thing new here.
   #
-  # Runs only for an actual push landing on main (never a pull_request, whose github.ref is
-  # refs/pull/<n>/merge, not refs/heads/main). The shared `main-asset-commit` concurrency
-  # group serializes this with docs.yml's commit so the two never push to main concurrently.
+  # Shares the main-asset-commit concurrency group with docs.yml so the two main-committing
+  # jobs never push concurrently.
   support-data:
-    name: Refresh OSCAL support database
-    needs: [lint, test]
-    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Refresh support DB and re-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -111,13 +119,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install package
+      - name: Install package with dev extras
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[dev]"
 
       - name: Rebuild OSCAL support database
         run: python -m oscal.update_support --all
+
+      - name: Re-run unit tests against the refreshed database
+        run: pytest tests/unit -q
 
       - name: Commit refreshed support database if changed
         run: |
