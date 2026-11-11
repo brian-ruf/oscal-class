@@ -28,13 +28,13 @@ classifiers = [
 keywords = ["oscal", "nist", "security", "compliance", "automation", "ssp", "fedramp", "csf"]
 
 dependencies = [
-    "jsonpath-python >= 1.1.5",
-    "xmlschema       >= 3.4.3",
-    "PyYAML          >= 6.0",
-    "markdown        >= 3.0.0",
-    "requests        >= 2.31.0",
-    "elementpath     >= 4.7.0",
-    "packaging       >= 23.1",
+    "jsonpath-python >= 1.1.6",
+    "xmlschema       >= 4.0.0",
+    "PyYAML          >= 6.0.1",
+    "markdown        >= 3.7",
+    "requests        >= 2.32.0",
+    "elementpath     >= 5.0.0",
+    "packaging       >= 24.0",
 ]
 
 [project.urls]

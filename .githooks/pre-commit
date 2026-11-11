@@ -1,0 +1,39 @@
+#!/bin/sh
+# Blocks direct commits on protected branches (default: main, master).
+#
+# Rationale: the intended workflow is PR-based merges from a development
+# branch into a protected branch; a stray direct commit there (e.g. from
+# forgetting to switch branches back after tagging a release -- see
+# scripts/tag-release.sh / scripts/tag-release.cmd) causes the protected
+# branch and the development branch to drift out of sync.
+#
+# Generic by design -- copy this whole .githooks/ folder into any repo.
+#
+# One-time setup per clone:
+#   git config core.hooksPath .githooks
+#
+# Override the protected-branch list per repo if "main master" isn't right:
+#   git config hooks.protectedBranches "main release"
+#
+# Deliberate exception for one specific commit: git commit --no-verify
+
+branch=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
+
+protected=$(git config --get hooks.protectedBranches 2>/dev/null)
+protected=${protected:-"main master"}
+
+for name in $protected; do
+    if [ "$branch" = "$name" ]; then
+        echo "-------------------------------------------------------------------" >&2
+        echo " Direct commit blocked: you are on '$branch'." >&2
+        echo " Convention: work happens on a development branch; '$branch'" >&2
+        echo " only receives merges (PRs) and release tags." >&2
+        echo "" >&2
+        echo " If this is genuinely intentional, bypass with:" >&2
+        echo "   git commit --no-verify" >&2
+        echo "-------------------------------------------------------------------" >&2
+        exit 1
+    fi
+done
+
+exit 0

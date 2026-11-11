@@ -212,3 +212,57 @@ class TestFindActionInImportTree:
 
     def test_kinds_filter_excludes_action(self, cat):
         assert cat.find_in_import_tree(_A1, kinds=["resource"]) is None
+
+
+# ===========================================================================
+# Multi-import traversal order: first-found-wins follows the imports array order
+# (a profile can import more than one catalog/profile; a cDef more than one cDef).
+# ===========================================================================
+def _catalog_with_party(tmp_path, fname, cat_uuid, party_name):
+    """A catalog sharing the party uuid _P1 but with a distinct name, written to *fname*."""
+    doc = {"catalog": {
+        "uuid": cat_uuid,
+        "metadata": {"title": party_name, "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1", "oscal-version": "1.1.3",
+                     "parties": [{"uuid": _P1, "type": "organization", "name": party_name}]},
+        "groups": [{"id": "g", "title": "G", "controls": [{"id": "c-1", "title": "C"}]}],
+    }}
+    path = os.path.join(str(tmp_path), fname)
+    with open(path, "w") as fh:
+        json.dump(doc, fh)
+    return path
+
+
+def _profile_importing(tmp_path, *catalog_paths):
+    p = Profile.new("Multi")
+    for cp in catalog_paths:
+        p.add_import(cp, include_all=True)
+    p.set_merge(as_is=True)
+    return p
+
+
+class TestMultiImportOrder:
+    _CAT_A = "cccccccc-0000-4000-8000-00000000000a"
+    _CAT_B = "cccccccc-0000-4000-8000-00000000000b"
+
+    def test_first_import_wins_singular(self, tmp_path):
+        a = _catalog_with_party(tmp_path, "a.json", self._CAT_A, "Alpha Org")
+        b = _catalog_with_party(tmp_path, "b.json", self._CAT_B, "Beta Org")
+        prof = _profile_importing(tmp_path, a, b)              # a before b
+        party = prof.get_party_by_uuid(_P1)
+        assert party["name"] == "Alpha Org"                    # first import wins
+        loc = prof.get_party_by_uuid(_P1, with_source=True)
+        assert loc["object_uuid"] == self._CAT_A
+
+    def test_import_order_reversed(self, tmp_path):
+        a = _catalog_with_party(tmp_path, "a.json", self._CAT_A, "Alpha Org")
+        b = _catalog_with_party(tmp_path, "b.json", self._CAT_B, "Beta Org")
+        prof = _profile_importing(tmp_path, b, a)              # b before a
+        assert prof.get_party_by_uuid(_P1)["name"] == "Beta Org"
+
+    def test_plural_dedup_keeps_first_import(self, tmp_path):
+        a = _catalog_with_party(tmp_path, "a.json", self._CAT_A, "Alpha Org")
+        b = _catalog_with_party(tmp_path, "b.json", self._CAT_B, "Beta Org")
+        prof = _profile_importing(tmp_path, a, b)
+        hits = [p for p in prof.parties(include_imports=True) if p.get("uuid") == _P1]
+        assert len(hits) == 1 and hits[0]["name"] == "Alpha Org"

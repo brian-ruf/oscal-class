@@ -43,6 +43,12 @@ The sequencing of releases may change in response to client needs and other exte
 - [ ] Generate and maintain metaschema-defined indexes
 - [ ] Handle metaschema-defined uniqueness constraints
 
+- [ ] **Pre-5.0.0 breaking batch** (plan: `docs/NAMING_CONSISTENCY_PLAN.md`) — land together,
+      ahead of 5.0.0: (1) universal `get_<noun>()` getter-name normalization; (2) library-wide
+      `provenance {uuid, href, imported}` on the base-class cross-reference getters
+      (roles/parties/locations/resources), retiring `source-document`. Assessment-layer
+      provenance + `additional-versions` is already done in final shape.
+
 
 ### Project Approach
 
@@ -73,6 +79,32 @@ The sequencing of releases may change in response to client needs and other exte
 
 
 ## Future:
+
+### Reproducible SBOMs — Tested-Dependency Lockfile
+
+- [ ] Add a committed constraints/lock file so the per-release SBOM describes a *fixed*
+      dependency closure instead of re-resolving on each run.
+    - Motivation: `oscal` declares abstract lower-bound dependencies (correct for a library),
+      so `pip install oscal` resolves different transitive versions over time and per Python
+      version. Today the SBOM step installs into a clean venv and re-resolves fresh, so two
+      SBOMs for the *same* `oscal` version — generated weeks apart — can legitimately differ.
+      A lockfile pins what we test and what the release-time SBOM reports, without constraining
+      downstream `pip install oscal` (pinning belongs at the application layer, e.g. CyberCraft).
+    - Requirements:
+        - Generate a lockfile (`pip-tools`/`uv`, ideally with hashes) from the runtime closure;
+          commit it.
+        - Feed it to `scripts/generate_sbom.sh` / the SBOM generator (constraints on the clean
+          install) so the CycloneDX document is deterministic for a given `oscal` version.
+        - Keep the published `[project.dependencies]` as lower-bound ranges — do **not** pin the
+          library's declared deps (that would cause downstream resolution conflicts and block
+          automatic security-patch intake).
+    - Open design points: `pip-tools` vs `uv` for lock generation; whether to also pin the
+      `[dev]` extra for CI reproducibility; refresh cadence (regenerate the lock + re-test before
+      each release tag); and multi-Python handling (the 3.9 vs 3.13 closures differ, so a single
+      lock may need per-interpreter variants or a documented canonical interpreter).
+    - Note for Federal consumers: state plainly that `oscal`'s SBOM is a point-in-time snapshot
+      of the tested closure for that release (backed by the lockfile), and that a deployer pins
+      for their own environment — consistent with NTIA's SBOM-per-artifact model.
 
 ### SBOM Packaging — PEP 770 Alignment
 
@@ -154,8 +186,6 @@ The sequencing of releases may change in response to client needs and other exte
 
 
 ---
-
-### Farther Out
 
 - [ ] Enhanced URI and APIs Handling for Content Acquisition/Storage
     - Additional API Specifications

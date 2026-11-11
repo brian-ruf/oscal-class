@@ -5568,7 +5568,8 @@ class OSCAL:
         "action":            (("metadata", "actions"),              "uuid"),
     }
 
-    def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None) -> Optional[dict]:
+    def find_in_import_tree(self, fragment_id: str, kinds=None, _seen=None,
+                            stop_at: tuple = ()) -> Optional[dict]:
         """Resolve an id/uuid by searching this document and its import tree.
 
         OSCAL cross-references (``href="#..."``) can point at content that lives in an
@@ -5602,18 +5603,25 @@ class OSCAL:
             local["href"] = self.href or self.href_original or ""
             return local
 
+        # ``stop_at`` limits how far the cascade descends: a document whose model is listed
+        # is searched (above) but its own imports are NOT — e.g. ``stop_at=("system-security-plan",)``
+        # confines a party/location lookup to the assessment chain + the SSP, never the
+        # SSP's imported profile/catalog.
+        if self.model in stop_at:
+            return None
+
         for entry in self.import_list:
             obj = entry.get("object")
             if obj is None:
                 continue
-            found = obj.find_in_import_tree(fragment_id, kinds, _seen)
+            found = obj.find_in_import_tree(fragment_id, kinds, _seen, stop_at)
             if found is not None:
                 return found
         return None
 
     # -------------------------------------------------------------------------
     def _lookup_in_scope(self, fragment_id: str, kind: str, with_source: bool = False,
-                         local_only: bool = False):
+                         local_only: bool = False, stop_at: tuple = ()):
         """Resolve one element ``kind`` by id/uuid in this doc (and, by default, its imports).
 
         Shared implementation for the ``get_*`` cross-reference getters. Looks in THIS
@@ -5642,7 +5650,7 @@ class OSCAL:
                 found["object_uuid"] = self.uuid
                 found["href"] = self.href or self.href_original or ""
         else:
-            found = self.find_in_import_tree(fragment_id, kinds=[kind])
+            found = self.find_in_import_tree(fragment_id, kinds=[kind], stop_at=stop_at)
         if found is None:
             return None
         return found if with_source else found["element"]
@@ -5944,27 +5952,38 @@ class OSCAL:
 
     # -------------------------------------------------------------------------
     def get_party_by_uuid(self, party_uuid: str, with_source: bool = False,
-                          local_only: bool = False) -> Optional[dict]:
+                          local_only: bool = False, stop_at_ssp: bool = False) -> Optional[dict]:
         """Return a metadata ``party`` (by uuid) defined anywhere in scope, or None.
 
         Looks in THIS document's ``metadata.parties`` first, then (unless ``local_only``)
         cascades depth-first through the import tree until a party with the given uuid is
         found or every branch is exhausted. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.
+
+        ``stop_at_ssp`` (default False) confines the cascade to the **assessment chain + the
+        SSP**: the search descends through an AR/AP/POA&M to the imported SSP but goes no
+        further (not into the SSP's imported profile/catalog). This is the correct scope when
+        resolving a party referenced by an assessment-model subject.
         """
-        return self._lookup_in_scope(party_uuid, "party", with_source, local_only)
+        stop_at = ("system-security-plan",) if stop_at_ssp else ()
+        return self._lookup_in_scope(party_uuid, "party", with_source, local_only, stop_at)
 
     # -------------------------------------------------------------------------
     def get_location_by_uuid(self, location_uuid: str, with_source: bool = False,
-                             local_only: bool = False) -> Optional[dict]:
+                             local_only: bool = False, stop_at_ssp: bool = False) -> Optional[dict]:
         """Return a metadata ``location`` (by uuid) defined anywhere in scope, or None.
 
         Looks in THIS document's ``metadata.locations`` first, then (unless ``local_only``)
         cascades depth-first through the import tree until a location with the given uuid
         is found or every branch is exhausted. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.
+
+        ``stop_at_ssp`` (default False) confines the cascade to the **assessment chain + the
+        SSP** (see :meth:`get_party_by_uuid`) — the correct scope when resolving a location
+        referenced by an assessment-model subject.
         """
-        return self._lookup_in_scope(location_uuid, "location", with_source, local_only)
+        stop_at = ("system-security-plan",) if stop_at_ssp else ()
+        return self._lookup_in_scope(location_uuid, "location", with_source, local_only, stop_at)
 
     # -------------------------------------------------------------------------
     def get_responsible_party_by_id(self, role_id: str, with_source: bool = False,
@@ -5999,7 +6018,8 @@ class OSCAL:
     # Plural in-scope collection getters
     # -------------------------------------------------------------------------
     def _collect_in_scope(self, kind: str, include_imports: bool = False,
-                          _seen=None, _dedup=None, _imported: bool = False) -> list:
+                          _seen=None, _dedup=None, _imported: bool = False,
+                          stop_at: tuple = ()) -> list:
         """Collect every element of one ``kind`` from this document (and, optionally, imports).
 
         The plural companion to :meth:`_lookup_in_scope`: instead of returning the first
@@ -6059,13 +6079,16 @@ class OSCAL:
                                          "imported": _imported}
             results.append(copied)
 
-        if include_imports:
+        # ``stop_at`` confines the cascade (see :meth:`find_in_import_tree`): a document whose
+        # model is listed is collected but its own imports are not descended into.
+        if include_imports and self.model not in stop_at:
             for entry in self.import_list:
                 obj = entry.get("object")
                 if obj is None:
                     continue
                 results.extend(obj._collect_in_scope(
-                    kind, include_imports=True, _seen=_seen, _dedup=_dedup, _imported=True))
+                    kind, include_imports=True, _seen=_seen, _dedup=_dedup, _imported=True,
+                    stop_at=stop_at))
         return results
 
     def resources(self, include_imports: bool = False) -> list:
@@ -6084,21 +6107,27 @@ class OSCAL:
         """
         return self._collect_in_scope("role", include_imports)
 
-    def parties(self, include_imports: bool = False) -> list:
+    def parties(self, include_imports: bool = False, stop_at_ssp: bool = False) -> list:
         """Every metadata ``party`` in scope, as annotated safe copies.
 
         See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
-        annotation, and de-duplication (first-wins by ``uuid``).
+        annotation, and de-duplication (first-wins by ``uuid``). ``stop_at_ssp`` (default
+        False) confines the cascade to the assessment chain + the SSP (see
+        :meth:`get_party_by_uuid`).
         """
-        return self._collect_in_scope("party", include_imports)
+        return self._collect_in_scope("party", include_imports,
+                                      stop_at=("system-security-plan",) if stop_at_ssp else ())
 
-    def locations(self, include_imports: bool = False) -> list:
+    def locations(self, include_imports: bool = False, stop_at_ssp: bool = False) -> list:
         """Every metadata ``location`` in scope, as annotated safe copies.
 
         See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
-        annotation, and de-duplication (first-wins by ``uuid``).
+        annotation, and de-duplication (first-wins by ``uuid``). ``stop_at_ssp`` (default
+        False) confines the cascade to the assessment chain + the SSP (see
+        :meth:`get_party_by_uuid`).
         """
-        return self._collect_in_scope("location", include_imports)
+        return self._collect_in_scope("location", include_imports,
+                                      stop_at=("system-security-plan",) if stop_at_ssp else ())
 
     def responsible_parties(self, include_imports: bool = False) -> list:
         """Every metadata ``responsible-party`` in scope, as annotated safe copies.

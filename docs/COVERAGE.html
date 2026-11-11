@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSCAL library — Getter / Setter Coverage</title>
+<style>
+  :root {
+    --impl-bg: #d9f2e0; --impl-bd: #2e8b57; --impl-fg: #145a32;
+    --plan-bg: #f1f1f3; --plan-bd: #b9b9c2; --plan-fg: #5a5a66;
+    --common: #0b63b8; --shared: #8a5a00; --specific: #6a2a84;
+    --ink: #1c1c22; --rule: #e2e2e8; --head: #2a2a33;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink); margin: 0; padding: 0 24px 80px; background: #fafafb;
+  }
+  header.page { max-width: 1180px; margin: 0 auto; padding: 28px 0 6px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 {
+    max-width: 1180px; margin: 46px auto 10px; padding-top: 10px;
+    font-size: 21px; color: var(--head); border-top: 3px solid var(--head);
+  }
+  h2 .model-key { font: 600 13px/1 ui-monospace, Menlo, Consolas, monospace;
+    color: #fff; background: var(--head); padding: 4px 8px; border-radius: 5px;
+    vertical-align: middle; margin-left: 8px; }
+  h2 .model-cls { font: 600 13px/1 ui-monospace, Menlo, Consolas, monospace;
+    color: var(--head); background: #fff; border: 1.5px solid var(--head);
+    padding: 3px 8px; border-radius: 5px; vertical-align: middle; margin-left: 6px; }
+  h2 .model-cls::before { content: "class "; color: #9a9aa4; font-weight: 500; }
+  p.lead, .legend { max-width: 1180px; margin-left: auto; margin-right: auto; }
+  p.lead { color: #44444e; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center;
+    background: #fff; border: 1px solid var(--rule); border-radius: 10px;
+    padding: 12px 16px; margin-top: 14px; font-size: 13.5px;
+  }
+  .legend b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: #777; margin-right: 2px; }
+  table { max-width: 1180px; width: 100%; margin: 0 auto; border-collapse: collapse;
+    background: #fff; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  thead th { text-align: left; background: #f4f4f7; color: #33333c; font-size: 12.5px;
+    letter-spacing: .04em; text-transform: uppercase; padding: 10px 14px; border-bottom: 2px solid var(--rule); }
+  th.topic { width: 31%; } th.getters { width: 37%; } th.setters { width: 32%; }
+  tbody td { vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--rule); }
+  tbody tr:nth-child(even) td { background: #fcfcfd; }
+  tbody tr:last-child td { border-bottom: none; }
+  .grp { font-weight: 600; display: block; margin-bottom: 3px; }
+  .path { display: block; font: 12.5px/1.45 ui-monospace, Menlo, Consolas, monospace;
+    color: #555; margin: 1px 0; }
+  .scope { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .03em;
+    padding: 2px 7px; border-radius: 10px; margin-top: 5px; color: #fff; }
+  .scope.common { background: var(--common); }
+  .scope.shared { background: var(--shared); }
+  .scope.specific { background: var(--specific); }
+  .scope.note { background: #fff; color: #666; border: 1px solid var(--rule); font-weight: 600; }
+  code.m { display: inline-block; font: 12.5px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    padding: 2px 7px; margin: 2px 4px 2px 0; border-radius: 5px; border: 1px solid; white-space: nowrap; }
+  code.impl { background: var(--impl-bg); border-color: var(--impl-bd); color: var(--impl-fg); }
+  code.impl::before { content: "\2713\00a0"; font-weight: 700; }
+  code.plan { background: var(--plan-bg); border-color: var(--plan-bd); color: var(--plan-fg); }
+  code.plan::before { content: "\25CB\00a0"; }
+  .none { color: #9a9aa4; font-style: italic; font-size: 13px; }
+  nav.models { max-width: 1180px; margin: 18px auto 0; display: flex; flex-wrap: wrap;
+    gap: 8px; align-items: center; background: #fff; border: 1px solid var(--rule);
+    border-radius: 10px; padding: 12px 16px; }
+  nav.models b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+    color: #777; margin-right: 6px; }
+  nav.models a { font: 600 13px/1 ui-monospace, Menlo, Consolas, monospace; text-decoration: none;
+    color: var(--head); background: #f4f4f7; border: 1px solid var(--rule);
+    padding: 5px 9px; border-radius: 6px; }
+  nav.models a:hover { background: var(--head); color: #fff; border-color: var(--head); }
+  h2 { scroll-margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <h1>OSCAL library — Getter / Setter Coverage</h1>
+  <p class="lead">
+    One table per OSCAL model, organized by information topic. Each row groups a related set of
+    getters with their matching setters (same row, separate columns) and names the relevant
+    OSCAL JSON location(s). <em>Implemented</em> and <em>planned</em> members are shown together.
+    By the library convention, every single-object getter (e.g.&nbsp;<code class="m plan" style="margin:0">control</code>)
+    has a matching setter; plural/collection getters (e.g.&nbsp;<code class="m plan" style="margin:0">controls</code>)
+    do not — their topic row instead carries the collection-level mutators (append / insert / create).
+  </p>
+  <div class="legend">
+    <span><b>Status</b></span>
+    <span><code class="m impl" style="margin:0">implemented</code></span>
+    <span><code class="m plan" style="margin:0">planned</code></span>
+    <span style="width:14px"></span>
+    <span><b>Scope</b></span>
+    <span class="scope common">Common · all models</span>
+    <span class="scope shared">Shared · listed models</span>
+    <span class="scope specific">Model-specific</span>
+  </div>
+  <p class="lead" style="margin-top:12px; font-size:13.5px; color:#666;">
+    The <span class="scope common" style="font-size:10px">Common · all models</span> block below is
+    inherited from the base <code class="m plan" style="margin:0">OSCAL</code> class and is
+    <strong>identical in every model</strong>; it is repeated in each table for convenience. Planned
+    assessment getters are drawn from <code class="m plan" style="margin:0">docs/assessment_getters.md</code>
+    (all of §3–§5, including the <code class="m plan" style="margin:0">.get_*_by_uuid()</code> resolvers).
+    Implemented so far on the assessment layer: the intra-document getters
+    (<code class="m impl" style="margin:0">.observation()</code> /
+    <code class="m impl" style="margin:0">.risk()</code> /
+    <code class="m impl" style="margin:0">.finding()</code>, each keyed by uuid); the POA&amp;M
+    <code class="m impl" style="margin:0">.poam_tree</code> attribute; and the local-definition
+    <code class="m impl" style="margin:0">.components()</code> /
+    <code class="m impl" style="margin:0">.component()</code> /
+    <code class="m impl" style="margin:0">.inventory_items()</code> /
+    <code class="m impl" style="margin:0">.inventory_item()</code> getters on all three assessment
+    models (these traverse the import chain to the SSP by default — <code>local_only=True</code>
+    restricts to the document; the singular getters take <code>include_all=True</code> for an
+    <code>additional-versions</code> array; every returned object carries a
+    <code>provenance</code> = <code>{uuid, href, imported}</code> of its source document, and an
+    SSP-owned component bubbles up in its full <code>.component()</code> shape). Also implemented:
+    <code class="m impl" style="margin:0">.user()</code> /
+    <code class="m impl" style="margin:0">.users()</code> and
+    <code class="m impl" style="margin:0">.assessment_platform()</code> /
+    <code class="m impl" style="margin:0">.assessment_platforms()</code> (cross-chain, with the
+    platform injecting a <code>components[]</code> array); and cross-reference injection on
+    <code class="m impl" style="margin:0">.finding()</code> /
+    <code class="m impl" style="margin:0">.risk()</code> /
+    <code class="m impl" style="margin:0">.observation()</code> (cited observations/risks inlined with
+    a cycle guard; observation subjects + evidence resolved; every <code>origins[].actors[]</code>
+    populated via <code class="m impl" style="margin:0">.actor()</code>). This document is kept
+    current as getters and setters land.
+  </p>
+</header>
+
+<nav class="models">
+  <b>Models</b>
+  <a href="#catalog">1 · Catalog</a>
+  <a href="#profile">2 · Profile</a>
+  <a href="#component-definition">3 · Component Definition</a>
+  <a href="#system-security-plan">4 · SSP</a>
+  <a href="#plan-of-action-and-milestones">5 · POA&amp;M</a>
+  <a href="#assessment-plan">6 · Assessment Plan</a>
+  <a href="#assessment-results">7 · Assessment Results</a>
+  <a href="#mapping-collection">8 · Mapping Collection</a>
+</nav>
+
+
+<!-- ============================ COMMON BLOCK (template, repeated) ============================ -->
+<!-- The following rows are inlined into every model table below. -->
+
+<!-- ================================================================= CATALOG -->
+<h2 id="catalog">1. Catalog <span class="model-key">catalog</span> <span class="model-cls">Catalog</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td>
+        <td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td>
+        <td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td>
+        <td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td>
+        <td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td>
+        <td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td>
+        <td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">(model import key) · import_tree</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- catalog-specific -->
+    <tr><td><span class="grp">Groups</span><span class="path">catalog.groups[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.get_group_by_id()</code></td>
+        <td><code class="m impl">.create_control_group()</code><code class="m impl">.insert_group()</code><code class="m impl">.remove()</code></td></tr>
+    <tr><td><span class="grp">Controls</span><span class="path">catalog.controls[]</span><span class="path">catalog.groups[].controls[]</span><span class="scope shared">Shared · Catalog, Profile</span></td>
+        <td><code class="m impl">.get_control_by_id()</code><code class="m impl">.get_control_list()</code></td>
+        <td><code class="m impl">.create_control()</code><code class="m impl">.insert_control()</code><code class="m impl">.remove()</code></td></tr>
+    <tr><td><span class="grp">Control title / label</span><span class="path">…control.title · props[class=label]</span><span class="scope specific">Model-specific</span></td>
+        <td><span class="none">(on the control object)</span></td>
+        <td><code class="m impl">.set_title()</code><code class="m impl">.set_label()</code></td></tr>
+    <tr><td><span class="grp">Parts</span><span class="path">…control.parts[] · …group.parts[]</span><span class="scope specific">Model-specific</span></td>
+        <td><span class="none">(on the control / group object)</span></td>
+        <td><code class="m impl">.add_part()</code><code class="m impl">.set_part_title()</code><code class="m impl">.remove()</code></td></tr>
+    <tr><td><span class="grp">Parameters</span><span class="path">…control.params[] · catalog.params[]</span><span class="scope shared">Shared · Catalog, Profile</span></td>
+        <td><code class="m impl">.get_parameter_by_id()</code></td>
+        <td><code class="m plan">.set_parameter()</code> <span class="scope note">Profile has this</span></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= PROFILE -->
+<h2 id="profile">2. Profile <span class="model-key">profile</span> <span class="model-cls">Profile</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">profile.imports[] · import_tree</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- profile-specific -->
+    <tr><td><span class="grp">Import control selection</span><span class="path">profile.imports[].include-controls / exclude-controls</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.get_import_selection()</code></td>
+        <td><code class="m impl">.set_import_selection()</code></td></tr>
+    <tr><td><span class="grp">Merge directives</span><span class="path">profile.merge</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.get_directives()</code></td>
+        <td><code class="m impl">.set_merge()</code><code class="m impl">.set_merge_directive()</code><code class="m impl">.set_directives()</code></td></tr>
+    <tr><td><span class="grp">Modify — set-parameters</span><span class="path">profile.modify.set-parameters[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.get_set_parameter()</code><code class="m impl">.get_parameter_by_id()</code></td>
+        <td><code class="m impl">.set_parameter()</code><code class="m impl">.remove_set_parameter()</code></td></tr>
+    <tr><td><span class="grp">Modify — alters (add / remove)</span><span class="path">profile.modify.alters[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.get_alter()</code></td>
+        <td><code class="m impl">.add_alter()</code><code class="m impl">.add_alter_adds()</code><code class="m impl">.add_alter_removes()</code><code class="m impl">.remove_alter_adds()</code><code class="m impl">.remove_alter_removes()</code></td></tr>
+    <tr><td><span class="grp">Resolved catalog — controls &amp; groups</span><span class="path">(resolved) catalog.controls[] · groups[]</span><span class="scope shared">Shared · Catalog, Profile</span></td>
+        <td><code class="m impl">.control()</code><code class="m impl">.get_control_by_id()</code><code class="m impl">.get_group_by_id()</code><code class="m impl">.get_control_list()</code></td>
+        <td><span class="none">(authored via imports &amp; modify, above)</span></td></tr>
+    <tr><td><span class="grp">Resolution output</span><span class="path">resolve → catalog</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.resolve_and_dump_catalog()</code><code class="m impl">.dump_catalog()</code></td>
+        <td><code class="m impl">.resolve()</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= COMPONENT-DEFINITION -->
+<h2 id="component-definition">3. Component Definition <span class="model-key">component-definition</span> <span class="model-cls">ComponentDefinition</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">component-definition.import-component-definitions[]</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- cDef-specific -->
+    <tr><td><span class="grp">Components</span><span class="path">component-definition.components[]</span><span class="scope shared">Shared · Component-Definition, SSP (+ AP / AR / POA&amp;M)</span></td>
+        <td><code class="m impl">.components()</code><code class="m impl">.component()</code></td>
+        <td><code class="m plan">.set_component()</code></td></tr>
+    <tr><td><span class="grp">Capabilities</span><span class="path">component-definition.capabilities[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.capabilities()</code><code class="m impl">.capability()</code></td>
+        <td><code class="m plan">.set_capability()</code></td></tr>
+    <tr><td><span class="grp">Control implementations</span><span class="path">…components[].control-implementations[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.control_implementation()</code><code class="m impl">.implemented_requirement()</code></td>
+        <td><code class="m plan">.set_control_implementation()</code><code class="m plan">.set_implemented_requirement()</code></td></tr>
+    <tr><td><span class="grp">Control reverse-map</span><span class="path">(controls → implementing components)</span><span class="scope shared">Shared · Component-Definition, SSP</span></td>
+        <td><code class="m impl">.control()</code></td>
+        <td><span class="none">(derived view — no setter)</span></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= SSP -->
+<h2 id="system-security-plan">4. System Security Plan <span class="model-key">system-security-plan</span> <span class="model-cls">SSP</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">system-security-plan.import-profile</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- SSP-specific -->
+    <tr><td><span class="grp">System characteristics</span><span class="path">system-security-plan.system-characteristics</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.system_characteristics()</code></td>
+        <td><code class="m plan">.set_system_characteristics()</code></td></tr>
+    <tr><td><span class="grp">Diagrams — boundary / network / data flow</span><span class="path">…authorization-boundary · …network-architecture · …data-flow</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.authorization_boundary()</code><code class="m impl">.network_architecture()</code><code class="m impl">.data_flow()</code></td>
+        <td><code class="m plan">.set_authorization_boundary()</code><code class="m plan">.set_network_architecture()</code><code class="m plan">.set_data_flow()</code></td></tr>
+    <tr><td><span class="grp">System information</span><span class="path">…system-characteristics.system-information</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.system_information()</code></td>
+        <td><code class="m plan">.set_system_information()</code></td></tr>
+    <tr><td><span class="grp">Components &amp; protocols</span><span class="path">…system-implementation.components[]</span><span class="scope shared">Shared · SSP, Component-Definition (+ AP / AR / POA&amp;M)</span></td>
+        <td><code class="m impl">.components()</code><code class="m impl">.component()</code><code class="m impl">.protocols()</code><code class="m impl">.controls_by_component()</code></td>
+        <td><code class="m impl">.append_component()</code></td></tr>
+    <tr><td><span class="grp">Inventory items</span><span class="path">…system-implementation.inventory-items[]</span><span class="scope shared">Shared · SSP (+ AP / AR / POA&amp;M)</span></td>
+        <td><code class="m impl">.inventory_items()</code><code class="m impl">.inventory_item()</code></td>
+        <td><code class="m plan">.set_inventory_item()</code></td></tr>
+    <tr><td><span class="grp">Users</span><span class="path">…system-implementation.users[]</span><span class="scope shared">Shared · SSP (+ planned AP / AR)</span></td>
+        <td><code class="m impl">.users()</code><code class="m impl">.user()</code></td>
+        <td><code class="m plan">.set_user()</code></td></tr>
+    <tr><td><span class="grp">Leveraged authorizations</span><span class="path">…system-implementation.leveraged-authorizations[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m impl">.leveraged_authorization()</code></td>
+        <td><code class="m plan">.set_leveraged_authorization()</code></td></tr>
+    <tr><td><span class="grp">Control implementation</span><span class="path">…control-implementation.implemented-requirements[]</span><span class="scope shared">Shared · SSP, Component-Definition (as <code>control</code>)</span></td>
+        <td><code class="m impl">.control()</code></td>
+        <td><code class="m impl">.append_impl_requirement()</code><code class="m impl">.add_by_component()</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= POA&M -->
+<h2 id="plan-of-action-and-milestones">5. Plan of Action &amp; Milestones <span class="model-key">plan-of-action-and-milestones</span> <span class="model-cls">POAM</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">plan-of-action-and-milestones.import-ssp</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- POA&M-specific / shared assessment -->
+    <tr><td><span class="grp">Cross-reference tree (UI view)</span><span class="path">poam-items[] · observations[] · findings[] · risks[]</span><span class="scope specific">Model-specific · analog of <code>implementation_tree</code> / <code>controls_tree</code></span></td>
+        <td><code class="m impl">.poam_tree</code> <span class="none">(attribute)</span></td>
+        <td><span class="none">(derived view — rebuilt on validate / mutation)</span></td></tr>
+    <tr><td><span class="grp">POA&amp;M items</span><span class="path">plan-of-action-and-milestones.poam-items[]</span><span class="scope specific">Model-specific · list view via <code>.poam_tree</code></span></td>
+        <td><code class="m impl">.poam_item()</code></td>
+        <td><code class="m plan">.set_poam_item()</code></td></tr>
+    <tr><td><span class="grp">Observations</span><span class="path">plan-of-action-and-milestones.observations[]</span><span class="scope shared">Shared · POA&amp;M, Assessment-Results · list view via <code>.poam_tree</code></span></td>
+        <td><code class="m impl">.observation()</code></td>
+        <td><code class="m plan">.set_observation()</code></td></tr>
+    <tr><td><span class="grp">Risks</span><span class="path">plan-of-action-and-milestones.risks[]</span><span class="scope shared">Shared · POA&amp;M, Assessment-Results · list view via <code>.poam_tree</code></span></td>
+        <td><code class="m impl">.risk()</code></td>
+        <td><code class="m plan">.set_risk()</code></td></tr>
+    <tr><td><span class="grp">Findings</span><span class="path">plan-of-action-and-milestones.findings[]</span><span class="scope shared">Shared · POA&amp;M, Assessment-Results · list view via <code>.poam_tree</code></span></td>
+        <td><code class="m impl">.finding()</code></td>
+        <td><code class="m plan">.set_finding()</code></td></tr>
+    <tr><td><span class="grp">Origins / actors</span><span class="path">…{observations|risks|findings}.origins[].actors[]</span><span class="scope shared">Shared · POA&amp;M, Assessment-Results</span></td>
+        <td><code class="m impl">.actor()</code></td>
+        <td><span class="none">(helper — populates an actors[] array)</span></td></tr>
+    <tr><td><span class="grp">Subjects</span><span class="path">…observations[].subjects[]</span><span class="scope shared">Shared · POA&amp;M, Assessment-Results</span></td>
+        <td><code class="m impl">.subjects()</code><code class="m plan">.subject()</code></td>
+        <td><code class="m plan">.set_subject()</code></td></tr>
+    <tr><td><span class="grp">Local components</span><span class="path">…local-definitions.components[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M · resolves → SSP</span></td>
+        <td><code class="m impl">.components()</code><code class="m impl">.component()</code></td>
+        <td><code class="m plan">.set_component()</code></td></tr>
+    <tr><td><span class="grp">Local inventory items</span><span class="path">…local-definitions.inventory-items[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M · resolves → SSP</span></td>
+        <td><code class="m impl">.inventory_items()</code><code class="m impl">.inventory_item()</code></td>
+        <td><code class="m plan">.set_inventory_item()</code></td></tr>
+    <tr><td><span class="grp">Assessment assets / platforms</span><span class="path">…local-definitions.assessment-assets · …assessment-platforms[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M</span></td>
+        <td><code class="m plan">.assessment_assets()</code><code class="m impl">.assessment_platforms()</code><code class="m impl">.assessment_platform()</code></td>
+        <td><code class="m plan">.set_assessment_assets()</code><code class="m plan">.set_assessment_platform()</code></td></tr>
+    <tr><td><span class="grp">System id</span><span class="path">plan-of-action-and-milestones.system-id</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m plan">.system_id()</code></td>
+        <td><code class="m plan">.set_system_id()</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= ASSESSMENT PLAN -->
+<h2 id="assessment-plan">6. Assessment Plan <span class="model-key">assessment-plan</span> <span class="model-cls">AssessmentPlan</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">assessment-plan.import-ssp</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- AP-specific / shared assessment -->
+    <tr><td><span class="grp">Tasks</span><span class="path">assessment-plan.tasks[] (nested)</span><span class="scope shared">Shared · Assessment-Plan, Assessment-Results</span></td>
+        <td><code class="m plan">.tasks()</code><code class="m plan">.task()</code></td>
+        <td><code class="m plan">.set_task()</code></td></tr>
+    <tr><td><span class="grp">Activities</span><span class="path">…local-definitions.activities[]</span><span class="scope shared">Shared · Assessment-Plan, Assessment-Results</span></td>
+        <td><code class="m plan">.activities()</code><code class="m plan">.activity()</code></td>
+        <td><code class="m plan">.set_activity()</code></td></tr>
+    <tr><td><span class="grp">Objectives &amp; methods</span><span class="path">…local-definitions.objectives-and-methods[]</span><span class="scope shared">Shared · Assessment-Plan, Assessment-Results · overlays control</span></td>
+        <td><code class="m plan">.objectives_and_methods()</code><code class="m plan">.get_objectives_and_methods_by_control_id()</code></td>
+        <td><code class="m plan">.set_objectives_and_methods()</code></td></tr>
+    <tr><td><span class="grp">Reviewed controls</span><span class="path">assessment-plan.reviewed-controls</span><span class="scope shared">Shared · Assessment-Plan, Assessment-Results (per result)</span></td>
+        <td><code class="m plan">.reviewed_controls()</code></td>
+        <td><code class="m plan">.set_reviewed_controls()</code></td></tr>
+    <tr><td><span class="grp">Assessment subjects</span><span class="path">assessment-plan.assessment-subjects[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m plan">.assessment_subjects()</code></td>
+        <td><code class="m plan">.set_assessment_subjects()</code></td></tr>
+    <tr><td><span class="grp">Assessment assets / platforms</span><span class="path">assessment-plan.assessment-assets · …assessment-platforms[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M</span></td>
+        <td><code class="m plan">.assessment_assets()</code><code class="m impl">.assessment_platforms()</code><code class="m impl">.assessment_platform()</code></td>
+        <td><code class="m plan">.set_assessment_assets()</code><code class="m plan">.set_assessment_platform()</code></td></tr>
+    <tr><td><span class="grp">Local components</span><span class="path">…local-definitions.components[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M · resolves → SSP</span></td>
+        <td><code class="m impl">.components()</code><code class="m impl">.component()</code></td>
+        <td><code class="m plan">.set_component()</code></td></tr>
+    <tr><td><span class="grp">Local inventory items</span><span class="path">…local-definitions.inventory-items[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M · resolves → SSP</span></td>
+        <td><code class="m impl">.inventory_items()</code><code class="m impl">.inventory_item()</code></td>
+        <td><code class="m plan">.set_inventory_item()</code></td></tr>
+    <tr><td><span class="grp">Local users</span><span class="path">…local-definitions.users[]</span><span class="scope shared">Shared · AP / AR · resolves → SSP</span></td>
+        <td><code class="m impl">.users()</code><code class="m impl">.user()</code></td>
+        <td><code class="m plan">.set_user()</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= ASSESSMENT RESULTS -->
+<h2 id="assessment-results">7. Assessment Results <span class="model-key">assessment-results</span> <span class="model-cls">AssessmentResults</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">assessment-results.import-ap</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- AR-specific / shared assessment -->
+    <tr><td><span class="grp">Results</span><span class="path">assessment-results.results[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m plan">.results()</code><code class="m plan">.result()</code></td>
+        <td><code class="m plan">.set_result()</code></td></tr>
+    <tr><td><span class="grp">Observations</span><span class="path">…results[].observations[]</span><span class="scope shared">Shared · Assessment-Results, POA&amp;M</span></td>
+        <td><code class="m plan">.observations()</code><code class="m impl">.observation()</code></td>
+        <td><code class="m plan">.set_observation()</code></td></tr>
+    <tr><td><span class="grp">Risks</span><span class="path">…results[].risks[]</span><span class="scope shared">Shared · Assessment-Results, POA&amp;M</span></td>
+        <td><code class="m plan">.risks()</code><code class="m impl">.risk()</code></td>
+        <td><code class="m plan">.set_risk()</code></td></tr>
+    <tr><td><span class="grp">Findings</span><span class="path">…results[].findings[]</span><span class="scope shared">Shared · Assessment-Results, POA&amp;M</span></td>
+        <td><code class="m plan">.findings()</code><code class="m impl">.finding()</code></td>
+        <td><code class="m plan">.set_finding()</code></td></tr>
+    <tr><td><span class="grp">Origins / actors</span><span class="path">…{observations|risks|findings}.origins[].actors[]</span><span class="scope shared">Shared · Assessment-Results, POA&amp;M</span></td>
+        <td><code class="m impl">.actor()</code></td>
+        <td><span class="none">(helper — populates an actors[] array)</span></td></tr>
+    <tr><td><span class="grp">Subjects</span><span class="path">…observations[].subjects[]</span><span class="scope shared">Shared · Assessment-Results, POA&amp;M</span></td>
+        <td><code class="m impl">.subjects()</code><code class="m plan">.subject()</code></td>
+        <td><code class="m plan">.set_subject()</code></td></tr>
+    <tr><td><span class="grp">Tasks</span><span class="path">…results[].local-definitions.tasks[]</span><span class="scope shared">Shared · Assessment-Results, Assessment-Plan · resolves → AP</span></td>
+        <td><code class="m plan">.tasks()</code><code class="m plan">.task()</code></td>
+        <td><code class="m plan">.set_task()</code></td></tr>
+    <tr><td><span class="grp">Activities</span><span class="path">…local-definitions.activities[]</span><span class="scope shared">Shared · Assessment-Results, Assessment-Plan</span></td>
+        <td><code class="m plan">.activities()</code><code class="m plan">.activity()</code></td>
+        <td><code class="m plan">.set_activity()</code></td></tr>
+    <tr><td><span class="grp">Objectives &amp; methods</span><span class="path">…local-definitions.objectives-and-methods[]</span><span class="scope shared">Shared · Assessment-Results, Assessment-Plan · overlays control</span></td>
+        <td><code class="m plan">.objectives_and_methods()</code><code class="m plan">.get_objectives_and_methods_by_control_id()</code></td>
+        <td><code class="m plan">.set_objectives_and_methods()</code></td></tr>
+    <tr><td><span class="grp">Local components</span><span class="path">…results[].local-definitions.components[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M · resolves → SSP</span></td>
+        <td><code class="m impl">.components()</code><code class="m impl">.component()</code></td>
+        <td><code class="m plan">.set_component()</code></td></tr>
+    <tr><td><span class="grp">Local inventory items</span><span class="path">…results[].local-definitions.inventory-items[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M · resolves → SSP</span></td>
+        <td><code class="m impl">.inventory_items()</code><code class="m impl">.inventory_item()</code></td>
+        <td><code class="m plan">.set_inventory_item()</code></td></tr>
+    <tr><td><span class="grp">Local users</span><span class="path">…results[].local-definitions.users[]</span><span class="scope shared">Shared · AP / AR · resolves → SSP</span></td>
+        <td><code class="m impl">.users()</code><code class="m impl">.user()</code></td>
+        <td><code class="m plan">.set_user()</code></td></tr>
+    <tr><td><span class="grp">Assessment assets / platforms</span><span class="path">…results[].local-definitions.assessment-assets · …assessment-platforms[]</span><span class="scope shared">Shared · AP / AR / POA&amp;M</span></td>
+        <td><code class="m plan">.assessment_assets()</code><code class="m impl">.assessment_platforms()</code><code class="m impl">.assessment_platform()</code></td>
+        <td><code class="m plan">.set_assessment_assets()</code><code class="m plan">.set_assessment_platform()</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================= MAPPING -->
+<h2 id="mapping-collection">8. Mapping Collection <span class="model-key">mapping-collection</span> <span class="model-cls">Mapping</span></h2>
+<table>
+  <thead><tr><th class="topic">Information topic</th><th class="getters">Getters</th><th class="setters">Setters</th></tr></thead>
+  <tbody>
+    <!-- common -->
+    <tr><td><span class="grp">Document metadata</span><span class="path">metadata</span><span class="scope common">Common · all models</span></td>
+        <td><span class="none">(via query / query_one)</span></td><td><code class="m impl">.set_metadata()</code></td></tr>
+    <tr><td><span class="grp">Roles</span><span class="path">metadata.roles</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.roles()</code><code class="m impl">.get_role_by_id()</code></td><td><code class="m plan">.set_role()</code></td></tr>
+    <tr><td><span class="grp">Parties</span><span class="path">metadata.parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.parties()</code><code class="m impl">.get_party_by_uuid()</code></td><td><code class="m plan">.set_party()</code></td></tr>
+    <tr><td><span class="grp">Locations</span><span class="path">metadata.locations</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.locations()</code><code class="m impl">.get_location_by_uuid()</code></td><td><code class="m plan">.set_location()</code></td></tr>
+    <tr><td><span class="grp">Responsible parties</span><span class="path">metadata.responsible-parties</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.responsible_parties()</code><code class="m impl">.get_responsible_party_by_id()</code></td><td><code class="m plan">.set_responsible_party()</code></td></tr>
+    <tr><td><span class="grp">Actions</span><span class="path">metadata.actions</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.actions()</code><code class="m impl">.get_action_by_uuid()</code></td><td><code class="m plan">.set_action()</code></td></tr>
+    <tr><td><span class="grp">Back-matter resources &amp; link content</span><span class="path">back-matter.resources</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.resources()</code><code class="m impl">.get_resource_by_uuid()</code><code class="m impl">.resource_content()</code><code class="m impl">.link_content()</code></td>
+        <td><code class="m impl">.append_resource()</code><code class="m impl">.update_resource()</code></td></tr>
+    <tr><td><span class="grp">Imports &amp; resolution</span><span class="path">mapping-collection.import[]</span><span class="scope common">Common · all models</span></td>
+        <td><code class="m impl">.import_tree()</code><code class="m impl">.failed_imports()</code><code class="m impl">.get_oscal_object()</code></td>
+        <td><code class="m impl">.add_import()</code><code class="m impl">.update_import()</code><code class="m impl">.remove_import()</code><code class="m impl">.retry_import()</code><code class="m impl">.resolve_imports()</code></td></tr>
+    <!-- mapping-specific -->
+    <tr><td><span class="grp">Mappings</span><span class="path">mapping-collection.mappings[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m plan">.mappings()</code><code class="m plan">.mapping()</code></td>
+        <td><code class="m plan">.set_mapping()</code></td></tr>
+    <tr><td><span class="grp">Mapping entries</span><span class="path">…mappings[].maps[]</span><span class="scope specific">Model-specific</span></td>
+        <td><code class="m plan">.maps()</code><code class="m plan">.map()</code></td>
+        <td><code class="m plan">.set_map()</code></td></tr>
+  </tbody>
+</table>
+
+<footer style="max-width:1180px; margin:40px auto 0; color:#8a8a94; font-size:12.5px;">
+  Generated from the implemented surface in <code class="m plan" style="margin:0">oscal/</code> and the planned
+  surface in <code class="m plan" style="margin:0">docs/assessment_getters.md</code> /
+  <code class="m plan" style="margin:0">docs/ROADMAP.md</code>. Setter names shown as
+  <code class="m plan" style="margin:0">set_&lt;noun&gt;</code> are the implied matching setters for each
+  single-object getter (per the library convention); where a concrete mutator already exists it is named
+  directly (e.g. <code class="m impl" style="margin:0">append_component</code>,
+  <code class="m impl" style="margin:0">create_control</code>).
+</footer>
+
+</body>
+</html>

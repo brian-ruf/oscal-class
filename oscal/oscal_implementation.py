@@ -1224,17 +1224,7 @@ class SSP(OSCAL):
             for la in sys_impl.get("leveraged-authorizations", []) or []
         ]
 
-        components: list[dict[str, Any]] = []
-        for comp in sys_impl.get("components", []) or []:
-            node: dict[str, Any] = {
-                "uuid":  comp.get("uuid", ""),
-                "title": comp.get("title", ""),
-                "type":  comp.get("type", ""),
-            }
-            asset_props = get_props(comp, name="asset-type")
-            if asset_props:
-                node["asset-type"] = asset_props[0].get("value", "")
-            components.append(node)
+        components = self.components()
 
         # Controls: start from the imported profile's ``controls_tree`` (the SSP's control
         # baseline), then OVERLAY the SSP's implementation. Unlike a component-definition —
@@ -1359,6 +1349,34 @@ class SSP(OSCAL):
             if pruned is not None:
                 result.append(pruned)
         return result
+
+    # -------------------------------------------------------------------------
+    def components(self) -> list[dict[str, Any]]:
+        """Return a lightweight index of the SSP's ``system-implementation.components``.
+
+        One ``{"uuid", "title", "type"}`` node per component, plus ``asset-type`` (the value
+        of the OSCAL-default-namespace ``asset-type`` prop) only when that prop is present —
+        the same shape as the ``components`` portion of :attr:`implementation_tree` (which is
+        built from this method). Pair with :meth:`component` for full, enriched detail.
+
+        Returns:
+            list[dict]: One summary node per component (empty when there are none).
+        """
+        sys_impl = self._ssp_root().get("system-implementation", {}) or {}
+        out: list[dict[str, Any]] = []
+        for comp in sys_impl.get("components", []) or []:
+            if not isinstance(comp, dict):
+                continue
+            node: dict[str, Any] = {
+                "uuid":  comp.get("uuid", ""),
+                "title": comp.get("title", ""),
+                "type":  comp.get("type", ""),
+            }
+            asset_props = get_props(comp, name="asset-type")
+            if asset_props:
+                node["asset-type"] = asset_props[0].get("value", "")
+            out.append(node)
+        return out
 
     # -------------------------------------------------------------------------
     def component(self, uuid: str, include_controls: bool = False) -> Optional[dict]:
