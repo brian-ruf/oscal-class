@@ -7,7 +7,7 @@
 <style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.5;max-width:64rem;margin:1.5rem auto;padding:0 1rem;color:#111}h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #ccc}h3{font-size:1rem;margin-top:1.3rem}h4{font-size:.95rem;margin:.9rem 0 .2rem}.sig{background:#eef;padding:.15rem .4rem;border-radius:3px}pre.doc{white-space:pre-wrap;margin:.2rem 0 .7rem;padding:.4rem .6rem;background:#f6f6f6;border-left:3px solid #bbb;overflow-x:auto}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}#index ul{margin:.2rem 0;padding-left:1.1rem}.muted{color:#666}</style></head><body>
 <header>
 <h1>oscal — API reference</h1>
-<p class="muted">generated 2026-11-03T22:40:23Z · 12 modules, 36 classes, 840 methods, 33 functions</p>
+<p class="muted">generated 2026-11-12T05:53:46Z · 12 modules, 36 classes, 846 methods, 33 functions</p>
 <p>Machine-oriented API reference for automated (agentic) consumption. Every symbol carries a stable <code>id</code> (its fully-qualified name) and <code>data-*</code> attributes; docstrings are preserved verbatim.</p>
 </header>
 <section id="index"><h2>Index</h2><ul>
@@ -449,6 +449,8 @@
 <li><a href="#oscal.oscal_controls.Profile.add_alter_adds">add_alter_adds</a></li>
 <li><a href="#oscal.oscal_controls.Profile.add_alter_removes">add_alter_removes</a></li>
 <li><a href="#oscal.oscal_controls.Profile.add_import">add_import</a></li>
+<li><a href="#oscal.oscal_controls.Profile.add_import_exclude">add_import_exclude</a></li>
+<li><a href="#oscal.oscal_controls.Profile.add_import_include">add_import_include</a></li>
 <li><a href="#oscal.oscal_controls.Profile.append_child">append_child</a></li>
 <li><a href="#oscal.oscal_controls.Profile.append_resource">append_resource</a></li>
 <li><a href="#oscal.oscal_controls.Profile.control">control</a></li>
@@ -503,6 +505,7 @@
 <li><a href="#oscal.oscal_controls.Profile.open">open</a></li>
 <li><a href="#oscal.oscal_controls.Profile.origin_state">origin_state</a></li>
 <li><a href="#oscal.oscal_controls.Profile.parties">parties</a></li>
+<li><a href="#oscal.oscal_controls.Profile.preview_import_selection">preview_import_selection</a></li>
 <li><a href="#oscal.oscal_controls.Profile.put">put</a></li>
 <li><a href="#oscal.oscal_controls.Profile.query">query</a></li>
 <li><a href="#oscal.oscal_controls.Profile.query_one">query_one</a></li>
@@ -512,6 +515,8 @@
 <li><a href="#oscal.oscal_controls.Profile.remove_alter_adds">remove_alter_adds</a></li>
 <li><a href="#oscal.oscal_controls.Profile.remove_alter_removes">remove_alter_removes</a></li>
 <li><a href="#oscal.oscal_controls.Profile.remove_import">remove_import</a></li>
+<li><a href="#oscal.oscal_controls.Profile.remove_import_exclude">remove_import_exclude</a></li>
+<li><a href="#oscal.oscal_controls.Profile.remove_import_include">remove_import_include</a></li>
 <li><a href="#oscal.oscal_controls.Profile.remove_set_parameter">remove_set_parameter</a></li>
 <li><a href="#oscal.oscal_controls.Profile.resolve">resolve</a></li>
 <li><a href="#oscal.oscal_controls.Profile.resolve_and_dump_catalog">resolve_and_dump_catalog</a></li>
@@ -527,6 +532,7 @@
 <li><a href="#oscal.oscal_controls.Profile.roles">roles</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_directives">set_directives</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_import_selection">set_import_selection</a></li>
+<li><a href="#oscal.oscal_controls.Profile.set_import_with_children">set_import_with_children</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_merge">set_merge</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_merge_directive">set_merge_directive</a></li>
 <li><a href="#oscal.oscal_controls.Profile.set_metadata">set_metadata</a></li>
@@ -6869,6 +6875,49 @@ backward compatibility.</pre>
             ImportResult: ``status`` of &quot;added&quot;, &quot;replaced&quot;, &quot;duplicate&quot;, &quot;invalid&quot;,
                 or &quot;error&quot;, with the relevant ``entry`` and ``resource``.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Profile.add_import_exclude" data-kind="method" data-fqname="oscal.oscal_controls.Profile.add_import_exclude">
+<h4><code class="sig">def add_import_exclude(self, href: str, ids: Optional[list] = None, matching: Optional[list] = None, with_children: Optional[bool] = None) -&gt; Optional[dict]</code></h4>
+<pre class="doc">Append one ``select-control-by-id`` to an import&#x27;s ``exclude-controls``.
+
+        The exclusion-side counterpart of :meth:`add_import_include`, with the same
+        semantics; the import&#x27;s include form (``include-all`` or ``include-controls``) is
+        preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): Control ids for the entry&#x27;s ``with-ids``.
+            matching (list, optional): The entry&#x27;s ``matching`` (``{pattern, remarks}`` dicts
+                or bare pattern strings).
+            with_children (bool, optional): ``with-child-controls`` for this entry (``None``
+                omit / ``True`` → ``&quot;yes&quot;`` / ``False`` → ``&quot;no&quot;``).
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None (see
+                :meth:`add_import_include`).</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.add_import_include" data-kind="method" data-fqname="oscal.oscal_controls.Profile.add_import_include">
+<h4><code class="sig">def add_import_include(self, href: str, ids: Optional[list] = None, matching: Optional[list] = None, with_children: Optional[bool] = None) -&gt; Optional[dict]</code></h4>
+<pre class="doc">Append one ``select-control-by-id`` to an import&#x27;s ``include-controls``.
+
+        Builds a single include entry from *ids* and/or *matching* (at least one required),
+        appends it, and commits via :meth:`set_import_selection` (staged + validated +
+        atomic). If the import currently selects ``include-all`` it is converted to
+        ``include-controls``; the empty placeholder entry :meth:`add_import` seeds is dropped;
+        any ``exclude-controls`` is preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): Control ids for the entry&#x27;s ``with-ids``.
+            matching (list, optional): The entry&#x27;s ``matching`` — OSCAL ``{pattern, remarks}``
+                dicts (preserved intact) or bare pattern strings as shorthand.
+            with_children (bool, optional): ``with-child-controls`` for this entry — ``None``
+                (default) omit, ``True`` → ``&quot;yes&quot;``, ``False`` → explicit ``&quot;no&quot;``.
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import statement, or None — no
+                matching import, a bad argument, neither ids nor matching supplied, or a
+                rejected/invalid result.</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Profile.append_child" data-kind="method" data-fqname="oscal.oscal_controls.Profile.append_child">
 <h4><code class="sig">def append_child(self, path: &#x27;str&#x27;, child: &#x27;dict&#x27;) -&gt; &#x27;dict | None&#x27;</code></h4>
 <pre class="doc">Appends a child dict to the list at the given JSON path.
@@ -7599,6 +7648,32 @@ backward compatibility.</pre>
         See :meth:`_collect_in_scope` for ``include_imports``, the ``source-document``
         annotation, and de-duplication (first-wins by ``uuid``).</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Profile.preview_import_selection" data-kind="method" data-fqname="oscal.oscal_controls.Profile.preview_import_selection">
+<h4><code class="sig">def preview_import_selection(self, href: str, include_all: Optional[dict] = None, include_controls: Optional[list] = None, exclude_controls: Optional[list] = None, include_with_children: Optional[bool] = None, exclude_with_children: Optional[bool] = None) -&gt; Optional[dict]</code></h4>
+<pre class="doc">Preview the control ids an import&#x27;s selection resolves to — without mutating.
+
+        With no selection arguments, previews the import&#x27;s **current, committed** selection.
+        When any of ``include_all`` / ``include_controls`` / ``exclude_controls`` is supplied,
+        previews that **hypothetical** selection instead (same omit-means-absent semantics as
+        :meth:`set_import_selection`, and the same ``*_with_children`` conveniences) so a
+        caller can see exactly what a change *would* select before committing — e.g. that a
+        greedy ``matching`` pattern like ``&quot;ac-2*&quot;`` also pulls in ``ac-20``.
+
+        Runs the real selection logic (:func:`_selected_tree_ids`) against the imported
+        object&#x27;s ``controls_tree``, so the import&#x27;s source must be resolved/loaded.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            include_all / include_controls / exclude_controls / include_with_children /
+                exclude_with_children: A hypothetical selection to preview (see
+                :meth:`set_import_selection`); omit all to preview the committed selection.
+
+        Returns:
+            Optional[dict]: ``{&quot;selected&quot;: [sorted control ids], &quot;warnings&quot;: [str, …]}`` — the
+                resolved control ids and any selection warnings (e.g. excluding a control that
+                was never included) — or None when no import matches or its source is not
+                resolved.</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Profile.put" data-kind="method" data-fqname="oscal.oscal_controls.Profile.put">
 <h4><code class="sig">def put(self, path: &#x27;str&#x27;, value, mode: &quot;Literal[&#x27;replace&#x27;, &#x27;insert&#x27;]&quot; = &#x27;replace&#x27;, *, validate: &#x27;bool&#x27; = False, check_refs: &#x27;bool&#x27; = False) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Write a value into the JSON content at a slash-separated path.
@@ -7756,6 +7831,46 @@ backward compatibility.</pre>
         Returns:
             True if an import was found and removed; False if not found, the
             cardinality forbids removal, or the content is read-only.</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.remove_import_exclude" data-kind="method" data-fqname="oscal.oscal_controls.Profile.remove_import_exclude">
+<h4><code class="sig">def remove_import_exclude(self, href: str, ids: Optional[list] = None, matching: Optional[list] = None) -&gt; Optional[dict]</code></h4>
+<pre class="doc">Remove the ``exclude-controls`` entry/entries matching *ids* + *matching*.
+
+        The exclusion-side counterpart of :meth:`remove_import_include` (same identity rule).
+        When the last exclusion is removed the ``exclude-controls`` key is dropped entirely;
+        the import&#x27;s include form is preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): The ``with-ids`` of the entry to remove.
+            matching (list, optional): The ``matching`` of the entry to remove
+                (``{pattern, remarks}`` dicts or bare strings; only the patterns are compared).
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None — no matching import
+                or no entry matched (a no-op).</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.remove_import_include" data-kind="method" data-fqname="oscal.oscal_controls.Profile.remove_import_include">
+<h4><code class="sig">def remove_import_include(self, href: str, ids: Optional[list] = None, matching: Optional[list] = None) -&gt; Optional[dict]</code></h4>
+<pre class="doc">Remove the ``include-controls`` entry/entries matching *ids* + *matching*.
+
+        Identity is the set of ``with-ids`` plus the set of ``matching`` patterns
+        (``with-child-controls`` / ``remarks`` ignored — see
+        :func:`_select_entry_identity_matches`); every entry with that identity is removed and
+        the change is committed via :meth:`set_import_selection`. Refuses to remove the
+        **last effective** include selection (an import must carry ``include-all`` or
+        ``include-controls`` — use :meth:`set_import_selection` to switch to ``include-all``,
+        or :meth:`remove_import` to drop the import). Any ``exclude-controls`` is preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): The ``with-ids`` of the entry to remove.
+            matching (list, optional): The ``matching`` of the entry to remove
+                (``{pattern, remarks}`` dicts or bare strings; only the patterns are compared).
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None — no matching import,
+                no entry matched (a no-op), or removing the last effective include was refused.</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Profile.remove_set_parameter" data-kind="method" data-fqname="oscal.oscal_controls.Profile.remove_set_parameter">
 <h4><code class="sig">def remove_set_parameter(self, param_id: str) -&gt; bool</code></h4>
@@ -8018,7 +8133,7 @@ backward compatibility.</pre>
                 or invalid ``custom``, or a result with no hierarchy directive).</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Profile.set_import_selection" data-kind="method" data-fqname="oscal.oscal_controls.Profile.set_import_selection">
-<h4><code class="sig">def set_import_selection(self, href: str, include_all: Optional[dict] = None, include_controls: Optional[list] = None, exclude_controls: Optional[list] = None) -&gt; Optional[dict]</code></h4>
+<h4><code class="sig">def set_import_selection(self, href: str, include_all: Optional[dict] = None, include_controls: Optional[list] = None, exclude_controls: Optional[list] = None, include_with_children: Optional[bool] = None, exclude_with_children: Optional[bool] = None) -&gt; Optional[dict]</code></h4>
 <pre class="doc">Replace an import statement&#x27;s control-selection structures.
 
         Wholesale-replaces the ``include-all`` / ``include-controls`` / ``exclude-controls``
@@ -8050,11 +8165,47 @@ backward compatibility.</pre>
                 ``include_all``.
             exclude_controls (list, optional): A list of ``select-control-by-id`` dicts to
                 exclude.
+            include_with_children (bool, optional): Convenience that stamps
+                ``with-child-controls`` on every supplied ``include-controls`` entry —
+                ``True`` → ``&quot;yes&quot;``, ``False`` → explicit ``&quot;no&quot;``, ``None`` (default) →
+                leave each entry as authored. Avoids the string footgun (the flag is a
+                token whose value must be ``&quot;yes&quot;``/``&quot;no&quot;``, not a presence toggle).
+            exclude_with_children (bool, optional): The same convenience for the supplied
+                ``exclude-controls`` entries.
 
         Returns:
             Optional[dict]: A safe copy of the rewritten import statement, or None on
                 failure — no matching import, a wrong argument type, or a replacement that
                 fails metaschema validation (including supplying both/neither include form).</pre>
+</section>
+<section class="member" id="oscal.oscal_controls.Profile.set_import_with_children" data-kind="method" data-fqname="oscal.oscal_controls.Profile.set_import_with_children">
+<h4><code class="sig">def set_import_with_children(self, href: str, include: Optional[bool] = None, exclude: Optional[bool] = None) -&gt; Optional[dict]</code></h4>
+<pre class="doc">Toggle ``with-child-controls`` on an import&#x27;s existing selection, in place.
+
+        A targeted alternative to the full :meth:`set_import_selection` replace: it stamps the
+        flag on the import&#x27;s **current** ``include-controls`` / ``exclude-controls`` entries
+        without the caller rebuilding (or risking dropping) the selection. The two sides are
+        **independent**:
+
+        * ``include`` — ``True`` sets ``with-child-controls: &quot;yes&quot;`` on every
+          ``include-controls`` entry, ``False`` sets explicit ``&quot;no&quot;``, ``None`` (default)
+          leaves the include side untouched.
+        * ``exclude`` — the same, for the ``exclude-controls`` entries.
+
+        Both the include form and the exclude side are always carried through unchanged except
+        for the flag you asked to toggle, and the edit is staged/validated/committed atomically
+        like :meth:`set_import_selection`.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            include (bool, optional): Flag value for the include-controls entries (``None`` =
+                leave as-is). No effect on an ``include-all`` import (no entries to flag).
+            exclude (bool, optional): Flag value for the exclude-controls entries (``None`` =
+                leave as-is). No effect when the import has no ``exclude-controls``.
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None — no matching import,
+                nothing requested (both ``None``), or a rejected/invalid result.</pre>
 </section>
 <section class="member" id="oscal.oscal_controls.Profile.set_merge" data-kind="method" data-fqname="oscal.oscal_controls.Profile.set_merge">
 <h4><code class="sig">def set_merge(self, flat: bool = False, as_is: Optional[bool] = None, custom: Optional[dict] = None, combine: Optional[str] = None) -&gt; Optional[dict]</code></h4>
