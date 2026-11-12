@@ -39,6 +39,12 @@ The sequencing of releases may change in response to client needs and other exte
 
 ## Up Next:
 
+**Next release — major version bump.** Changes the supported Python range: **drops Python
+3.9 and 3.10** (both end-of-life upstream — 3.9 since October 2025, 3.10 since October 2026)
+and **adds Python 3.14**. Python 3.15 is deferred until the dependency wheels catch up. New
+floor: `requires-python = ">=3.11"`. This release also lands the assessment-layer getters
+below (POA&M / AP / AR).
+
 - [ ] POA&M, AP and AR Getters
 - [ ] Generate and maintain metaschema-defined indexes
 - [ ] Handle metaschema-defined uniqueness constraints
