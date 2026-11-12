@@ -1,11 +1,20 @@
 ---
 ---
 
-# ROADMAP (_Updated November 1, 2026_)
+# ROADMAP (_Updated November 12, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## CURRENT: Version 4.1.0
+## CURRENT: Version 4.2.0
+
+- Profile import-selection authoring API — safer, granular control over an import's `include-controls` / `exclude-controls` and the `with-child-controls` flag:
+    - `set_import_with_children()` toggles `with-child-controls` on the existing include/exclude selection independently, without rebuilding it.
+    - `add_import_include()` / `add_import_exclude()` append one selection entry at a time (`matching` preserves the OSCAL `{pattern, remarks}` construct); `remove_import_include()` / `remove_import_exclude()` remove a row by its selection identity.
+    - `set_import_selection()` gained `include_with_children` / `exclude_with_children` booleans (set the flag from a Python bool — no `"yes"`/`"no"` string footgun).
+    - `preview_import_selection()` dry-runs a committed or hypothetical selection, returning the control ids it resolves to (surfaces greedy `matching` globs before committing).
+- CI: pinned the Python 3.9 matrix leg to `ubuntu-22.04` (no `setup-python` 3.9 build on Ubuntu ≥24.04). Python 3.9 support is unchanged this release.
+
+## Builds on Version 4.1.0
 
 - Added common getters, which enumerate across all imports by default, or can be constrained to enumerate only for the current OSCAL object: `.resources()`, `.roles()`, `.parties()`, `.locations()`, `.responsible_parties()`, `.actions()`
 - Added common getter, `.action()` which fetches a specific metadata action.
