@@ -88,7 +88,7 @@
 - All import-selection setters remain staged, metaschema-validated, and atomic (a rejected edit rolls back and returns `None`).
 - CI: pinned the Python 3.9 test/lint matrix leg to `ubuntu-22.04` (`actions/setup-python` has no 3.9 build for Ubuntu ≥24.04, now the `ubuntu-latest` image). Python 3.9 support is unchanged this release; see `docs/5.0.0_PLANNING.md` for the planned drop of 3.9/3.10 and addition of 3.14.
 
-## Version 4.2.1
+## Version 4.2.2
 
 - additional methods for managing profile import control inclusion and exclusion directives
   - original method is still available, but only provided coarse-grain control
