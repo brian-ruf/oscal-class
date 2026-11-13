@@ -5,7 +5,7 @@
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## CURRENT: Version 4.2.2
+## CURRENT: Version 4.2.4
 
 - Profile import-selection authoring API — safer, granular control over an import's `include-controls` / `exclude-controls` and the `with-child-controls` flag:
     - `set_import_with_children()` toggles `with-child-controls` on the existing include/exclude selection independently, without rebuilding it.
