@@ -19,9 +19,14 @@ jobs:
   # and nothing about the code changes at merge time. Post-merge validation is handled by
   # the support-data job below, which re-runs the unit tests *after* refreshing the support
   # database -- the one thing that is new on main.
+  #
+  # They are also SKIPPED on a pull_request whose head is this repo's own develop branch
+  # (i.e. the develop -> main PR): every push to develop already runs them on the exact
+  # same commit, and those results show on the PR. PRs from feature branches and forks
+  # (which have no push trigger here) still run them.
   lint:
     name: Ruff lint (Python ${{ matrix.python-version }})
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
@@ -49,7 +54,7 @@ jobs:
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
@@ -83,7 +88,7 @@ jobs:
   # depend on the support database, so there is nothing new to re-check at merge time.
   sbom-smoke:
     name: SBOM generation (smoke test)
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
