@@ -148,7 +148,9 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add oscal/data/oscal_support.zip
-            git commit -m "chore: refresh OSCAL support database [skip ci]"
+            # No [skip ci]: GITHUB_TOKEN pushes never trigger workflows, and [skip ci] here would
+            # block the tag-triggered Release workflow when a release tag lands on this commit.
+            git commit -m "chore: refresh OSCAL support database"
             git pull --rebase origin main
             git push origin HEAD:main
           fi
