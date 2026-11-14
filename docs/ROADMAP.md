@@ -5,7 +5,7 @@
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## CURRENT: Version 4.2.2
+## CURRENT: Version 4.2.4
 
 - Profile import-selection authoring API — safer, granular control over an import's `include-controls` / `exclude-controls` and the `with-child-controls` flag:
     - `set_import_with_children()` toggles `with-child-controls` on the existing include/exclude selection independently, without rebuilding it.
@@ -88,6 +88,18 @@ below (POA&M / AP / AR).
 
 
 ## Future:
+
+### OSCAL Version Monitoring and Support-Data Delivery
+
+- [ ] Get new NIST OSCAL releases into the published support database as soon as possible,
+      transparently to users (`pip install oscal` only) and fully offline once installed.
+    - Recommended direction: move the support database into a separate PyPI package
+      (e.g. `oscal-support-data`, like `tzdata`/`certifi`) published from this repo, which
+      `oscal` depends on, with a scheduled check that releases new data automatically —
+      without releasing library code from main.
+    - Rejected for now: automatic *library* releases on new OSCAL data (would ship whatever
+      is on main).
+    - Details, options, and suggested sequence: [OSCAL_VERSION_MONITORING.md](OSCAL_VERSION_MONITORING.md).
 
 ### SBOM Packaging — PEP 770 Alignment
 
