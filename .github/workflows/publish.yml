@@ -12,9 +12,24 @@ name: Release
 # Release flow for a maintainer: bump oscal/_version.py, merge to main, let CI refresh and
 # commit the support database, then: git tag vX.Y.Z && git push origin vX.Y.Z
 # (The GitHub Release is created by this workflow; do not create it by hand.)
+#
+# Fallback: if the tag push does not auto-trigger this workflow, run it manually from the
+# Actions tab (or `gh workflow run publish.yml -f tag=vX.Y.Z`) against an EXISTING tag. The
+# build runs against that tag's commit, identically to the push path.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to build the Release for (e.g. v4.2.3). The tag must already exist on the remote."
+        required: true
+        type: string
+
+# The tag this run operates on: the pushed tag (push event) or the dispatch input.
+# On a push event `inputs.tag` is null, so this resolves to github.ref_name (the tag).
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -22,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,10 +48,10 @@ jobs:
       - name: Verify tag matches package version
         run: |
           PKG=$(python -c "import re,pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('oscal/_version.py').read_text()).group(1))")
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${RELEASE_TAG#v}"
           echo "release tag = $TAG   package version = $PKG"
           if [ "$TAG" != "$PKG" ]; then
-            echo "::error::Release tag ($GITHUB_REF_NAME) does not match oscal/_version.py ($PKG). Bump oscal/_version.py or fix the tag."
+            echo "::error::Release tag ($RELEASE_TAG) does not match oscal/_version.py ($PKG). Bump oscal/_version.py or fix the tag."
             exit 1
           fi
 
@@ -60,6 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -102,7 +121,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_TAG}"
           # Draft (mutable) -> upload assets -> publish (seals immutably WITH the assets).
           # The wheel + sdist are attached so pypi.yml can publish the exact same artifacts.
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \

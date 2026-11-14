@@ -19,14 +19,24 @@ jobs:
   # and nothing about the code changes at merge time. Post-merge validation is handled by
   # the support-data job below, which re-runs the unit tests *after* refreshing the support
   # database -- the one thing that is new on main.
+  #
+  # They are also SKIPPED on a pull_request whose head is this repo's own develop branch
+  # (i.e. the develop -> main PR): every push to develop already runs them on the exact
+  # same commit, and those results show on the PR. PRs from feature branches and forks
+  # (which have no push trigger here) still run them.
   lint:
     name: Ruff lint (Python ${{ matrix.python-version }})
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # setup-python has no 3.9 build for Ubuntu >=24.04 (ubuntu-latest is now 26.04), so
+        # pin just the 3.9 leg to 22.04, which still has it. (3.9 is dropped next release.)
+        include:
+          - python-version: "3.9"
+            os: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
@@ -44,12 +54,22 @@ jobs:
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
+<<<<<<< HEAD
     if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
+=======
+    if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+>>>>>>> origin/develop
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # setup-python has no 3.9 build for Ubuntu >=24.04 (ubuntu-latest is now 26.04), so
+        # pin just the 3.9 leg to 22.04, which still has it. (3.9 is dropped next release.)
+        include:
+          - python-version: "3.9"
+            os: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +93,11 @@ jobs:
   # depend on the support database, so there is nothing new to re-check at merge time.
   sbom-smoke:
     name: SBOM generation (smoke test)
+<<<<<<< HEAD
     if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+=======
+    if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+>>>>>>> origin/develop
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +162,9 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add oscal/data/oscal_support.zip
-            git commit -m "chore: refresh OSCAL support database [skip ci]"
+            # No [skip ci]: GITHUB_TOKEN pushes never trigger workflows, and [skip ci] here would
+            # block the tag-triggered Release workflow when a release tag lands on this commit.
+            git commit -m "chore: refresh OSCAL support database"
             git pull --rebase origin main
             git push origin HEAD:main
           fi

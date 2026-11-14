@@ -76,3 +76,23 @@
 - Added common getters, which enumerate across all imports by default, or can be constrained to enumerate only for the current OSCAL object: `.resources()`, `.roles()`, `.parties()`, `.locations()`, `.responsible_parties()`, `.actions()`
 - Added common getter, `.action()` which fetches a specific metadata action.
 - Fixed a bug in `SSP.control()` that prevented control references from being populated when they existed in an imported profile or catalog.
+
+## Version 4.2.0
+
+- Profile import-selection authoring API (safer, granular control over an import's `include-controls` / `exclude-controls` and the `with-child-controls` flag):
+    - `set_import_with_children(href, include=, exclude=)` — toggle `with-child-controls` on the existing include/exclude selection independently, without rebuilding (or risking dropping) the rest of the selection.
+    - `add_import_include(href, ids=, matching=, with_children=)` / `add_import_exclude(...)` — append one `select-control-by-id` at a time; `matching` accepts the OSCAL `{pattern, remarks}` array (or bare pattern strings); converts `include-all` to `include-controls` on first include add.
+    - `remove_import_include(href, ids=, matching=)` / `remove_import_exclude(...)` — remove a selection row by its `with-ids` + `matching` identity; refuses to remove the last effective include.
+    - `set_import_selection(...)` gained `include_with_children` / `exclude_with_children` booleans — `with-child-controls` is set from a Python bool (`True`→`"yes"`, `False`→`"no"`, `None`→leave), removing the string footgun.
+    - `preview_import_selection(href, ...)` — dry-run that returns the control ids a (committed or hypothetical) selection resolves to, so a caller can see what a `matching` glob actually selects before committing.
+- All import-selection setters remain staged, metaschema-validated, and atomic (a rejected edit rolls back and returns `None`).
+- CI: pinned the Python 3.9 test/lint matrix leg to `ubuntu-22.04` (`actions/setup-python` has no 3.9 build for Ubuntu ≥24.04, now the `ubuntu-latest` image). Python 3.9 support is unchanged this release; see `docs/5.0.0_PLANNING.md` for the planned drop of 3.9/3.10 and addition of 3.14.
+
+## Version 4.2.4
+
+- additional methods for managing profile import control inclusion and exclusion directives
+  - original method is still available, but only provided coarse-grain control
+  - new methods allow targeted adjustments
+- new release script
+
+  

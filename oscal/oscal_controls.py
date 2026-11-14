@@ -284,6 +284,113 @@ def _selected_tree_ids(imp: dict, source_tree: list) -> tuple:
     return included - excluded, warnings
 
 
+# ---------------------------------------------------------------------------
+# Import-selection authoring helpers (shared by the set/add/remove/preview methods)
+# ---------------------------------------------------------------------------
+def _wcc_flag_value(flag: "bool | None") -> "str | None":
+    """Map a ``with_children`` argument to the OSCAL ``with-child-controls`` value.
+
+    ``None`` → omit / leave the flag untouched; ``True`` → ``"yes"``; ``False`` →
+    explicit ``"no"`` (an author who passes the flag is being explicit on purpose).
+    """
+    if flag is None:
+        return None
+    return "yes" if flag else "no"
+
+
+def _normalize_matching(matching: "list | None") -> "list | None":
+    """Normalize a ``matching`` argument to the OSCAL ``[{pattern, remarks}]`` array.
+
+    Each item may be a bare pattern string (shorthand for ``{"pattern": s}``) or a dict
+    carrying ``pattern`` and/or ``remarks`` — the dict form is passed through intact so the
+    ``pattern``/``remarks`` construct is preserved.
+
+    Args:
+        matching (list | None, required): The caller's ``matching`` argument.
+
+    Returns:
+        list | None: The normalized ``[{pattern, remarks}]`` list (``[]`` when *matching* is
+            None), or None when an item is neither a string nor a dict.
+    """
+    if matching is None:
+        return []
+    out: list = []
+    for m in matching:
+        if isinstance(m, str):
+            out.append({"pattern": m})
+        elif isinstance(m, dict):
+            out.append(copy.deepcopy(m))
+        else:
+            return None
+    return out
+
+
+def _is_empty_select_entry(entry: "dict") -> bool:
+    """True for a ``select-control-by-id`` that selects nothing (no ``with-ids``/``matching``).
+
+    Such an entry is a no-op in resolution — it's the placeholder ``add_import`` seeds for an
+    unselected import — so the granular adders drop it when a real selection is added.
+    """
+    return isinstance(entry, dict) and not entry.get("with-ids") and not entry.get("matching")
+
+
+def _build_select_entry(ids: "list | None", matching: "list | None",
+                        with_children: "bool | None") -> dict:
+    """Assemble one ``select-control-by-id`` dict from ids / normalized matching / flag.
+
+    Args:
+        ids (list | None, required): Control ids for ``with-ids`` (omitted when empty).
+        matching (list | None, required): Normalized ``matching`` (omitted when empty).
+        with_children (bool | None, required): The flag (see :func:`_wcc_flag_value`;
+            omitted when None).
+
+    Returns:
+        dict: The ``select-control-by-id`` entry (possibly empty when all inputs are empty).
+    """
+    entry: dict = {}
+    if ids:
+        entry["with-ids"] = list(ids)
+    if matching:
+        entry["matching"] = matching
+    val = _wcc_flag_value(with_children)
+    if val is not None:
+        entry["with-child-controls"] = val
+    return entry
+
+
+def _overlay_with_children(entries: "list | None", flag: "bool | None") -> None:
+    """Set ``with-child-controls`` on every entry per *flag* (``None`` leaves them as-is)."""
+    if flag is None:
+        return
+    val = "yes" if flag else "no"
+    for e in entries or []:
+        if isinstance(e, dict):
+            e["with-child-controls"] = val
+
+
+def _select_entry_identity_matches(entry: dict, ids: "list | None",
+                                   matching: "list | None") -> bool:
+    """True when *entry* targets the same controls as ``(ids, matching)``.
+
+    Identity is the set of ``with-ids`` plus the set of ``matching`` patterns;
+    ``with-child-controls`` and ``remarks`` are deliberately ignored, so a row can be
+    removed without knowing its flag.
+
+    Args:
+        entry (dict, required): A live ``select-control-by-id`` entry.
+        ids (list | None, required): The ``with-ids`` to match.
+        matching (list | None, required): Normalized ``matching`` whose patterns to match.
+
+    Returns:
+        bool: True when the with-ids set and matching-pattern set both equal the arguments.
+    """
+    e_ids = set(entry.get("with-ids", []) or [])
+    e_pat = {m.get("pattern") for m in (entry.get("matching") or []) if isinstance(m, dict)}
+    want_ids = set(ids or [])
+    want_pat = {m.get("pattern") for m in (matching or []) if isinstance(m, dict)}
+    return e_ids == want_ids and e_pat == want_pat
+
+
 def _find_tree_node(nodes: list, node_id: str, want_group: bool) -> Optional[dict]:
     """Depth-first search a controls_tree for a node by id and group/control kind."""
     for n in nodes:
@@ -3302,7 +3409,9 @@ class Profile(OSCAL):
     @if_update_successful
     def set_import_selection(self, href: str, include_all: Optional[dict] = None,
                              include_controls: Optional[list] = None,
-                             exclude_controls: Optional[list] = None) -> Optional[dict]:
+                             exclude_controls: Optional[list] = None,
+                             include_with_children: Optional[bool] = None,
+                             exclude_with_children: Optional[bool] = None) -> Optional[dict]:
         """Replace an import statement's control-selection structures.
 
         Wholesale-replaces the ``include-all`` / ``include-controls`` / ``exclude-controls``
@@ -3334,6 +3443,13 @@ class Profile(OSCAL):
                 ``include_all``.
             exclude_controls (list, optional): A list of ``select-control-by-id`` dicts to
                 exclude.
+            include_with_children (bool, optional): Convenience that stamps
+                ``with-child-controls`` on every supplied ``include-controls`` entry —
+                ``True`` → ``"yes"``, ``False`` → explicit ``"no"``, ``None`` (default) →
+                leave each entry as authored. Avoids the string footgun (the flag is a
+                token whose value must be ``"yes"``/``"no"``, not a presence toggle).
+            exclude_with_children (bool, optional): The same convenience for the supplied
+                ``exclude-controls`` entries.
 
         Returns:
             Optional[dict]: A safe copy of the rewritten import statement, or None on
@@ -3372,6 +3488,11 @@ class Profile(OSCAL):
         if exclude_controls is not None:
             candidate["exclude-controls"] = copy.deepcopy(exclude_controls)
 
+        # Boolean convenience: stamp with-child-controls across the supplied include/exclude
+        # entries (True -> "yes", False -> "no", None -> leave as authored). No string footgun.
+        _overlay_with_children(candidate.get("include-controls"), include_with_children)
+        _overlay_with_children(candidate.get("exclude-controls"), exclude_with_children)
+
         import_node = self._import_index_node()
         if import_node is not None:
             candidate, dropped, errors = self._stage_against_index(
@@ -3393,6 +3514,323 @@ class Profile(OSCAL):
         self._tree_dirty = True
         self._ensure_controls_tree()
         return copy.deepcopy(candidate)
+
+    # -------------------------------------------------------------------------
+    def set_import_with_children(self, href: str, include: Optional[bool] = None,
+                                 exclude: Optional[bool] = None) -> Optional[dict]:
+        """Toggle ``with-child-controls`` on an import's existing selection, in place.
+
+        A targeted alternative to the full :meth:`set_import_selection` replace: it stamps the
+        flag on the import's **current** ``include-controls`` / ``exclude-controls`` entries
+        without the caller rebuilding (or risking dropping) the selection. The two sides are
+        **independent**:
+
+        * ``include`` — ``True`` sets ``with-child-controls: "yes"`` on every
+          ``include-controls`` entry, ``False`` sets explicit ``"no"``, ``None`` (default)
+          leaves the include side untouched.
+        * ``exclude`` — the same, for the ``exclude-controls`` entries.
+
+        Both the include form and the exclude side are always carried through unchanged except
+        for the flag you asked to toggle, and the edit is staged/validated/committed atomically
+        like :meth:`set_import_selection`.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            include (bool, optional): Flag value for the include-controls entries (``None`` =
+                leave as-is). No effect on an ``include-all`` import (no entries to flag).
+            exclude (bool, optional): Flag value for the exclude-controls entries (``None`` =
+                leave as-is). No effect when the import has no ``exclude-controls``.
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None — no matching import,
+                nothing requested (both ``None``), or a rejected/invalid result.
+        """
+        if include is None and exclude is None:
+            logger.warning("set_import_with_children: nothing to set — 'include' and "
+                           "'exclude' are both None.")
+            return None
+        current = self.get_import_selection(href)
+        if current is None:
+            logger.warning(f"set_import_with_children: no import matches href '{href}'.")
+            return None
+
+        kwargs: dict[str, Any] = {}
+        # Preserve the include form; apply the flag only to include-controls entries.
+        if "include-all" in current:
+            kwargs["include_all"] = current["include-all"]
+            if include is not None:
+                logger.warning("set_import_with_children: import uses include-all (no "
+                               "include-controls entries); 'include' has no effect.")
+        else:
+            kwargs["include_controls"] = current.get("include-controls", [])
+            kwargs["include_with_children"] = include          # None → no-op overlay
+        # Preserve the exclude side; apply the flag only when entries exist.
+        if "exclude-controls" in current:
+            kwargs["exclude_controls"] = current["exclude-controls"]
+            kwargs["exclude_with_children"] = exclude
+        elif exclude is not None:
+            logger.warning("set_import_with_children: import has no exclude-controls; "
+                           "'exclude' has no effect.")
+        return self.set_import_selection(href, **kwargs)
+
+    # -------------------------------------------------------------------------
+    # Granular import-selection editing — add/remove one select-control-by-id at a time.
+    # These assemble the new selection and route it through set_import_selection, so every
+    # edit is staged, metaschema-validated, and atomically committed (or rolled back) the
+    # same way. `with_children` is Optional[bool] everywhere (None omit / True "yes" /
+    # False "no"); `matching` accepts the OSCAL {pattern, remarks} array (dicts) or bare
+    # pattern strings as shorthand.
+    # -------------------------------------------------------------------------
+    def _validate_select_args(self, method: str, ids, matching):
+        """Validate and normalize the ``ids`` + ``matching`` arguments for the add/remove
+        helpers.
+
+        Args:
+            method (str, required): Caller name, for log messages.
+            ids: The caller's ``ids`` argument (must be a list or None).
+            matching: The caller's ``matching`` argument (normalized via
+                :func:`_normalize_matching`).
+
+        Returns:
+            tuple: ``(ok, norm_matching)`` — ``(True, normalized-list)`` on success, or
+                ``(False, None)`` after logging when an argument has the wrong type.
+        """
+        if ids is not None and not isinstance(ids, list):
+            logger.error(f"{method}: 'ids' must be a list of control ids.")
+            return False, None
+        norm = _normalize_matching(matching)
+        if norm is None:
+            logger.error(f"{method}: 'matching' must be a list of pattern strings or "
+                         "{pattern, remarks} dicts.")
+            return False, None
+        return True, norm
+
+    def add_import_include(self, href: str, ids: Optional[list] = None,
+                           matching: Optional[list] = None,
+                           with_children: Optional[bool] = None) -> Optional[dict]:
+        """Append one ``select-control-by-id`` to an import's ``include-controls``.
+
+        Builds a single include entry from *ids* and/or *matching* (at least one required),
+        appends it, and commits via :meth:`set_import_selection` (staged + validated +
+        atomic). If the import currently selects ``include-all`` it is converted to
+        ``include-controls``; the empty placeholder entry :meth:`add_import` seeds is dropped;
+        any ``exclude-controls`` is preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): Control ids for the entry's ``with-ids``.
+            matching (list, optional): The entry's ``matching`` — OSCAL ``{pattern, remarks}``
+                dicts (preserved intact) or bare pattern strings as shorthand.
+            with_children (bool, optional): ``with-child-controls`` for this entry — ``None``
+                (default) omit, ``True`` → ``"yes"``, ``False`` → explicit ``"no"``.
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import statement, or None — no
+                matching import, a bad argument, neither ids nor matching supplied, or a
+                rejected/invalid result.
+        """
+        current = self.get_import_selection(href)
+        if current is None:
+            logger.warning(f"add_import_include: no import matches href '{href}'.")
+            return None
+        ok, norm = self._validate_select_args("add_import_include", ids, matching)
+        if not ok:
+            return None
+        if not ids and not norm:
+            logger.error("add_import_include: supply at least one of 'ids' or 'matching'.")
+            return None
+        entry = _build_select_entry(ids, norm, with_children)
+        base = [e for e in (current.get("include-controls") or []) if not _is_empty_select_entry(e)]
+        new_include = base + [entry]
+        return self.set_import_selection(href, include_controls=new_include,
+                                         exclude_controls=current.get("exclude-controls"))
+
+    def add_import_exclude(self, href: str, ids: Optional[list] = None,
+                           matching: Optional[list] = None,
+                           with_children: Optional[bool] = None) -> Optional[dict]:
+        """Append one ``select-control-by-id`` to an import's ``exclude-controls``.
+
+        The exclusion-side counterpart of :meth:`add_import_include`, with the same
+        semantics; the import's include form (``include-all`` or ``include-controls``) is
+        preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): Control ids for the entry's ``with-ids``.
+            matching (list, optional): The entry's ``matching`` (``{pattern, remarks}`` dicts
+                or bare pattern strings).
+            with_children (bool, optional): ``with-child-controls`` for this entry (``None``
+                omit / ``True`` → ``"yes"`` / ``False`` → ``"no"``).
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None (see
+                :meth:`add_import_include`).
+        """
+        current = self.get_import_selection(href)
+        if current is None:
+            logger.warning(f"add_import_exclude: no import matches href '{href}'.")
+            return None
+        ok, norm = self._validate_select_args("add_import_exclude", ids, matching)
+        if not ok:
+            return None
+        if not ids and not norm:
+            logger.error("add_import_exclude: supply at least one of 'ids' or 'matching'.")
+            return None
+        entry = _build_select_entry(ids, norm, with_children)
+        base = [e for e in (current.get("exclude-controls") or []) if not _is_empty_select_entry(e)]
+        new_exclude = base + [entry]
+        if "include-all" in current:
+            return self.set_import_selection(href, include_all=current["include-all"],
+                                             exclude_controls=new_exclude)
+        return self.set_import_selection(href,
+                                         include_controls=current.get("include-controls", []),
+                                         exclude_controls=new_exclude)
+
+    def remove_import_include(self, href: str, ids: Optional[list] = None,
+                              matching: Optional[list] = None) -> Optional[dict]:
+        """Remove the ``include-controls`` entry/entries matching *ids* + *matching*.
+
+        Identity is the set of ``with-ids`` plus the set of ``matching`` patterns
+        (``with-child-controls`` / ``remarks`` ignored — see
+        :func:`_select_entry_identity_matches`); every entry with that identity is removed and
+        the change is committed via :meth:`set_import_selection`. Refuses to remove the
+        **last effective** include selection (an import must carry ``include-all`` or
+        ``include-controls`` — use :meth:`set_import_selection` to switch to ``include-all``,
+        or :meth:`remove_import` to drop the import). Any ``exclude-controls`` is preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): The ``with-ids`` of the entry to remove.
+            matching (list, optional): The ``matching`` of the entry to remove
+                (``{pattern, remarks}`` dicts or bare strings; only the patterns are compared).
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None — no matching import,
+                no entry matched (a no-op), or removing the last effective include was refused.
+        """
+        current = self.get_import_selection(href)
+        if current is None:
+            logger.warning(f"remove_import_include: no import matches href '{href}'.")
+            return None
+        includes = current.get("include-controls")
+        if not includes:
+            logger.warning("remove_import_include: import has no include-controls to remove.")
+            return None
+        ok, norm = self._validate_select_args("remove_import_include", ids, matching)
+        if not ok:
+            return None
+        kept = [e for e in includes if not _select_entry_identity_matches(e, ids, norm)]
+        if len(kept) == len(includes):
+            logger.warning("remove_import_include: no include entry matches the given "
+                           "ids/matching; nothing removed.")
+            return None
+        if not any(not _is_empty_select_entry(e) for e in kept):
+            logger.error("remove_import_include: refusing to remove the last effective "
+                         "include selection — an import must include-all or include-controls. "
+                         "Use set_import_selection to switch to include-all, or remove_import.")
+            return None
+        return self.set_import_selection(href, include_controls=kept,
+                                         exclude_controls=current.get("exclude-controls"))
+
+    def remove_import_exclude(self, href: str, ids: Optional[list] = None,
+                              matching: Optional[list] = None) -> Optional[dict]:
+        """Remove the ``exclude-controls`` entry/entries matching *ids* + *matching*.
+
+        The exclusion-side counterpart of :meth:`remove_import_include` (same identity rule).
+        When the last exclusion is removed the ``exclude-controls`` key is dropped entirely;
+        the import's include form is preserved.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            ids (list, optional): The ``with-ids`` of the entry to remove.
+            matching (list, optional): The ``matching`` of the entry to remove
+                (``{pattern, remarks}`` dicts or bare strings; only the patterns are compared).
+
+        Returns:
+            Optional[dict]: A safe copy of the rewritten import, or None — no matching import
+                or no entry matched (a no-op).
+        """
+        current = self.get_import_selection(href)
+        if current is None:
+            logger.warning(f"remove_import_exclude: no import matches href '{href}'.")
+            return None
+        excludes = current.get("exclude-controls")
+        if not excludes:
+            logger.warning("remove_import_exclude: import has no exclude-controls to remove.")
+            return None
+        ok, norm = self._validate_select_args("remove_import_exclude", ids, matching)
+        if not ok:
+            return None
+        kept = [e for e in excludes if not _select_entry_identity_matches(e, ids, norm)]
+        if len(kept) == len(excludes):
+            logger.warning("remove_import_exclude: no exclude entry matches the given "
+                           "ids/matching; nothing removed.")
+            return None
+        new_exclude = kept if kept else None            # None → drop the exclude-controls key
+        if "include-all" in current:
+            return self.set_import_selection(href, include_all=current["include-all"],
+                                             exclude_controls=new_exclude)
+        return self.set_import_selection(href,
+                                         include_controls=current.get("include-controls", []),
+                                         exclude_controls=new_exclude)
+
+    # -------------------------------------------------------------------------
+    def preview_import_selection(self, href: str, include_all: Optional[dict] = None,
+                                 include_controls: Optional[list] = None,
+                                 exclude_controls: Optional[list] = None,
+                                 include_with_children: Optional[bool] = None,
+                                 exclude_with_children: Optional[bool] = None) -> Optional[dict]:
+        """Preview the control ids an import's selection resolves to — without mutating.
+
+        With no selection arguments, previews the import's **current, committed** selection.
+        When any of ``include_all`` / ``include_controls`` / ``exclude_controls`` is supplied,
+        previews that **hypothetical** selection instead (same omit-means-absent semantics as
+        :meth:`set_import_selection`, and the same ``*_with_children`` conveniences) so a
+        caller can see exactly what a change *would* select before committing — e.g. that a
+        greedy ``matching`` pattern like ``"ac-2*"`` also pulls in ``ac-20``.
+
+        Runs the real selection logic (:func:`_selected_tree_ids`) against the imported
+        object's ``controls_tree``, so the import's source must be resolved/loaded.
+
+        Args:
+            href (str, required): Any href that identifies the import statement.
+            include_all / include_controls / exclude_controls / include_with_children /
+                exclude_with_children: A hypothetical selection to preview (see
+                :meth:`set_import_selection`); omit all to preview the committed selection.
+
+        Returns:
+            Optional[dict]: ``{"selected": [sorted control ids], "warnings": [str, …]}`` — the
+                resolved control ids and any selection warnings (e.g. excluding a control that
+                was never included) — or None when no import matches or its source is not
+                resolved.
+        """
+        imp = self._locate_import_statement(href)
+        if imp is None:
+            logger.warning(f"preview_import_selection: no import matches href '{href}'.")
+            return None
+        sources, _blocking = self._resolution_sources()
+        src_obj = next((obj for (s_imp, obj) in sources if s_imp is imp), None)
+        if src_obj is None:
+            logger.warning(f"preview_import_selection: source for '{href}' is not resolved; "
+                           "resolve imports first.")
+            return None
+        src_tree = getattr(src_obj, "controls_tree", None) or []
+
+        if include_all is None and include_controls is None and exclude_controls is None:
+            effective = imp
+        else:
+            effective = {}
+            if include_all is not None:
+                effective["include-all"] = copy.deepcopy(include_all)
+            if include_controls is not None:
+                effective["include-controls"] = copy.deepcopy(include_controls)
+            if exclude_controls is not None:
+                effective["exclude-controls"] = copy.deepcopy(exclude_controls)
+            _overlay_with_children(effective.get("include-controls"), include_with_children)
+            _overlay_with_children(effective.get("exclude-controls"), exclude_with_children)
+
+        selected, warnings = _selected_tree_ids(effective, src_tree)
+        return {"selected": sorted(selected), "warnings": warnings}
 
     # =========================================================================
     # modify directive authoring (set-parameters + alters/adds/removes)
