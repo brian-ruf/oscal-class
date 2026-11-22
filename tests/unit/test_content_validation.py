@@ -1134,3 +1134,98 @@ class TestReferences:
         blob = json.dumps(idx)
         assert '"validation-level": "references"' in blob
         assert '"ref-spec"' in blob
+
+
+# ===========================================================================
+# L2-B child-path `matches` datatype/regex constraints
+#
+# A `matches` constraint declared on an assembly but governing a CHILD's flag
+# value — e.g. `prop[has-oscal-namespace('…') and @name='release-date']/@value`
+# with datatype=date — is NOT relocated onto the governed flag node in the index
+# (only `allowed-values` are). It is evaluated at L2 by forward traversal from
+# the declaring assembly. These require OSCAL v1.2.3 (where the component
+# release-date / inherited-uuid value datatype constraints were introduced).
+# ===========================================================================
+class TestChildPathMatchesDatatype:
+    @staticmethod
+    def _cdef(props):
+        return {
+            "component-definition": {
+                "uuid": "11111111-1111-4111-8111-111111111111",
+                "metadata": {
+                    "title": "T", "last-modified": "2026-01-01T00:00:00Z",
+                    "version": "1.0", "oscal-version": "1.2.3",
+                },
+                "components": [{
+                    "uuid": "22222222-2222-4222-8222-222222222222",
+                    "type": "software", "title": "C", "description": "d",
+                    "props": props,
+                }],
+            }
+        }
+
+    def _load(self, props):
+        doc = OSCAL.loads(json.dumps(self._cdef(props)))
+        doc.validate()
+        return doc
+
+    def _matches(self, doc):
+        return [e for e in doc.validation_errors if e["error-type"] == "matches"]
+
+    def test_release_date_datetime_value_is_flagged(self):
+        # A date-time where datatype `date` is required is an invalid value.
+        doc = self._load([{"name": "release-date", "value": "2026-09-18T00:00:00Z"}])
+        errs = self._matches(doc)
+        assert len(errs) == 1
+        e = errs[0]
+        assert e["constraint-id"] == "oscal-component-release-date-value-datatype"
+        assert e["field"] == "@value"
+        assert e["value"] == "2026-09-18T00:00:00Z"
+        assert e["location"] == "/component-definition/components[0]/props[0]"
+
+    def test_release_date_is_a_constraint_not_structural_error(self):
+        # The violation gates L2 (`is_valid`) via the `constraints` phase, but the document
+        # stays structurally sound (`is_minimally_valid`) so summary trees / imports proceed.
+        doc = self._load([{"name": "release-date", "value": "2026-09-18T00:00:00Z"}])
+        assert doc.is_minimally_valid is True
+        assert doc.is_valid is False
+        assert doc.validation_status["constraints"] is False
+        assert doc.validation_status["structure"] is True
+
+    def test_valid_date_clears_the_error(self):
+        doc = self._load([{"name": "release-date", "value": "2026-09-18"}])
+        assert self._matches(doc) == []
+        assert doc.validation_status["constraints"] is True
+        assert doc.is_valid is True
+
+    def test_non_oscal_namespace_is_not_governed(self):
+        # The constraint only applies in the OSCAL namespace; a vendor-namespaced prop with
+        # the same name is out of scope and must not be flagged.
+        doc = self._load([{"name": "release-date", "ns": "https://oxide.computer/ns/oscal",
+                           "value": "2026-09-18T00:00:00Z"}])
+        assert self._matches(doc) == []
+        assert doc.is_valid is True
+
+    def test_absent_ns_defaults_to_oscal_and_is_governed(self):
+        # A prop with no @ns defaults to the OSCAL namespace, so it IS governed.
+        doc = self._load([{"name": "release-date", "value": "nonsense"}])
+        assert len(self._matches(doc)) == 1
+
+    def test_other_prop_names_are_not_affected(self):
+        # The @name gate means only release-date props are checked; a sibling prop with a
+        # value that would fail the date pattern is untouched.
+        doc = self._load([{"name": "version", "value": "not-a-date"},
+                          {"name": "release-date", "value": "2026-09-18"}])
+        assert self._matches(doc) == []
+
+    def test_inherited_uuid_datatype_also_enforced(self):
+        # Same l2b shape, different datatype (uuid) — generalization check.
+        doc = self._load([{"name": "inherited-uuid", "value": "not-a-uuid"}])
+        errs = self._matches(doc)
+        assert len(errs) == 1
+        assert errs[0]["constraint-id"] == "oscal-component-inherited-uuid-value-datatype"
+
+    def test_valid_inherited_uuid_passes(self):
+        doc = self._load([{"name": "inherited-uuid",
+                           "value": "33333333-3333-4333-8333-333333333333"}])
+        assert self._matches(doc) == []
