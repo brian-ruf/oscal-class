@@ -54,13 +54,8 @@ jobs:
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
-<<<<<<< HEAD
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-=======
     if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: ${{ matrix.os || 'ubuntu-latest' }}
->>>>>>> origin/develop
     strategy:
       fail-fast: false
       matrix:
@@ -93,11 +88,7 @@ jobs:
   # depend on the support database, so there is nothing new to re-check at merge time.
   sbom-smoke:
     name: SBOM generation (smoke test)
-<<<<<<< HEAD
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
-=======
     if: ${{ (github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && !(github.head_ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)) }}
->>>>>>> origin/develop
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
