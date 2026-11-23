@@ -53,6 +53,7 @@ from .helpers.data    import detect_data_format, safe_load, safe_load_xml, xpath
 from .helpers.lfs     import getfile, chkdir, putfile, normalize_content
 from .oscal_support     import get_support, OSCAL_DEFAULT_XML_NAMESPACE, OSCAL_FORMATS
 from .oscal_datatypes   import oscal_date_time_with_timezone, OSCAL_DATATYPES, normalize_uri_reference
+from .metaschema_parser import _parse_matches_target, _extract_oscal_namespace_condition
 from .oscal_registry    import get_registry
 from .oscal_cache       import CacheDirective, CACHE_NEVER
 from .oscal_converter   import (
@@ -76,7 +77,7 @@ from .oscal_source      import (  # noqa: F401  (re-exported for callers)
     ImportFailure, load_content, load_source, load_source_bytes, classify_source,
     _resolve_href, _canonicalize_ref, _oscal_format_variants, _find_import_candidates,
     _pick_import_target, _remove_import_from_dict, _hrefs_from_dict_spec,
-    _backmatter_resource,
+    _backmatter_resource, _resource_info_from_element,
 )
 from .oscal_resequence  import resequence_oscal
 from .oscal_references   import (  # noqa: F401  (re-exported for callers)
@@ -272,6 +273,40 @@ _OSCAL_NS = "http://csrc.nist.gov/ns/oscal" # OSCAL default namespace for props,
 IMPORT_NONBLOCKING_ERROR_TYPES: frozenset = frozenset(
     {"allowed-values", "invalid-type", "matches", "has-cardinality", "constraint-violation",
      "unresolved-reference", "duplicate-key"})
+
+
+# Ordering (most-actionable first) used to roll several per-attempt ``ImportFailureCode``s up
+# into a single per-item / per-entry ``outcome`` — the one most useful when prompting the user
+# for an alternative source. Auth comes first (supply credentials / a different source), then a
+# reachable-but-invalid document (actionable: we have content + the reason), then "not found"
+# (supply the correct location), then empty, then transport (maybe transient), then scheme and
+# duplicate. Codes absent from this list rank last, in enum order.
+_IMPORT_CODE_PRECEDENCE: tuple = (
+    ImportFailureCode.REMOTE_AUTH_REQUIRED,
+    ImportFailureCode.CONTENT_INVALID,
+    ImportFailureCode.RESOURCE_NO_VIABLE_CONTENT,
+    ImportFailureCode.BAD_REFERENCE,
+    ImportFailureCode.FRAGMENT_INVALID_UUID,
+    ImportFailureCode.REMOTE_NOT_FOUND,
+    ImportFailureCode.LOCAL_NOT_FOUND,
+    ImportFailureCode.RESOURCE_NOT_FOUND,
+    ImportFailureCode.CONTENT_EMPTY,
+    ImportFailureCode.REMOTE_UNREACHABLE,
+    ImportFailureCode.REMOTE_UNSUPPORTED,
+    ImportFailureCode.ALREADY_IMPORTED,
+)
+
+
+def _most_actionable_code(codes: "list[ImportFailureCode]") -> "ImportFailureCode | None":
+    """Pick the most-actionable ``ImportFailureCode`` from *codes* per ``_IMPORT_CODE_PRECEDENCE``.
+
+    Returns None for an empty list. Codes not in the precedence table rank after those that are.
+    """
+    present = [c for c in codes if c is not None]
+    if not present:
+        return None
+    rank = {c: i for i, c in enumerate(_IMPORT_CODE_PRECEDENCE)}
+    return min(present, key=lambda c: rank.get(c, len(_IMPORT_CODE_PRECEDENCE)))
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2217,7 +2252,13 @@ class OSCAL:
             and e.get("href_valid")
         }
         if resolved in already_loaded:
-            retry_item: dict = {"href": resolved, "original": False, "status": ImportState.INVALID}
+            msg = f"'{resolved}' is already loaded by another import in this document."
+            retry_item: dict = {
+                "href": resolved, "original": False, "status": ImportState.INVALID,
+                "outcome": ImportFailureCode.ALREADY_IMPORTED, "message": msg,
+                "attempts": [{"uri": resolved, "status": ImportState.INVALID,
+                              "code": ImportFailureCode.ALREADY_IMPORTED,
+                              "http_status": None, "validation": None, "message": msg}]}
             target_entry["href_valid"] = ""
             target_entry["object"]     = None
             target_entry["is_valid"]   = False
@@ -2226,18 +2267,25 @@ class OSCAL:
                 code=ImportFailureCode.ALREADY_IMPORTED,
                 href_original=target_entry.get("href_original", failed_href),
                 uri=resolved,
-                message=f"'{resolved}' is already loaded by another import in this document.",
+                message=msg,
             )
             target_entry.setdefault("href_list", []).append(retry_item)
             self._import_tree = None
             self._after_import_resolution_changed()
             return False
 
-        retry_item: dict = {"href": resolved, "original": False}
+        retry_item: dict = {"href": resolved, "original": False,
+                            "status": ImportState.NOT_ATTEMPTED, "outcome": None,
+                            "message": "", "attempts": []}
+        attempt: dict = {"uri": resolved, "status": ImportState.INVALID, "code": None,
+                         "http_status": None, "validation": None, "message": ""}
         try:
             child = OSCAL.acquire(resolved)
             if child.is_minimally_valid:
+                attempt.update(status=ImportState.READY, code=None,
+                               validation=self._validation_summary(child))
                 retry_item["status"]        = ImportState.READY
+                retry_item["outcome"]       = None
                 target_entry["href_valid"]  = resolved
                 target_entry["object"]      = child
                 target_entry["is_valid"]    = True
@@ -2247,7 +2295,12 @@ class OSCAL:
                 target_entry["status"]      = ImportState.READY
                 target_entry["failure"]     = None
             else:
+                val = self._validation_summary(child)
+                msg = "Replacement content loaded but is not minimally-valid OSCAL"
+                attempt.update(code=ImportFailureCode.CONTENT_INVALID, validation=val, message=msg)
                 retry_item["status"]       = ImportState.INVALID
+                retry_item["outcome"]      = ImportFailureCode.CONTENT_INVALID
+                retry_item["message"]      = msg
                 target_entry["href_valid"] = ""
                 target_entry["object"]     = None
                 target_entry["is_valid"]   = False
@@ -2256,10 +2309,15 @@ class OSCAL:
                     code=ImportFailureCode.CONTENT_INVALID,
                     href_original=target_entry.get("href_original", failed_href),
                     uri=resolved,
-                    message="Replacement content loaded but failed OSCAL validation",
+                    validation=val,
+                    message=msg,
                 )
         except ImportLoadError as exc:
+            attempt.update(code=exc.code, http_status=getattr(exc, "http_status", None),
+                           message=str(exc))
             retry_item["status"]       = ImportState.INVALID
+            retry_item["outcome"]      = exc.code
+            retry_item["message"]      = str(exc)
             target_entry["href_valid"] = ""
             target_entry["object"]     = None
             target_entry["is_valid"]   = False
@@ -2268,8 +2326,10 @@ class OSCAL:
                 code=exc.code,
                 href_original=target_entry.get("href_original", failed_href),
                 uri=exc.uri,
+                http_status=getattr(exc, "http_status", None),
                 message=str(exc),
             )
+        retry_item["attempts"].append(attempt)
         target_entry.setdefault("href_list", []).append(retry_item)
         self._import_tree = None
         self._after_import_resolution_changed()
@@ -3212,7 +3272,10 @@ class OSCAL:
             entry: dict = {
                 "href_original": raw_href,
                 "href_valid":    "",
-                "href_list":     [] if raw_href.startswith("#") else [{"href": raw_href, "original": True}],
+                "href_list":     [] if raw_href.startswith("#") else [
+                    {"href": raw_href, "original": True,
+                     "status": ImportState.NOT_ATTEMPTED, "outcome": None,
+                     "message": "", "attempts": []}],
                 "status":        ImportState.NOT_LOADED,
                 "is_valid":      False,
                 "is_local":      None,
@@ -3239,15 +3302,34 @@ class OSCAL:
 
                 resource_info = _backmatter_resource(self, fragment)
 
+                # Not in this document's own back-matter: look across the resolved import tree
+                # (this doc + imported docs, cycle-safe) before declaring the reference dangling.
+                # A resource found in an imported document still supplies the content (relocate).
                 if resource_info is None:
+                    found = self.find_in_import_tree(fragment, kinds=["resource"])
+                    if found is not None:
+                        resource_info = _resource_info_from_element(found.get("element", {}))
+                        entry["relocated_from"] = found.get("object_uuid")
+                        logger.info(
+                            f"resolve_imports: fragment '{raw_href}' resolved to a resource in "
+                            f"imported document '{found.get('object_uuid')}' (relocated)."
+                        )
+
+                if resource_info is None:
+                    # The fragment is a well-formed UUID but its target is not present anywhere
+                    # in scope — a dangling internal reference, distinct from a missing file/URL.
                     entry["status"]  = ImportState.INVALID
                     entry["failure"] = ImportFailure(
-                        code=ImportFailureCode.RESOURCE_NOT_FOUND,
+                        code=ImportFailureCode.BAD_REFERENCE,
                         href_original=raw_href,
                         resource_uuid=fragment,
-                        message=f"No back-matter resource found with UUID '{fragment}'",
+                        message=(f"Fragment '#{fragment}' does not reference any back-matter "
+                                 "resource in scope (this document or its resolved imports)."),
                     )
-                    logger.error(f"resolve_imports: no back-matter resource with UUID '{fragment}'.")
+                    logger.error(
+                        f"resolve_imports: fragment '{raw_href}' is a bad reference — no "
+                        "back-matter resource with that UUID exists in scope."
+                    )
                     self.import_list.append(entry)
                     continue
 
@@ -3267,7 +3349,9 @@ class OSCAL:
 
                 # Append back-matter rlinks to href_list; base64 fallback is future work
                 for rl in resource_info["rlinks"]:
-                    entry["href_list"].append({**rl, "original": True})
+                    entry["href_list"].append({**rl, "original": True,
+                                               "status": ImportState.NOT_ATTEMPTED,
+                                               "outcome": None, "message": "", "attempts": []})
 
                 # Stash resource metadata so the failure record can carry it
                 entry["resource_uuid"]        = fragment
@@ -3281,21 +3365,32 @@ class OSCAL:
 
             for item in entry["href_list"]:
                 if item["href"].startswith("#"):
-                    continue
+                    continue  # fragment placeholder — stays NOT_ATTEMPTED
                 primary  = _resolve_href(base_path, item["href"])
                 attempts = [primary] + [_resolve_href(base_path, v) for v in _oscal_format_variants(item["href"])]
+                item_attempts: list = item.setdefault("attempts", [])
                 for resolved in attempts:
                     # Cycle guard: this href resolves to an ancestor still being resolved
                     # higher on the stack. Flag CYCLIC and do not load (avoids a loop).
                     if self._registry.is_resolving(_canonicalize_ref(resolved)):
                         cyclic = True
                         entry["href_valid"] = resolved
+                        item_attempts.append({
+                            "uri": resolved, "status": ImportState.CYCLIC, "code": None,
+                            "http_status": None, "validation": None,
+                            "message": "resolves to an ancestor still being resolved (cyclic)"})
                         break
                     rlinks_tried.append(resolved)
                     try:
                         child = self._acquire_shared(resolved, cache_directive)
                         if child.is_minimally_valid:
+                            item_attempts.append({
+                                "uri": resolved, "status": ImportState.READY, "code": None,
+                                "http_status": None, "message": "",
+                                "validation": self._validation_summary(child)})
                             item["status"]      = ImportState.READY
+                            item["outcome"]     = None
+                            item["message"]     = ""
                             entry["href_valid"] = resolved
                             entry["object"]     = child
                             entry["is_valid"]   = True
@@ -3305,10 +3400,19 @@ class OSCAL:
                             entry["status"]     = ImportState.READY
                             last_load_error     = None
                             break
-                        item["status"] = ImportState.INVALID
-                        logger.warning(f"resolve_imports: '{resolved}' loaded but failed OSCAL validation.")
+                        # Reachable but not minimally valid — carry the validation ladder so the
+                        # caller sees exactly where it failed (same levels as a local load).
+                        item_attempts.append({
+                            "uri": resolved, "status": ImportState.INVALID,
+                            "code": ImportFailureCode.CONTENT_INVALID, "http_status": None,
+                            "message": "loaded but is not minimally-valid OSCAL",
+                            "validation": self._validation_summary(child)})
+                        logger.warning(f"resolve_imports: '{resolved}' loaded but is not minimally valid.")
                     except ImportLoadError as exc:
-                        item["status"]  = ImportState.INVALID
+                        item_attempts.append({
+                            "uri": resolved, "status": ImportState.INVALID, "code": exc.code,
+                            "http_status": getattr(exc, "http_status", None),
+                            "message": str(exc), "validation": None})
                         last_load_error = exc
                         logger.warning(f"resolve_imports: load error for '{resolved}': {exc}")
                         # Auth/unsupported errors won't improve by trying format variants
@@ -3316,8 +3420,15 @@ class OSCAL:
                                         ImportFailureCode.REMOTE_UNSUPPORTED):
                             break
                     except Exception as exc:
-                        item["status"] = ImportState.INVALID
+                        item_attempts.append({
+                            "uri": resolved, "status": ImportState.INVALID,
+                            "code": ImportFailureCode.CONTENT_EMPTY, "http_status": None,
+                            "message": str(exc), "validation": None})
                         logger.warning(f"resolve_imports: could not load '{resolved}': {exc}")
+                # Roll this item's attempts up into its status/outcome/message (a READY item was
+                # already finalized inline above and is left untouched).
+                if item["status"] != ImportState.READY:
+                    self._summarize_href_item(item)
                 if cyclic or entry["status"] == ImportState.READY:
                     break
 
@@ -3329,9 +3440,30 @@ class OSCAL:
                 )
             elif entry["status"] != ImportState.READY:
                 entry["status"] = ImportState.INVALID
-                failure_code = last_load_error.code if last_load_error else ImportFailureCode.CONTENT_INVALID
-                failure_uri  = last_load_error.uri  if last_load_error else (rlinks_tried[-1] if rlinks_tried else "")
-                failure_msg  = str(last_load_error) if last_load_error else "All candidates failed OSCAL validation"
+                # Choose the most-actionable failure across every attempt of every candidate
+                # (best for prompting the user), carrying its uri / http_status / validation.
+                failed = [a for it in entry["href_list"] for a in it.get("attempts", [])
+                          if a.get("status") == ImportState.INVALID]
+                best_code = _most_actionable_code([a.get("code") for a in failed])
+                chosen = next((a for a in failed if a.get("code") == best_code), None)
+                if chosen is not None:
+                    failure_code = best_code
+                    failure_uri  = chosen.get("uri", "")
+                    failure_msg  = chosen.get("message", "")
+                    failure_http = chosen.get("http_status")
+                    failure_val  = chosen.get("validation")
+                elif last_load_error is not None:
+                    failure_code = last_load_error.code
+                    failure_uri  = last_load_error.uri
+                    failure_msg  = str(last_load_error)
+                    failure_http = getattr(last_load_error, "http_status", None)
+                    failure_val  = None
+                else:
+                    failure_code = ImportFailureCode.CONTENT_INVALID
+                    failure_uri  = rlinks_tried[-1] if rlinks_tried else ""
+                    failure_msg  = "All candidates failed OSCAL validation"
+                    failure_http = None
+                    failure_val  = None
 
                 if raw_href.startswith("#"):
                     entry["failure"] = ImportFailure(
@@ -3342,6 +3474,8 @@ class OSCAL:
                         resource_description=entry.get("resource_description", ""),
                         rlinks_tried=rlinks_tried,
                         uri=failure_uri,
+                        http_status=failure_http,
+                        validation=failure_val,
                         message=failure_msg,
                     )
                 else:
@@ -3350,6 +3484,8 @@ class OSCAL:
                         href_original=raw_href,
                         rlinks_tried=rlinks_tried,
                         uri=failure_uri,
+                        http_status=failure_http,
+                        validation=failure_val,
                         message=failure_msg,
                     )
 
@@ -3402,7 +3538,8 @@ class OSCAL:
         """
         if obj is None:
             return {"model": "", "title": "", "oscal_version": "",
-                    "version": "", "published": "", "last_modified": ""}
+                    "version": "", "published": "", "last_modified": "",
+                    "validation": OSCAL._validation_summary(None)}
         oscal_version = obj.oscal_version[1:] if obj.oscal_version.startswith("v") else obj.oscal_version
         return {
             "model":         obj.model,
@@ -3411,7 +3548,62 @@ class OSCAL:
             "version":       obj.version,
             "published":     obj.published,
             "last_modified": obj.last_modified,
+            # Granular content-health per node. The node's own `status`/`is_valid` gate on
+            # MINIMAL validity (structural soundness) only — L2/L3 findings never block an
+            # import — so this surfaces the full ladder (L2 `is_valid`, L3 `is_fully_compliant`,
+            # per-phase `status`) plus a local `error_count`. It stays lightweight: the heavy
+            # error lists are fetched separately via get_validation_errors(include_imports=True).
+            "validation": OSCAL._validation_summary(obj),
         }
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _validation_summary(obj: "OSCAL | None") -> dict:
+        """The validation-level ladder for *obj*, aligned with local validation levels.
+
+        Shared by :meth:`_object_summary` (import-tree nodes) and the per-attempt records in
+        :meth:`resolve_imports` so a reachable-but-invalid source reports exactly the same
+        levels a locally-loaded document does: ``is_minimally_valid`` / ``is_valid`` (L2) /
+        ``is_fully_compliant`` (L3 tri-state) / ``status`` (per-phase dict) / ``error_count``
+        (local). An absent object yields the empty/false shape.
+        """
+        if obj is None:
+            return {"is_minimally_valid": False, "is_valid": False,
+                    "is_fully_compliant": None, "status": {}, "error_count": 0}
+        return {
+            "is_minimally_valid": obj.is_minimally_valid,
+            "is_valid":           obj.is_valid,
+            "is_fully_compliant": obj.is_fully_compliant,
+            "status":             dict(obj.validation_status),
+            "error_count":        len(obj.validation_errors or []),
+        }
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _summarize_href_item(item: dict) -> None:
+        """Roll an ``href_list`` item's per-attempt records up into status/outcome/message.
+
+        A READY item is finalized inline during resolution and never passed here. With no
+        attempts the item keeps its default ``NOT_ATTEMPTED``. A purely cyclic item becomes
+        ``CYCLIC``. Otherwise the item is ``INVALID`` with ``outcome`` = the most-actionable
+        ``ImportFailureCode`` across its failed attempts (see :func:`_most_actionable_code`)
+        and the matching attempt's message.
+        """
+        attempts = item.get("attempts") or []
+        if not attempts:
+            return  # stays NOT_ATTEMPTED
+        invalid = [a for a in attempts if a.get("status") == ImportState.INVALID]
+        if not invalid:
+            if any(a.get("status") == ImportState.CYCLIC for a in attempts):
+                item["status"]  = ImportState.CYCLIC
+                item["outcome"] = None
+                item["message"] = "resolves to an ancestor still being resolved (cyclic)"
+            return
+        best = _most_actionable_code([a.get("code") for a in invalid])
+        chosen = next((a for a in invalid if a.get("code") == best), invalid[-1])
+        item["status"]  = ImportState.INVALID
+        item["outcome"] = best
+        item["message"] = chosen.get("message", "")
 
     # -------------------------------------------------------------------------
     def _build_import_tree_recursive(self, _path: frozenset | None = None) -> list:
@@ -3467,9 +3659,26 @@ class OSCAL:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node's document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document's root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document's model type (e.g. "catalog").
@@ -3495,16 +3704,23 @@ class OSCAL:
         """
         if self._import_tree is None:
             _working_href = self.href or self.href_original
+            _root_status = ImportState.READY if self.is_minimally_valid else ImportState.INVALID
             _root_href_list: list[dict] = [
-                {"href": _working_href, "status": ImportState.READY, "original": True}
+                {"href": _working_href, "status": _root_status, "original": True,
+                 "outcome": None, "message": "", "attempts": []}
             ]
             if self.href_original and self.href_original != _working_href:
-                _root_href_list.append({"href": self.href_original, "original": True})
+                _root_href_list.append({"href": self.href_original, "original": True,
+                                        "status": ImportState.NOT_ATTEMPTED, "outcome": None,
+                                        "message": "", "attempts": []})
             self._import_tree = {
                 "href_original": self.href_original,
                 "href_valid":    _working_href,
                 "href_list":     _root_href_list,
-                "status":        ImportState.READY if self.is_valid else ImportState.INVALID,
+                # Gate on MINIMAL validity (structural soundness), matching how imported
+                # children are marked READY in resolve_imports. L2/L3 findings (allowed-values,
+                # matches, …) do NOT make a node INVALID — they surface under `validation`.
+                "status":        ImportState.READY if self.is_minimally_valid else ImportState.INVALID,
                 "is_valid":      self.is_valid,
                 "is_local":      self.is_local,
                 "is_remote":     self.is_remote,
@@ -3525,6 +3741,110 @@ class OSCAL:
         """
         self._import_tree = None
         return self.import_tree
+
+    # -------------------------------------------------------------------------
+    def get_validation_errors(self, include_imports: bool = False):
+        """Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document's own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document's local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node's ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  "object_uuid", "href_original", "href_valid", "model", "title", "status",
+                  "error_count",          # this node's local error count
+                  "subtree_error_count",  # local + every descendant
+                  "errors": [ ...local validation errors (safe copy)... ],
+                  "imports": [ <same node shape>, ... ]   # mirrors import order
+                }
+        """
+        if not include_imports:
+            return copy.deepcopy(self.validation_errors or [])
+        return self._build_validation_error_tree()
+
+    # -------------------------------------------------------------------------
+    def _build_validation_error_tree(self, _path: frozenset | None = None) -> dict:
+        """Recursive worker for :meth:`get_validation_errors` (include_imports=True).
+
+        Emits one node per document, mirroring :attr:`import_tree` and linking to it by
+        ``object_uuid``. Each node holds only this document's local errors; children come
+        from ``import_list``. ``_path`` carries resolved hrefs already on the stack so a
+        circular import stops rather than looping.
+        """
+        if _path is None:
+            _path = frozenset()
+
+        local = copy.deepcopy(self.validation_errors or [])
+        self_href = self.href or self.href_original
+        node = {
+            "object_uuid":         self.uuid,
+            "href_original":       self.href_original,
+            "href_valid":          self_href,
+            "model":               self.model,
+            "title":               self.title,
+            "status":              ImportState.READY if self.is_minimally_valid else ImportState.INVALID,
+            "error_count":         len(local),
+            "subtree_error_count": len(local),
+            "errors":              local,
+            "imports":             [],
+        }
+
+        path = _path | ({self_href} if self_href else set())
+        for entry in self.import_list:
+            child = entry.get("object")
+            child_href = entry.get("href_valid") or entry.get("href_original", "")
+            if child is None:
+                # Unloaded / failed / duplicate / ignored import: a stub that links to the
+                # import entry; the reason lives in the import tree node's `failure`.
+                child_node = {
+                    "object_uuid": None,
+                    "href_original": entry.get("href_original", ""),
+                    "href_valid":  entry.get("href_valid", ""),
+                    "model": "", "title": "",
+                    "status": entry.get("status"),
+                    "error_count": 0, "subtree_error_count": 0,
+                    "errors": [], "imports": [],
+                }
+            elif child_href and child_href in path:
+                # Circular import: link the node but do not recurse (avoid an infinite loop).
+                child_node = {
+                    "object_uuid": child.uuid,
+                    "href_original": entry.get("href_original", ""),
+                    "href_valid":  entry.get("href_valid", ""),
+                    "model": child.model, "title": child.title,
+                    "status": entry.get("status"),
+                    "error_count": len(child.validation_errors or []),
+                    "subtree_error_count": 0,
+                    "errors": [], "imports": [], "cyclic": True,
+                }
+            else:
+                child_node = child._build_validation_error_tree(path)
+                # Re-key the node to the PARENT's import entry so it lines up with the
+                # corresponding import_tree node (href as written in this document).
+                child_node["href_original"] = entry.get("href_original", child_node["href_original"])
+                child_node["href_valid"]    = entry.get("href_valid", child_node["href_valid"])
+                child_node["status"]        = entry.get("status", child_node["status"])
+            node["subtree_error_count"] += child_node.get("subtree_error_count", 0)
+            node["imports"].append(child_node)
+        return node
 
     # -------------------------------------------------------------------------
     def _import_base_path(self) -> str:
@@ -3720,24 +4040,40 @@ class OSCAL:
             self.requested_oscal_version = oscal_version
             resolved_version = oscal_version
 
-            # If the declared version has no local support, try to acquire it (bundled DB,
-            # then NIST) or substitute the closest same-major version — reflecting the
-            # outcome in version_support (see OSCALSupport.ensure_version).
-            if oscal_version not in self._support.versions:
-                resolved_version, outcome = self._support.ensure_version(oscal_version)
-                if outcome == "closest-match":
-                    self.version_support = VersionSupport.CLOSEST_MATCH
-                    logger.warning(
-                        f"OSCAL version '{oscal_version}' is unavailable; validating and "
-                        f"converting against the closest available version '{resolved_version}'."
-                    )
-                elif outcome == "unavailable":
-                    self.version_support = VersionSupport.UNSUPPORTED
-                    self.resolved_oscal_version = ""
-                    logger.error(
-                        f"OSCAL version '{oscal_version}' is not supported and could not be acquired."
-                    )
-                    status = False
+            # Guard: content with no parseable oscal-version (e.g. a non-OSCAL or error page
+            # whose metadata/oscal-version is absent yields the bare string "v"). Such content
+            # cannot be supported and must NOT trigger acquisition — otherwise every failed
+            # import candidate would hammer the bundle/NIST trying to "acquire" an empty version.
+            if self._support._semver_major(oscal_version) < 0:
+                self.version_support = VersionSupport.UNSUPPORTED
+                self.resolved_oscal_version = ""
+                logger.error(
+                    f"Content declares no usable OSCAL version (got {oscal_version!r}); "
+                    "cannot identify a metaschema — marking unsupported."
+                )
+                status = False
+
+        if status:
+            # Resolve the version we will validate/convert against to one that actually has a
+            # processed metaschema INDEX for this model. The version registry may list versions
+            # (e.g. early 1.0.x) that ship no index; those are substituted with the closest
+            # indexed version OFFLINE — only a genuinely newer release is acquired (bundled DB,
+            # then NIST). See OSCALSupport.resolve_validation_version.
+            resolved_version, outcome = self._support.resolve_validation_version(oscal_version, oscal_root)
+            if outcome == "closest-match":
+                self.version_support = VersionSupport.CLOSEST_MATCH
+                logger.warning(
+                    f"OSCAL version '{oscal_version}' has no local metaschema index for "
+                    f"'{oscal_root}'; validating and converting against the closest available "
+                    f"version '{resolved_version}'."
+                )
+            elif outcome == "unavailable":
+                self.version_support = VersionSupport.UNSUPPORTED
+                self.resolved_oscal_version = ""
+                logger.error(
+                    f"OSCAL version '{oscal_version}' is not supported and could not be acquired."
+                )
+                status = False
 
             if status:
                 self.oscal_version = resolved_version
@@ -4061,6 +4397,79 @@ class OSCAL:
                 err["constraint-id"] = con.get("id")
                 errors.append(err)
 
+    def _eval_node_matches_l2b(self, node: dict, instance: Any, location: str,
+                               identifier: str | None, errors: list[dict]) -> None:
+        """Evaluate child-path (L2-B) ``matches`` datatype/regex constraints declared on an
+        assembly *node* by forward-traversing *instance*'s own children.
+
+        These are ERROR-level ``matches`` constraints whose target is a single forward child
+        step ending in a flag — e.g. ``prop[has-oscal-namespace('…') and
+        @name='release-date']/@value`` with ``datatype=date`` (similarly ``inherited-uuid``).
+        Unlike ``allowed-values``, such constraints are NOT relocated onto the governed flag
+        node in the index; they stay on the declaring assembly tagged ``fully-compliant``.
+        :meth:`_eval_node_matches` only handles self/own-flag shapes, so without this pass
+        these datatype/regex checks would go unevaluated at L2 and the L3 engine is not yet
+        implemented — the value would never be checked (see ``validate_full``).
+
+        Only the self-contained shape is evaluated: one child element step whose predicates
+        (``@name`` equality/in-set and ``has-oscal-namespace``) are decided by the governed
+        child alone. Ancestor-gated (multi-segment) and descendant-axis targets need wider
+        tree context and stay deferred to L3. A prop/part with no ``@ns`` defaults to the
+        OSCAL namespace (see :func:`_target_filters_met`), so an un-namespaced
+        ``release-date`` is governed while a vendor-namespaced one is not.
+        """
+        if not isinstance(instance, dict):
+            return
+        for con in node.get("constraints", []) or []:
+            if con.get("type") != "matches":
+                continue
+            if (con.get("level") or "ERROR").upper() != "ERROR":
+                continue
+            regex, datatype = con.get("regex"), con.get("datatype")
+            if not (regex or datatype):
+                continue
+            target = con.get("target", ".")
+            parsed = _parse_matches_target(target)
+            if not parsed or parsed.get("kind") != "l2b":
+                continue
+            spec = parsed.get("spec") or {}
+            segs = spec.get("segments") or []
+            # Only a single forward child step is self-contained enough for L2; ancestor
+            # gates (len > 1) and descendant axes stay L3.
+            if len(segs) != 1 or segs[0].get("axis") != "child":
+                continue
+            seg, leaf = segs[0], spec.get("leaf")
+            child_node = _find_child_index(node, seg.get("elem"))
+            if child_node is None:
+                continue
+            json_key = child_node.get("group-as") or seg.get("elem")
+            leaf_flag = _find_child_index(child_node, leaf)
+            leaf_key = (leaf_flag.get("use-name") or leaf_flag.get("name")) if leaf_flag else leaf
+            _, ns_cond = _extract_oscal_namespace_condition(target)
+            filters = [ns_cond] if ns_cond else []
+            names = seg.get("names")
+            items = instance.get(json_key)
+            if isinstance(items, dict):
+                items = [items]
+            if not isinstance(items, list):
+                continue
+            for i, child in enumerate(items):
+                if not isinstance(child, dict):
+                    continue
+                if names is not None and str(child.get("name")) not in names:
+                    continue
+                if not _target_filters_met(filters, child):
+                    continue
+                val = child.get(leaf_key)
+                if not isinstance(val, str) or not val:
+                    continue
+                err = _apply_matches(val, regex, datatype,
+                                     f"{location}/{json_key}[{i}]",
+                                     f"@{leaf_key}", identifier)
+                if err:
+                    err["constraint-id"] = con.get("id")
+                    errors.append(err)
+
     def _eval_node_cardinality(self, node: dict, instance: Any, location: str,
                                identifier: str | None, errors: list[dict]) -> None:
         """Evaluate L2 ``has-cardinality`` constraints declared on *node* against *instance*
@@ -4322,6 +4731,10 @@ class OSCAL:
 
         # Node-level matches (regex/datatype), has-cardinality, and expect on this element.
         self._eval_node_matches(node, instance, location, node_name, identifier, errors)
+        # Child-path (L2-B) matches declared on this assembly but governing a child's flag
+        # value (e.g. prop[@name='release-date']/@value datatype=date) — not relocated onto
+        # the flag node in the index, so evaluated here by forward traversal.
+        self._eval_node_matches_l2b(node, instance, location, identifier, errors)
         self._eval_node_cardinality(node, instance, location, identifier, errors)
         self._eval_node_expect(node, instance, location, identifier, errors)
 

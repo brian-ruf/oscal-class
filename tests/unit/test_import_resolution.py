@@ -173,7 +173,8 @@ class TestImportErrors:
         assert obj.content_state == ContentState.VALID
 
     def test_fragment_valid_uuid_no_resource(self):
-        """Valid UUID fragment with no matching back-matter resource → RESOURCE_NOT_FOUND."""
+        """Valid UUID fragment with no matching back-matter resource anywhere in scope →
+        BAD_REFERENCE (a dangling internal reference, not a missing file/URL)."""
         xml = """<?xml version="1.0" encoding="UTF-8"?>
 <profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-000000000098">
   <metadata>
@@ -195,7 +196,7 @@ class TestImportErrors:
         result = obj.resolve_imports()
         assert len(result) == 1
         assert result[0]["status"] == ImportState.INVALID
-        assert result[0]["failure"].code == ImportFailureCode.RESOURCE_NOT_FOUND
+        assert result[0]["failure"].code == ImportFailureCode.BAD_REFERENCE
 
     def test_import_state_loaded_automatically(self):
         """resolve_imports runs automatically on load; import_list is populated immediately."""

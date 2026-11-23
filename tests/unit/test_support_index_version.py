@@ -313,6 +313,122 @@ class TestVersionFallback:
 
 
 # ===========================================================================
+# resolve_validation_version — pick the version to validate/convert against,
+# driven by processed-index availability. An early/edge version must substitute
+# the closest indexed version OFFLINE (no bundle-merge, no NIST fetch); only a
+# genuinely newer release is acquired.
+# ===========================================================================
+class TestResolveValidationVersion:
+
+    def setup_method(self):
+        support_mod._metaschema_index_cache.clear()
+
+    def test_exact_when_indexed(self, support):
+        assert support.resolve_validation_version("v1.2.3", "catalog") == ("v1.2.3", "exact")
+
+    def test_has_processed_index(self, support):
+        assert support._has_processed_index("v1.2.3", "catalog") is True
+        assert support._has_processed_index("v1.0.4", "catalog") is False
+
+    def test_newest_processed_version(self, support):
+        assert support._newest_processed_version("catalog") == "v1.2.3"
+
+    def test_early_version_substitutes_without_acquiring(self, support, monkeypatch):
+        # v1.0.4 has no processed catalog index → closest indexed (v1.1.1), and ensure_version
+        # (the bundle-merge / NIST-fetch path) must NOT be invoked.
+        calls = []
+        monkeypatch.setattr(support, "ensure_version",
+                            lambda v: calls.append(v) or (v, "exact"))
+        assert support.resolve_validation_version("v1.0.4", "catalog") == ("v1.1.1", "closest-match")
+        assert calls == []
+
+    def test_absent_from_registry_still_no_acquire(self, support, monkeypatch):
+        # Even when v1.0.x is absent from the registry, an old version substitutes offline —
+        # this is the case that previously triggered a spurious support-DB update.
+        c = sqlite3.connect(support.db_conn)
+        c.execute("DELETE FROM oscal_versions WHERE version LIKE 'v1.0.%'")
+        c.commit(); c.close()
+        support._OSCALSupport__load_versions()
+        assert "v1.0.4" not in support.versions
+        calls = []
+        monkeypatch.setattr(support, "ensure_version",
+                            lambda v: calls.append(v) or (v, "exact"))
+        resolved, outcome = support.resolve_validation_version("v1.0.4", "catalog")
+        assert (resolved, outcome) == ("v1.1.1", "closest-match")
+        assert calls == []
+
+    def test_newer_release_attempts_acquire(self, support, monkeypatch):
+        # A version newer than anything we ship IS worth acquiring; when that fails we still
+        # degrade to the closest indexed version rather than erroring.
+        calls = []
+        monkeypatch.setattr(support, "ensure_version",
+                            lambda v: calls.append(v) or (None, "unavailable"))
+        resolved, outcome = support.resolve_validation_version("v1.9.9", "catalog")
+        assert calls == ["v1.9.9"]
+        assert outcome == "closest-match" and resolved == "v1.2.3"
+
+    def test_empty_version_unavailable_without_acquire(self, support, monkeypatch):
+        # A bare "v" (content with no parseable oscal-version) must never reach for the
+        # bundle or NIST — it is simply unavailable.
+        monkeypatch.setattr(support, "ensure_version",
+                            lambda v: pytest.fail(f"must not acquire for {v!r}"))
+        assert support.resolve_validation_version("v", "catalog") == (None, "unavailable")
+
+
+class TestLoadEarlyVersionDocument:
+    """Loading a document that declares an early (unindexed) OSCAL version resolves to the
+    closest indexed version and reports CLOSEST_MATCH — without touching the support DB."""
+
+    def setup_method(self):
+        support_mod._metaschema_index_cache.clear()
+
+    _CDEF_104 = """{
+      "component-definition": {
+        "uuid": "11111111-1111-4111-8111-111111111111",
+        "metadata": {"title": "T", "last-modified": "2026-01-01T00:00:00Z",
+                     "version": "1.0", "oscal-version": "1.0.4"},
+        "components": [{"uuid": "22222222-2222-4222-8222-222222222222",
+                        "type": "software", "title": "C", "description": "d"}]
+      }
+    }"""
+
+    def test_resolves_closest_match_without_db_update(self, support, monkeypatch):
+        from oscal.oscal_content import OSCAL, VersionSupport
+        monkeypatch.setattr(support_mod, "get_support", lambda *a, **k: support)
+        # Fail loudly if resolution ever reaches for the network/bundle.
+        monkeypatch.setattr(support, "update",
+                            lambda *a, **k: pytest.fail("must not fetch for an early version"))
+        monkeypatch.setattr(support, "_merge_from_bundled_db",
+                            lambda *a, **k: pytest.fail("must not merge for an early version"))
+        doc = OSCAL.loads(self._CDEF_104)
+        assert doc.requested_oscal_version == "v1.0.4"
+        assert doc.oscal_version == "v1.1.1"
+        assert doc.version_support == VersionSupport.CLOSEST_MATCH
+        assert doc.is_minimally_valid is True
+
+    _CDEF_NO_VERSION = """{
+      "component-definition": {
+        "uuid": "11111111-1111-4111-8111-111111111111",
+        "metadata": {"title": "T", "last-modified": "2026-01-01T00:00:00Z", "version": "1.0"}
+      }
+    }"""
+
+    def test_missing_version_is_unsupported_without_acquire(self, support, monkeypatch):
+        # Content with no oscal-version (e.g. a failed/non-OSCAL import candidate) must be
+        # marked unsupported WITHOUT hitting the bundle or NIST — the regression that spammed
+        # ensure_version('v') for every import format variant.
+        from oscal.oscal_content import OSCAL, VersionSupport, ContentState
+        monkeypatch.setattr(support_mod, "get_support", lambda *a, **k: support)
+        monkeypatch.setattr(support, "update",
+                            lambda *a, **k: pytest.fail("must not fetch for an empty version"))
+        monkeypatch.setattr(support, "_merge_from_bundled_db",
+                            lambda *a, **k: pytest.fail("must not merge for an empty version"))
+        doc = OSCAL.loads(self._CDEF_NO_VERSION)
+        assert doc.version_support == VersionSupport.UNSUPPORTED
+        assert doc.content_state == ContentState.ACQUIRED
+
+
+# ===========================================================================
 # get_metaschema_index keyed by index version
 # ===========================================================================
 class TestIndexKeying:

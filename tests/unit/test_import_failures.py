@@ -9,9 +9,11 @@ Covers:
     - load_source() raises typed ImportLoadError
     - load_content() propagates / raises typed ImportLoadError
     - resolve_imports() fragment failure cases:
-          FRAGMENT_INVALID_UUID, RESOURCE_NOT_FOUND, RESOURCE_NO_VIABLE_CONTENT
+          FRAGMENT_INVALID_UUID, BAD_REFERENCE, RESOURCE_NO_VIABLE_CONTENT
     - resolve_imports() URI failure cases:
-          LOCAL_NOT_FOUND, REMOTE_UNSUPPORTED, REMOTE_AUTH_REQUIRED, REMOTE_UNREACHABLE
+          LOCAL_NOT_FOUND, REMOTE_NOT_FOUND, REMOTE_UNSUPPORTED, REMOTE_AUTH_REQUIRED,
+          REMOTE_UNREACHABLE
+    - BAD_REFERENCE: #uuid target absent from in-scope content (import-tree-wide search)
     - failed_imports property
     - Successful imports leave failure=None
 """
@@ -293,6 +295,35 @@ class TestLoadSourceTypedErrors:
                 load_source(ref)
         assert exc_info.value.code == ImportFailureCode.REMOTE_AUTH_REQUIRED
 
+    def test_http_404_raises_not_found(self):
+        ref = OscalRef(href="https://example.com/catalog.xml")
+        classify_source(ref)
+        http_err = HTTPError("https://example.com/catalog.xml", 404, "Not Found", {}, None)
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
+            with pytest.raises(ImportLoadError) as exc_info:
+                load_source(ref)
+        assert exc_info.value.code == ImportFailureCode.REMOTE_NOT_FOUND
+        assert exc_info.value.http_status == 404
+
+    def test_http_410_raises_not_found(self):
+        ref = OscalRef(href="https://example.com/catalog.xml")
+        classify_source(ref)
+        http_err = HTTPError("https://example.com/catalog.xml", 410, "Gone", {}, None)
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
+            with pytest.raises(ImportLoadError) as exc_info:
+                load_source(ref)
+        assert exc_info.value.code == ImportFailureCode.REMOTE_NOT_FOUND
+
+    def test_http_500_sets_http_status(self):
+        ref = OscalRef(href="https://example.com/catalog.xml")
+        classify_source(ref)
+        http_err = HTTPError("https://example.com/catalog.xml", 500, "Server Error", {}, None)
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
+            with pytest.raises(ImportLoadError) as exc_info:
+                load_source(ref)
+        assert exc_info.value.code == ImportFailureCode.REMOTE_UNREACHABLE
+        assert exc_info.value.http_status == 500
+
     def test_http_403_raises_auth_required(self):
         ref = OscalRef(href="https://example.com/catalog.xml")
         classify_source(ref)
@@ -385,11 +416,11 @@ class TestFragmentFailures:
         obj = _load_profile("#not-a-uuid")
         assert obj.import_list[0]["failure"].rlinks_tried == []
 
-    # --- RESOURCE_NOT_FOUND ---
+    # --- BAD_REFERENCE (fragment target absent from in-scope content) ---
 
     def test_missing_resource_code(self):
         obj = _load_profile(f"#{_MISSING_UUID}")
-        assert obj.import_list[0]["failure"].code == ImportFailureCode.RESOURCE_NOT_FOUND
+        assert obj.import_list[0]["failure"].code == ImportFailureCode.BAD_REFERENCE
 
     def test_missing_resource_uuid_in_failure(self):
         obj = _load_profile(f"#{_MISSING_UUID}")
@@ -671,15 +702,17 @@ class TestHrefList:
         rlink_items = [i for i in entry["href_list"] if not i["href"].startswith("#")]
         assert any(i.get("status") == ImportState.READY for i in rlink_items)
 
-    def test_items_after_first_success_have_no_status(self):
-        """href_list items that were never attempted carry no status key."""
+    def test_items_after_first_success_are_not_attempted(self):
+        """href_list items that were never tried (an earlier candidate succeeded) report
+        NOT_ATTEMPTED with no recorded attempts."""
         bm = _resource_xml(_RLINK_UUID, rlinks=[_CATALOG_PATH, "/tmp/never_tried.xml"])
         obj = _load_profile(f"#{_RLINK_UUID}", bm)
         entry = obj.import_list[0]
         # Find the never-tried item (last rlink)
         last_item = [i for i in entry["href_list"] if "/tmp/never_tried.xml" in i["href"]]
         assert len(last_item) == 1
-        assert "status" not in last_item[0]
+        assert last_item[0]["status"] == ImportState.NOT_ATTEMPTED
+        assert last_item[0]["attempts"] == []
 
 
 # ===========================================================================
@@ -1072,3 +1105,149 @@ class TestRetryImportRebuildsControlsTree:
         # The earlier fix survived the second retry (not clobbered by a re-acquire).
         assert prof.control("ac-1") is not None
         assert prof.control("ac-2") is not None
+
+
+# ===========================================================================
+# Per-attempt href_list detail (Tier 2): each candidate records every concrete
+# URI tried, with a typed code / http_status / validation ladder, rolled up to
+# an item-level outcome via most-actionable precedence.
+# ===========================================================================
+
+_BAD_CATALOG = (  # well-formed JSON, but NOT minimally valid (missing uuid + last-modified)
+    '{"catalog": {"metadata": {"title": "X", "version": "1.0", "oscal-version": "1.1.3"}}}'
+)
+
+
+class TestHrefListPerAttempt:
+    def test_each_format_variant_is_recorded(self):
+        obj = _load_profile("/tmp/_oscal_missing_perattempt.xml")
+        item = obj.import_list[0]["href_list"][0]
+        # primary + .json/.yaml/.yml variants
+        uris = [a["uri"] for a in item["attempts"]]
+        assert len(uris) == 4
+        assert all(a["status"] == ImportState.INVALID for a in item["attempts"])
+        assert all(a["code"] == ImportFailureCode.LOCAL_NOT_FOUND for a in item["attempts"])
+
+    def test_item_outcome_rolls_up(self):
+        obj = _load_profile("/tmp/_oscal_missing_perattempt.xml")
+        item = obj.import_list[0]["href_list"][0]
+        assert item["status"] == ImportState.INVALID
+        assert item["outcome"] == ImportFailureCode.LOCAL_NOT_FOUND
+        assert item["message"]
+
+    def test_reachable_but_invalid_carries_validation_ladder(self, tmp_path):
+        bad = tmp_path / "bad_catalog.json"
+        bad.write_text(_BAD_CATALOG)
+        prof = tmp_path / "profile.xml"
+        prof.write_text(_profile_xml("bad_catalog.json"))
+        obj = OSCAL.load(str(prof))
+        entry = obj.import_list[0]
+        assert entry["status"] == ImportState.INVALID
+        assert entry["failure"].code == ImportFailureCode.CONTENT_INVALID
+        # entry failure carries the ladder
+        v = entry["failure"].validation
+        assert v is not None and v["is_minimally_valid"] is False
+        assert v["status"]["well-formed"] is True and v["status"]["structure"] is False
+        # the reaching attempt also carries it
+        reached = [a for it in entry["href_list"] for a in it["attempts"]
+                   if a["code"] == ImportFailureCode.CONTENT_INVALID]
+        assert reached and reached[0]["validation"]["error_count"] >= 1
+
+    def test_outcome_precedence_prefers_reachable_invalid_over_not_found(self, tmp_path):
+        # The .json variant is reachable-but-invalid (CONTENT_INVALID); the .xml/.yaml/.yml
+        # variants are missing (LOCAL_NOT_FOUND). The item outcome must be the more-actionable
+        # CONTENT_INVALID.
+        (tmp_path / "src.json").write_text(_BAD_CATALOG)
+        prof = tmp_path / "profile.xml"
+        prof.write_text(_profile_xml("src.xml"))   # primary .xml absent → variants include src.json
+        obj = OSCAL.load(str(prof))
+        item = obj.import_list[0]["href_list"][0]
+        codes = {a["code"] for a in item["attempts"]}
+        assert ImportFailureCode.CONTENT_INVALID in codes
+        assert ImportFailureCode.LOCAL_NOT_FOUND in codes
+        assert item["outcome"] == ImportFailureCode.CONTENT_INVALID
+
+    def test_remote_404_sets_not_found_and_http_status(self):
+        http_err = HTTPError("https://example.com/c.xml", 404, "Not Found", {}, None)
+        with patch("oscal.oscal_source.download_file", side_effect=http_err):
+            obj = _load_profile("https://example.com/c.xml")
+        entry = obj.import_list[0]
+        assert entry["failure"].code == ImportFailureCode.REMOTE_NOT_FOUND
+        assert entry["failure"].http_status == 404
+        attempt = entry["href_list"][0]["attempts"][0]
+        assert attempt["http_status"] == 404
+        assert attempt["code"] == ImportFailureCode.REMOTE_NOT_FOUND
+
+    def test_successful_item_attempt_has_validation(self):
+        bm = _resource_xml(_RLINK_UUID, rlinks=[_CATALOG_PATH])
+        obj = _load_profile(f"#{_RLINK_UUID}", bm)
+        item = [i for i in obj.import_list[0]["href_list"] if i["status"] == ImportState.READY][0]
+        ready = [a for a in item["attempts"] if a["status"] == ImportState.READY]
+        assert ready and ready[0]["validation"]["is_minimally_valid"] is True
+        assert item["outcome"] is None
+
+
+# ===========================================================================
+# BAD_REFERENCE — a #uuid import whose target is absent from in-scope content.
+# Distinct from file/URL not-found; searched across the resolved import tree.
+# ===========================================================================
+
+class TestBadReference:
+    def test_dangling_fragment_is_bad_reference_not_not_found(self):
+        obj = _load_profile(f"#{_MISSING_UUID}")
+        entry = obj.import_list[0]
+        assert entry["status"] == ImportState.INVALID
+        assert entry["failure"].code == ImportFailureCode.BAD_REFERENCE
+        assert entry["failure"].is_fragment_ref is True
+        # reads differently than a missing file/URL
+        assert entry["failure"].code not in (
+            ImportFailureCode.LOCAL_NOT_FOUND,
+            ImportFailureCode.REMOTE_NOT_FOUND,
+            ImportFailureCode.RESOURCE_NOT_FOUND,
+        )
+
+    def test_bad_reference_has_empty_href_list(self):
+        # A dangling fragment has no file/URL candidates to attempt.
+        obj = _load_profile(f"#{_MISSING_UUID}")
+        assert obj.import_list[0]["href_list"] == []
+
+    def test_file_missing_is_distinct_code(self):
+        # The same "not present" intuition for a file yields a *different*, file-oriented code.
+        frag = _load_profile(f"#{_MISSING_UUID}").import_list[0]["failure"].code
+        local = _load_profile("/tmp/_oscal_missing_badref.xml").import_list[0]["failure"].code
+        assert frag == ImportFailureCode.BAD_REFERENCE
+        assert local == ImportFailureCode.LOCAL_NOT_FOUND
+        assert frag != local
+
+    def test_fragment_relocates_via_import_tree(self, tmp_path):
+        import shutil
+        # A catalog the relocated resource ultimately points to.
+        cat = tmp_path / "catalog.xml"
+        shutil.copyfile(_CATALOG_PATH, str(cat))
+        res_uuid = "aabbccdd-0000-4000-a000-0000000000b1"
+        # Inner profile: minimally valid, and its back-matter defines resource <res_uuid>
+        # with an rlink to the catalog.
+        inner = tmp_path / "inner.xml"
+        inner.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-0000000000b2">
+  <metadata><title>Inner</title><last-modified>2026-04-28T00:00:00Z</last-modified>
+    <version>1.0</version><oscal-version>1.2.1</oscal-version></metadata>
+  <import href="catalog.xml"><include-all/></import>
+  <merge><combine method="keep"/><as-is>true</as-is></merge>
+  <back-matter>{_resource_xml(res_uuid, rlinks=["catalog.xml"])}</back-matter>
+</profile>""")
+        # Outer profile: imports inner by file, THEN imports the fragment #res_uuid, whose
+        # target lives only in inner's back-matter — it must relocate and resolve, not fail.
+        outer = tmp_path / "outer.xml"
+        outer.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<profile xmlns="http://csrc.nist.gov/ns/oscal/1.0" uuid="aabbccdd-0000-4000-a000-0000000000b3">
+  <metadata><title>Outer</title><last-modified>2026-04-28T00:00:00Z</last-modified>
+    <version>1.0</version><oscal-version>1.2.1</oscal-version></metadata>
+  <import href="inner.xml"><include-all/></import>
+  <import href="#{res_uuid}"><include-all/></import>
+  <merge><combine method="keep"/><as-is>true</as-is></merge>
+</profile>""")
+        obj = OSCAL.load(str(outer))
+        frag_entry = [e for e in obj.import_list if e["href_original"] == f"#{res_uuid}"][0]
+        assert frag_entry["status"] == ImportState.READY
+        assert frag_entry.get("relocated_from") == "aabbccdd-0000-4000-a000-0000000000b2"
