@@ -57,14 +57,18 @@ class ImportState(str, Enum):
         IGNORED (str): "ignored" — the caller explicitly chose to ignore this import.
         CYCLIC (str): "cyclic" — this import resolves to one of its own ancestors; the
             ancestor stays valid and recursion stops here to prevent an infinite loop.
+        NOT_ATTEMPTED (str): "not-attempted" — a candidate href that was never tried (an
+            earlier candidate already succeeded, resolution stopped for a cycle, or it is a
+            back-matter fragment placeholder). Used at the per-``href_list``-item level.
     """
-    READY        = "ready"        # The content is valid and loaded
-    NOT_LOADED   = "not-loaded"   # The content has not been loaded
-    INVALID      = "invalid"      # The content could not be loaded or failed validation
-    EXPIRED      = "expired"      # The content is valid, but cached copy has expired
-    DUPLICATE    = "duplicate"    # The resolved href is already loaded by an earlier import
-    IGNORED      = "ignored"      # Caller explicitly chose to ignore this import (duplicate or otherwise)
-    CYCLIC       = "cyclic"       # Resolves to an ancestor — recursion stops to avoid a loop
+    READY         = "ready"         # The content is valid and loaded
+    NOT_LOADED    = "not-loaded"    # The content has not been loaded
+    INVALID       = "invalid"       # The content could not be loaded or failed validation
+    EXPIRED       = "expired"       # The content is valid, but cached copy has expired
+    DUPLICATE     = "duplicate"     # The resolved href is already loaded by an earlier import
+    IGNORED       = "ignored"       # Caller explicitly chose to ignore this import (duplicate or otherwise)
+    CYCLIC        = "cyclic"        # Resolves to an ancestor — recursion stops to avoid a loop
+    NOT_ATTEMPTED = "not-attempted" # A candidate href that was never tried (per href_list item)
 
 # -------------------------------------------------------------------------
 class ImportFailureCode(str, Enum):
@@ -73,28 +77,37 @@ class ImportFailureCode(str, Enum):
     Grouped by failure category — fragment/back-matter, full-URI/file,
     content, and duplicate/retry. Members:
         FRAGMENT_INVALID_UUID (str): Fragment reference is not a valid UUID.
-        RESOURCE_NOT_FOUND (str): No back-matter resource matches the UUID.
+        BAD_REFERENCE (str): An import ``href="#uuid"`` fragment whose target back-matter
+            resource is not present anywhere in the in-scope content (this document or any
+            document in its resolved import tree). Distinct from the file/URL *not-found*
+            codes: the reference itself is dangling, not a missing external location.
+        RESOURCE_NOT_FOUND (str): No back-matter resource matches the UUID (used by the
+            link/resource content-acquisition APIs, which look only in the owning document).
         RESOURCE_NO_VIABLE_CONTENT (str): Resource has neither rlinks nor base64 content.
         LOCAL_NOT_FOUND (str): Local file was not found.
-        REMOTE_UNREACHABLE (str): Remote host could not be reached.
-        REMOTE_AUTH_REQUIRED (str): Remote resource requires authentication.
+        REMOTE_NOT_FOUND (str): Remote resource returned HTTP 404/410 (reachable host, no
+            such resource) — distinct from REMOTE_UNREACHABLE (host/transport failure).
+        REMOTE_UNREACHABLE (str): Remote host could not be reached (DNS/timeout/connection/5xx).
+        REMOTE_AUTH_REQUIRED (str): Remote resource requires authentication (HTTP 401/403).
         REMOTE_UNSUPPORTED (str): URI scheme is not supported.
         CONTENT_EMPTY (str): Source returned no content.
-        CONTENT_INVALID (str): Content is not valid OSCAL.
+        CONTENT_INVALID (str): Content was reachable but is not minimally-valid OSCAL.
         ALREADY_IMPORTED (str): Retry href resolves to a file already loaded elsewhere.
     """
     # Fragment / back-matter failures
     FRAGMENT_INVALID_UUID      = "fragment-invalid-uuid"       # Fragment is not a valid UUID
+    BAD_REFERENCE              = "bad-reference"               # #uuid target absent from in-scope content
     RESOURCE_NOT_FOUND         = "resource-not-found"          # No back-matter resource with that UUID
     RESOURCE_NO_VIABLE_CONTENT = "resource-no-viable-content"  # Resource has no rlinks or base64
     # Full URI / file failures
     LOCAL_NOT_FOUND            = "local-not-found"             # Local file not found
-    REMOTE_UNREACHABLE         = "remote-unreachable"          # Remote host not reachable
+    REMOTE_NOT_FOUND           = "remote-not-found"            # Remote 404/410 — reachable, no such resource
+    REMOTE_UNREACHABLE         = "remote-unreachable"          # Remote host not reachable (DNS/timeout/conn/5xx)
     REMOTE_AUTH_REQUIRED       = "remote-auth-required"        # Remote resource requires authentication
     REMOTE_UNSUPPORTED         = "remote-unsupported"          # URI scheme not supported
     # Content failures (source responded, but content is unusable)
     CONTENT_EMPTY              = "content-empty"               # Source returned no content
-    CONTENT_INVALID            = "content-invalid"             # Content is not valid OSCAL
+    CONTENT_INVALID            = "content-invalid"             # Reachable but not minimally-valid OSCAL
     # Duplicate / retry failures
     ALREADY_IMPORTED           = "already-imported"            # Retry href resolves to a file already loaded by another import
 
@@ -105,8 +118,11 @@ class ImportLoadError(Exception):
     Attributes:
         code (ImportFailureCode): The typed reason the import failed.
         uri (str): The URI that failed to load.
+        http_status (int | None): The HTTP status code when the failure came from an HTTP
+            response (e.g. 404, 401), else None.
     """
-    def __init__(self, code: ImportFailureCode, uri: str, message: str = ""):
+    def __init__(self, code: ImportFailureCode, uri: str, message: str = "",
+                 http_status: "int | None" = None):
         """Initialize the error.
 
         Args:
@@ -114,9 +130,11 @@ class ImportLoadError(Exception):
             uri (str, required): The URI that failed to load.
             message (str, optional): Human-readable detail; a default is derived from
                 ``code`` and ``uri`` when omitted.
+            http_status (int | None, optional): HTTP status code behind the failure, if any.
         """
         self.code = code
         self.uri  = uri
+        self.http_status = http_status
         super().__init__(message or f"{code.value}: {uri}")
 
 # -------------------------------------------------------------------------
@@ -140,6 +158,14 @@ class ImportFailure:
 
     # URI context (populated for full-URI failures)
     uri: str = ""
+
+    # HTTP status behind the failure (e.g. 404, 401), when the source was an HTTP response.
+    http_status: "int | None" = None
+
+    # Content-health of a reachable-but-invalid source (code == CONTENT_INVALID): the same
+    # validation-level ladder exposed on import-tree nodes (is_minimally_valid / is_valid /
+    # is_fully_compliant / status / error_count). None for load/transport failures.
+    validation: "dict | None" = None
 
     # Human-readable detail
     message: str = ""
@@ -447,16 +473,24 @@ def load_source(ref: OscalRef, cache_directive: "CacheDirective | None" = None) 
                 except HTTPError as exc:
                     if exc.code in (401, 403):
                         raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
-                                              f"HTTP {exc.code}: authentication required") from exc
+                                              f"HTTP {exc.code}: authentication required",
+                                              http_status=exc.code) from exc
+                    if exc.code in (404, 410):
+                        raise ImportLoadError(ImportFailureCode.REMOTE_NOT_FOUND, src,
+                                              f"HTTP {exc.code}: {exc.reason}",
+                                              http_status=exc.code) from exc
                     raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
-                                          f"HTTP {exc.code}: {exc.reason}") from exc
+                                          f"HTTP {exc.code}: {exc.reason}",
+                                          http_status=exc.code) from exc
                 except (URLError, OSError, ConnectionError) as exc:
                     raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
                 except Exception as exc:
-                    # download_file may raise implementation-specific types; inspect message for auth hints
+                    # download_file may raise implementation-specific types; inspect message for hints
                     msg = str(exc).lower()
                     if any(t in msg for t in ("401", "403", "unauthorized", "forbidden")):
                         raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src, str(exc)) from exc
+                    if "404" in msg or "410" in msg or "not found" in msg:
+                        raise ImportLoadError(ImportFailureCode.REMOTE_NOT_FOUND, src, str(exc)) from exc
                     raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
                 if content:
                     cache.put(cache_key, content, cache_directive)
@@ -470,9 +504,15 @@ def load_source(ref: OscalRef, cache_directive: "CacheDirective | None" = None) 
             except HTTPError as exc:
                 if exc.code in (401, 403):
                     raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
-                                          f"HTTP {exc.code}: authentication required") from exc
+                                          f"HTTP {exc.code}: authentication required",
+                                          http_status=exc.code) from exc
+                if exc.code in (404, 410):
+                    raise ImportLoadError(ImportFailureCode.REMOTE_NOT_FOUND, src,
+                                          f"HTTP {exc.code}: {exc.reason}",
+                                          http_status=exc.code) from exc
                 raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
-                                      f"HTTP {exc.code}: {exc.reason}") from exc
+                                      f"HTTP {exc.code}: {exc.reason}",
+                                      http_status=exc.code) from exc
             except (URLError, OSError, ConnectionError) as exc:
                 raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
 
@@ -557,9 +597,15 @@ def load_source_bytes(ref: OscalRef, cache_directive: "CacheDirective | None" = 
             except HTTPError as exc:
                 if exc.code in (401, 403):
                     raise ImportLoadError(ImportFailureCode.REMOTE_AUTH_REQUIRED, src,
-                                          f"HTTP {exc.code}: authentication required") from exc
+                                          f"HTTP {exc.code}: authentication required",
+                                          http_status=exc.code) from exc
+                if exc.code in (404, 410):
+                    raise ImportLoadError(ImportFailureCode.REMOTE_NOT_FOUND, src,
+                                          f"HTTP {exc.code}: {exc.reason}",
+                                          http_status=exc.code) from exc
                 raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src,
-                                      f"HTTP {exc.code}: {exc.reason}") from exc
+                                      f"HTTP {exc.code}: {exc.reason}",
+                                      http_status=exc.code) from exc
             except (URLError, OSError, ConnectionError) as exc:
                 raise ImportLoadError(ImportFailureCode.REMOTE_UNREACHABLE, src, str(exc)) from exc
 
@@ -689,11 +735,38 @@ def _oscal_format_variants(href: str) -> list[str]:
         return []
     return [base + e for e in sorted(_OSCAL_EXTENSIONS) if e != ext.lower()]
 
+def _resource_info_from_element(res: dict) -> dict:
+    """Build the resource-info dict from a back-matter ``<resource>`` dict already located.
+
+    Returns a dict with keys: uuid, title, description, rlinks (list[dict]), has_base64.
+    Shared by :func:`_backmatter_resource` (local lookup) and import-tree-wide fragment
+    resolution so both produce the identical shape.
+    """
+    rlinks: list[dict] = []
+    for r in res.get("rlinks", []) or []:
+        href = (r.get("href") or "").strip()
+        if not href:
+            continue
+        rl: dict = {"href": href}
+        if "media-type" in r:
+            rl["media-type"] = r["media-type"]
+        if "hashes" in r:
+            rl["hashes"] = r["hashes"]
+        rlinks.append(rl)
+    return {
+        "uuid":        res.get("uuid", ""),
+        "title":       res.get("title", ""),
+        "description": res.get("description", ""),
+        "rlinks":      rlinks,
+        "has_base64":  bool(res.get("base64")),
+    }
+
+
 def _backmatter_resource(doc_obj, resource_uuid: str) -> dict | None:
     """Return metadata and rlinks for a back-matter resource identified by UUID.
 
     Returns a dict with keys: uuid, title, description, rlinks (list[dict]), has_base64.
-    Returns None when no resource with the given UUID exists.
+    Returns None when no resource with the given UUID exists in *doc_obj*'s own back-matter.
     """
     if doc_obj._dict is None:
         return None
@@ -702,31 +775,8 @@ def _backmatter_resource(doc_obj, resource_uuid: str) -> dict | None:
     resources = root_obj.get("back-matter", {}).get("resources", [])
     for res in resources:
         if res.get("uuid") == resource_uuid:
-            title       = res.get("title", "")
-            description = res.get("description", "")
-            rlinks: list[dict] = []
-            for r in res.get("rlinks", []):
-                href = r.get("href", "").strip()
-                if not href:
-                    continue
-                rl: dict = {"href": href}
-                if "media-type" in r:
-                    rl["media-type"] = r["media-type"]
-                if "hashes" in r:
-                    rl["hashes"] = r["hashes"]
-                rlinks.append(rl)
-            has_base64 = bool(res.get("base64"))
-            break
-    else:
-        return None
-
-    return {
-        "uuid":        resource_uuid,
-        "title":       title,
-        "description": description,
-        "rlinks":      rlinks,
-        "has_base64":  has_base64,
-    }
+            return _resource_info_from_element(res)
+    return None
 
 # -------------------------------------------------------------------------
 def classify_source(ref: OscalRef, only_oscal: bool = False) -> bool:

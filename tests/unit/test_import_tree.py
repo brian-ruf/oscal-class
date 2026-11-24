@@ -377,5 +377,118 @@ class TestGetOscalObject:
         uuid = profile_direct.import_tree["imports"][0]["object_uuid"]
         assert profile_direct.get_oscal_object(uuid) is profile_direct.import_list[0]["object"]
 
+
+# ---------------------------------------------------------------------------
+# A component-definition that is structurally sound (minimally valid) but fails
+# L2 — a bad `release-date` datatype. Used to prove import status gates on
+# minimal validity, not L2/L3 validity.
+# ---------------------------------------------------------------------------
+import json  # noqa: E402
+
+
+def _cdef_l2_invalid():
+    body = {
+        "component-definition": {
+            "uuid": "11111111-1111-4111-8111-111111111111",
+            "metadata": {"title": "CD", "last-modified": "2026-01-01T00:00:00Z",
+                         "version": "1.0", "oscal-version": "1.2.3"},
+            "components": [{
+                "uuid": "22222222-2222-4222-8222-222222222222",
+                "type": "software", "title": "C", "description": "d",
+                "props": [{"name": "release-date", "value": "2026-09-18T00:00:00Z"}],
+            }],
+        }
+    }
+    doc = OSCAL.loads(json.dumps(body))
+    doc.validate()
+    return doc
+
+
+class TestImportStatusGatesOnMinimalValidity:
+    """The root import node is READY when the document is minimally valid, even if it has
+    L2/L3 findings — L2 errors must not flip a chain node to INVALID."""
+
+    def test_doc_is_minimally_valid_but_not_l2_valid(self):
+        doc = _cdef_l2_invalid()
+        assert doc.is_minimally_valid is True
+        assert doc.is_valid is False
+
+    def test_root_status_is_ready_despite_l2_errors(self):
+        doc = _cdef_l2_invalid()
+        assert doc.import_tree["status"] == ImportState.READY
+
+    def test_root_is_valid_field_still_reports_l2(self):
+        # The legacy `is_valid` node field keeps reporting the real L2 answer.
+        assert _cdef_l2_invalid().import_tree["is_valid"] is False
+
+
+class TestImportTreeValidationSummary:
+    """Each node carries a lightweight `validation` dict (granular content health)."""
+
+    def test_root_has_validation_dict(self, profile_direct):
+        v = profile_direct.import_tree["validation"]
+        assert set(v) == {"is_minimally_valid", "is_valid", "is_fully_compliant",
+                          "status", "error_count"}
+
+    def test_child_has_validation_dict(self, profile_direct):
+        assert "validation" in profile_direct.import_tree["imports"][0]
+
+    def test_validation_reports_l2_and_counts(self):
+        v = _cdef_l2_invalid().import_tree["validation"]
+        assert v["is_minimally_valid"] is True
+        assert v["is_valid"] is False
+        assert v["error_count"] == 1          # the release-date matches error
+
+    def test_import_tree_does_not_carry_error_lists(self, profile_direct):
+        # Heavy error lists live only in get_validation_errors(), not the tree.
+        assert "errors" not in profile_direct.import_tree
+        assert "errors" not in profile_direct.import_tree["imports"][0]
+
+    def test_failed_node_validation_is_empty_shape(self, profile_missing):
+        v = profile_missing.import_tree["imports"][0]["validation"]
+        assert v["error_count"] == 0 and v["is_valid"] is False
+
+
+class TestGetValidationErrors:
+    def test_local_returns_flat_list(self):
+        errs = _cdef_l2_invalid().get_validation_errors()
+        assert isinstance(errs, list)
+        assert {e["error-type"] for e in errs} == {"matches"}
+
+    def test_local_is_safe_copy(self):
+        doc = _cdef_l2_invalid()
+        doc.get_validation_errors()[0]["error-type"] = "MUTATED"
+        assert doc.validation_errors[0]["error-type"] != "MUTATED"
+
+    def test_tree_root_links_to_import_tree(self, profile_direct):
+        tree = profile_direct.get_validation_errors(include_imports=True)
+        assert tree["object_uuid"] == profile_direct.import_tree["object_uuid"]
+        assert isinstance(tree["errors"], list)
+        assert "imports" in tree
+
+    def test_tree_mirrors_import_hierarchy(self, profile_direct):
+        tree = profile_direct.get_validation_errors(include_imports=True)
+        assert len(tree["imports"]) == len(profile_direct.import_tree["imports"])
+        assert tree["imports"][0]["object_uuid"] == \
+            profile_direct.import_tree["imports"][0]["object_uuid"]
+
+    def test_tree_carries_local_errors_at_root(self):
+        tree = _cdef_l2_invalid().get_validation_errors(include_imports=True)
+        assert tree["error_count"] == 1
+        assert tree["subtree_error_count"] == 1
+        assert tree["errors"][0]["error-type"] == "matches"
+
+    def test_subtree_count_aggregates_children(self, profile_direct):
+        tree = profile_direct.get_validation_errors(include_imports=True)
+        expected = tree["error_count"] + sum(c["subtree_error_count"] for c in tree["imports"])
+        assert tree["subtree_error_count"] == expected
+
+    def test_failed_import_is_stub_node(self, profile_missing):
+        tree = profile_missing.get_validation_errors(include_imports=True)
+        child = tree["imports"][0]
+        assert child["object_uuid"] is None
+        assert child["errors"] == []
+        assert child["status"] == ImportState.INVALID
+
     def test_unknown_uuid_returns_none(self, profile_direct):
         assert profile_direct.get_oscal_object("00000000-0000-4000-a000-000000000000") is None

@@ -1999,6 +1999,94 @@ constraint awaiting the L3 Metapath/XPath engine.</p>
         return sorted(pool, key=cmp_to_key(compare_semver))[0]
 
     # -------------------------------------------------------------------------
+    def _processed_versions(self, model: str) -> list:
+        """Every version that carries a ``processed`` metaschema index for *model* (unordered)."""
+        db = getattr(self, "db", None)
+        if db is None:
+            return []
+        try:
+            rows = db.query(
+                "SELECT DISTINCT version FROM oscal_support "
+                f"WHERE model = '{model}' AND type = 'processed'") or []
+        except Exception as exc:
+            logger.debug(f"_processed_versions: DB query failed ({exc}).")
+            return []
+        return [r.get("version") for r in rows if r.get("version")]
+
+    # -------------------------------------------------------------------------
+    def _has_processed_index(self, version: str, model: str) -> bool:
+        """True when a ``processed`` metaschema index exists locally for (version, model)."""
+        return version in self._processed_versions(model)
+
+    # -------------------------------------------------------------------------
+    def _newest_processed_version(self, model: str) -> Optional[str]:
+        """Return the highest version that carries a ``processed`` index for *model*, or None."""
+        available = self._processed_versions(model)
+        if not available:
+            return None
+        return sorted(available, key=cmp_to_key(compare_semver))[-1]
+
+    # -------------------------------------------------------------------------
+    def resolve_validation_version(self, declared: str, model: str) -> tuple[Optional[str], str]:
+        """Resolve the version to validate / convert *model* content against.
+
+        Validation and XML↔JSON conversion need a **processed metaschema index**, which the
+        version registry does not guarantee: early OSCAL versions (e.g. several 1.0.x releases)
+        are registered but ship no index. Resolution is model-aware, same-major only (OSCAL
+        majors can differ structurally, so a different major is never substituted), and stays
+        offline for old versions so they never trigger a bundle-merge or NIST fetch just to be
+        substituted anyway:
+
+          1. Declared version is in the registry AND has a processed index for *model* →
+             ``("exact")``.
+          2. Declared version is **below** the lowest indexed version in its major (an early/edge
+             version we will never index) → substitute the closest indexed version, with **no
+             network and no DB write** → ``("closest-match")``.
+          3. Declared version is **at or above** our indexed range for its major (an exact index
+             may exist — a torn registry row to heal, or a newer release) → acquire it via
+             :meth:`ensure_version` (bundled DB, then NIST); on success → ``("exact")``, else
+             substitute the closest indexed version → ``("closest-match")``.
+          4. No indexed version exists for *model* in the declared major → defer to
+             :meth:`ensure_version` (``"exact"`` / ``"closest-match"`` / ``"unavailable"``).
+
+        Returns:
+            tuple[str | None, str]: ``(resolved_version, outcome)`` with ``outcome`` one of
+                ``"exact"``, ``"closest-match"``, ``"unavailable"``. ``resolved_version`` is
+                None only when ``outcome`` is ``"unavailable"``.
+        """
+        # An empty/unparseable version (e.g. the bare "v" from content with no oscal-version)
+        # is never acquirable — fail fast instead of hitting the bundle/NIST.
+        if self._semver_major(declared) < 0:
+            return None, "unavailable"
+
+        if declared in self.versions and self._has_processed_index(declared, model):
+            return declared, "exact"
+
+        major = self._semver_major(declared)
+        same_major = [v for v in self._processed_versions(model) if self._semver_major(v) == major]
+        if not same_major:
+            # No indexed version in this major — only acquisition could help (often unavailable).
+            return self.ensure_version(declared)
+
+        lowest = sorted(same_major, key=cmp_to_key(compare_semver))[0]
+        if compare_semver(declared, lowest) >= 0:
+            # Within or above our indexed range: an exact index may exist (a torn local registry
+            # row to heal, or a newer release). Try to acquire it before substituting.
+            resolved, outcome = self.ensure_version(declared)
+            if outcome == "exact" and self._has_processed_index(resolved, model):
+                return resolved, outcome
+            substitute = self._closest_processed_version(declared, model)
+            if substitute is not None:
+                return substitute, "closest-match"
+            return resolved, outcome
+
+        # Below our indexed range (an early version we will never index): substitute OFFLINE.
+        substitute = self._closest_processed_version(declared, model)
+        if substitute is not None:
+            return substitute, "closest-match"
+        return self.ensure_version(declared)
+
+    # -------------------------------------------------------------------------
     def __get_oscal_versions(self, fetch="latest", save_to_fs=False):
         """Pulls OSCAL version information and support files from GitHub and loads it into the database."""
         status = True

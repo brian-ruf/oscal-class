@@ -402,10 +402,15 @@ class Workspace:
                 child = by_id.get(edge.get("child")) if edge.get("child") else None
                 raw_status = edge.get("status", "")
                 status = ImportState(raw_status) if raw_status in ImportState._value2member_map_ else ImportState.NOT_LOADED
+                # Per-attempt detail is not persisted; reconstruct a single candidate whose
+                # item status mirrors the resolved outcome (READY) or is NOT_ATTEMPTED otherwise.
+                item_status = ImportState.READY if status == ImportState.READY else ImportState.NOT_ATTEMPTED
                 obj.import_list.append({
                     "href_original": edge.get("href_original", ""),
                     "href_valid":    (child.href or child.href_original) if child else "",
-                    "href_list":     [{"href": edge.get("href_original", ""), "original": True}],
+                    "href_list":     [{"href": edge.get("href_original", ""), "original": True,
+                                       "status": item_status, "outcome": None,
+                                       "message": "", "attempts": []}],
                     "status":        status,
                     "is_valid":      status == ImportState.READY,
                     "is_local":      None,
