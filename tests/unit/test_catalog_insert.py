@@ -112,10 +112,19 @@ class TestInsertControl:
     def test_rejects_missing_parent(self, cat):
         assert cat.insert_control("nope", {"id": "ac-1", "title": "x"}) is None
 
-    def test_rejects_mix_with_groups(self, cat):
+    def test_allows_mix_at_root(self, cat):
         cat.insert_group("[root]", {"id": "ac", "title": "grp"})
-        # root now has a group; a root control would mix (not allowed at any level)
-        assert cat.insert_control("[root]", {"id": "ac-1", "title": "x"}) is None
+        # root may hold controls and groups together (the catalog model permits it)
+        assert cat.insert_control("[root]", {"id": "ac-1", "title": "x"}) is not None
+        root = cat._dict["catalog"]
+        assert {g["id"] for g in root.get("groups", [])} == {"ac"}
+        assert {c["id"] for c in root.get("controls", [])} == {"ac-1"}
+
+    def test_rejects_mix_within_group(self, cat):
+        cat.insert_group("[root]", {"id": "ac", "title": "grp"})
+        cat.insert_group("ac", {"id": "ac-sub", "title": "sub"})   # 'ac' now holds a subgroup
+        # a control inside 'ac' would mix controls and groups within that group
+        assert cat.insert_control("ac", {"id": "ac-1", "title": "x"}) is None
 
     # --- validation gate ---
     def test_validation_rejects_bad_token_id(self, cat):
@@ -176,9 +185,16 @@ class TestInsertGroup:
     def test_rejects_missing_parent(self, cat):
         assert cat.insert_group("nope", {"id": "ac", "title": "x"}) is None
 
-    def test_rejects_mix_with_controls(self, cat):
+    def test_allows_mix_at_root(self, cat):
         cat.insert_control("[root]", {"id": "ac-1", "title": "x"})
-        assert cat.insert_group("[root]", {"id": "ac", "title": "grp"}) is None
+        # root may hold controls and groups together (the catalog model permits it)
+        assert cat.insert_group("[root]", {"id": "ac", "title": "grp"}) is not None
+
+    def test_rejects_mix_within_group(self, cat):
+        cat.insert_group("[root]", {"id": "g", "title": "G"})
+        cat.insert_control("g", {"id": "g-1", "title": "x"})        # 'g' now holds a control
+        # a subgroup inside 'g' would mix controls and groups within that group
+        assert cat.insert_group("g", {"id": "g-sub", "title": "sub"}) is None
 
     def test_validation_rejects_missing_title(self, cat):
         # group requires a title per metaschema
