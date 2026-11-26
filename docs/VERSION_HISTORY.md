@@ -96,7 +96,16 @@
 - new release script
 
 
-## Version 4.2.4
+## Version 4.3.0
 
 - Improved exposure of imported content's validation level via the import tree.
+
+## Version 4.3.1
+
+- Bug fix: Profiles explicitly importing child controls weren't implicitly importing their ancestor controls consistent with the NIST OSCAL Profile Resolution Specification.
+(Release deleted due to build sequencing issue.)
+
+## Version 4.3.2
+
+- Updated build and release scripts with improved sequencing enforcement
 
