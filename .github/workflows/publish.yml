@@ -35,10 +35,13 @@ jobs:
   build:
     name: Build distribution
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # read-only; needed for gh run list on the asset workflows
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0    # full history so the stale-tag guard can compare tag..branch
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -54,6 +57,48 @@ jobs:
             echo "::error::Release tag ($RELEASE_TAG) does not match oscal/_version.py ($PKG). Bump oscal/_version.py or fix the tag."
             exit 1
           fi
+
+      # Authoritative timing guard. After a merge, CI Pipeline (support-DB refresh) and Docs
+      # (API-doc refresh) push `chore:` commits to the release branch. A tag created before
+      # those land would build a wheel with a stale oscal_support.zip. This refuses such a
+      # tag regardless of how it was created (scripts/release.sh, a manual `git tag`, or
+      # release.sh --force), so a stale release can never be built. It first waits for those
+      # workflows to finish on the branch (closing the race where they are still committing),
+      # then fails if the branch has newer asset-refresh commits than the tagged commit.
+      - name: Guard against a stale tag (assets not yet refreshed on the branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: main
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"   # we are checked out at the tagged commit
+          # 1) Wait (bounded) for the asset-refresh workflows to finish on the branch.
+          deadline=$(( SECONDS + 1200 ))   # 20 minutes
+          while :; do
+            active=$(gh run list --branch "$RELEASE_BRANCH" --limit 40 \
+                       --json status,workflowName \
+                       --jq '[.[] | select(.workflowName=="CI Pipeline" or .workflowName=="Docs")
+                                  | select(.status=="queued" or .status=="in_progress"
+                                           or .status=="requested" or .status=="waiting")] | length')
+            [ "$active" -eq 0 ] && break
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Asset-refresh workflows (CI Pipeline/Docs) still running on $RELEASE_BRANCH after 20m; refusing to build a possibly-stale release."
+              exit 1
+            fi
+            echo "Waiting for CI Pipeline/Docs to finish on $RELEASE_BRANCH ($active active)..."
+            sleep 15
+          done
+          # 2) Fail if the branch has asset-refresh commits newer than the tagged commit.
+          git fetch --no-tags origin "$RELEASE_BRANCH"
+          PATHS="oscal/data/oscal_support.zip docs/api.html docs/api-llm.html"
+          newer=$(git rev-list "${BASE}..origin/${RELEASE_BRANCH}" -- $PATHS || true)
+          if [ -n "$newer" ]; then
+            echo "::error::Tag ${RELEASE_TAG} predates the post-merge asset refresh on ${RELEASE_BRANCH}. Newer asset commits:"
+            git --no-pager log --oneline "${BASE}..origin/${RELEASE_BRANCH}" -- $PATHS
+            echo "::error::Delete the tag, wait for ${RELEASE_BRANCH} to settle, then re-tag the refreshed HEAD (scripts/release.sh does this for you)."
+            exit 1
+          fi
+          echo "Stale-tag guard OK: no asset-refresh commits newer than ${RELEASE_TAG} on ${RELEASE_BRANCH}."
 
       - name: Install build dependencies
         run: |
