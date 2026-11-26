@@ -7,7 +7,7 @@
 <style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.5;max-width:64rem;margin:1.5rem auto;padding:0 1rem;color:#111}h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #ccc}h3{font-size:1rem;margin-top:1.3rem}h4{font-size:.95rem;margin:.9rem 0 .2rem}.sig{background:#eef;padding:.15rem .4rem;border-radius:3px}pre.doc{white-space:pre-wrap;margin:.2rem 0 .7rem;padding:.4rem .6rem;background:#f6f6f6;border-left:3px solid #bbb;overflow-x:auto}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}#index ul{margin:.2rem 0;padding-left:1.1rem}.muted{color:#666}</style></head><body>
 <header>
 <h1>oscal — API reference</h1>
-<p class="muted">generated 2026-11-12T05:53:46Z · 12 modules, 36 classes, 846 methods, 33 functions</p>
+<p class="muted">generated 2026-11-24T17:47:06Z · 12 modules, 36 classes, 857 methods, 33 functions</p>
 <p>Machine-oriented API reference for automated (agentic) consumption. Every symbol carries a stable <code>id</code> (its fully-qualified name) and <code>data-*</code> attributes; docstrings are preserved verbatim.</p>
 </header>
 <section id="index"><h2>Index</h2><ul>
@@ -36,6 +36,7 @@
 <li><a href="#oscal.oscal_support.OSCALSupport.remove_asset">remove_asset</a></li>
 <li><a href="#oscal.oscal_support.OSCALSupport.remove_version">remove_version</a></li>
 <li><a href="#oscal.oscal_support.OSCALSupport.resolve_index_version">resolve_index_version</a></li>
+<li><a href="#oscal.oscal_support.OSCALSupport.resolve_validation_version">resolve_validation_version</a></li>
 <li><a href="#oscal.oscal_support.OSCALSupport.set_version_index_version">set_version_index_version</a></li>
 <li><a href="#oscal.oscal_support.OSCALSupport.startup">startup</a></li>
 <li><a href="#oscal.oscal_support.OSCALSupport.supported">supported</a></li>
@@ -68,6 +69,7 @@
 <li><a href="#oscal.oscal_support.OSCAL_support.remove_asset">remove_asset</a></li>
 <li><a href="#oscal.oscal_support.OSCAL_support.remove_version">remove_version</a></li>
 <li><a href="#oscal.oscal_support.OSCAL_support.resolve_index_version">resolve_index_version</a></li>
+<li><a href="#oscal.oscal_support.OSCAL_support.resolve_validation_version">resolve_validation_version</a></li>
 <li><a href="#oscal.oscal_support.OSCAL_support.set_version_index_version">set_version_index_version</a></li>
 <li><a href="#oscal.oscal_support.OSCAL_support.startup">startup</a></li>
 <li><a href="#oscal.oscal_support.OSCAL_support.supported">supported</a></li>
@@ -151,6 +153,7 @@
 <li><a href="#oscal.oscal_content.OSCAL.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_content.OSCAL.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_content.OSCAL.import_tree">import_tree</a></li>
@@ -304,6 +307,7 @@
 <li><a href="#oscal.oscal_controls.Catalog.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_controls.Catalog.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_controls.Catalog.import_tree">import_tree</a></li>
@@ -385,6 +389,7 @@
 <li><a href="#oscal.oscal_controls.Mapping.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_controls.Mapping.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_controls.Mapping.import_tree">import_tree</a></li>
@@ -477,6 +482,7 @@
 <li><a href="#oscal.oscal_controls.Profile.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_controls.Profile.get_role_by_id">get_role_by_id</a></li>
 <li><a href="#oscal.oscal_controls.Profile.get_set_parameter">get_set_parameter</a></li>
+<li><a href="#oscal.oscal_controls.Profile.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_controls.Profile.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_controls.Profile.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_controls.Profile.import_tree">import_tree</a></li>
@@ -583,6 +589,7 @@
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_implementation.ComponentDefinition.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.implemented_requirement">implemented_requirement</a></li>
 <li><a href="#oscal.oscal_implementation.ComponentDefinition.import_blocking_errors">import_blocking_errors</a></li>
@@ -667,6 +674,7 @@
 <li><a href="#oscal.oscal_implementation.SSP.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_implementation.SSP.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_implementation.SSP.import_tree">import_tree</a></li>
@@ -757,6 +765,7 @@
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentPlan.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentPlan.import_tree">import_tree</a></li>
@@ -832,6 +841,7 @@
 <li><a href="#oscal.oscal_assessment.AssessmentResults.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_assessment.AssessmentResults.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_assessment.AssessmentResults.import_tree">import_tree</a></li>
@@ -907,6 +917,7 @@
 <li><a href="#oscal.oscal_assessment.POAM.get_resource_by_uuid">get_resource_by_uuid</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.get_responsible_party_by_id">get_responsible_party_by_id</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.get_role_by_id">get_role_by_id</a></li>
+<li><a href="#oscal.oscal_assessment.POAM.get_validation_errors">get_validation_errors</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.ignore_import">ignore_import</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.import_blocking_errors">import_blocking_errors</a></li>
 <li><a href="#oscal.oscal_assessment.POAM.import_tree">import_tree</a></li>
@@ -1412,6 +1423,34 @@ Module constants:
         built at this library&#x27;s index version) and the resolution is retried once. Returns
         the resolved value.</pre>
 </section>
+<section class="member" id="oscal.oscal_support.OSCALSupport.resolve_validation_version" data-kind="method" data-fqname="oscal.oscal_support.OSCALSupport.resolve_validation_version">
+<h4><code class="sig">def resolve_validation_version(self, declared: &#x27;str&#x27;, model: &#x27;str&#x27;) -&gt; &#x27;tuple[Optional[str], str]&#x27;</code></h4>
+<pre class="doc">Resolve the version to validate / convert *model* content against.
+
+        Validation and XML↔JSON conversion need a **processed metaschema index**, which the
+        version registry does not guarantee: early OSCAL versions (e.g. several 1.0.x releases)
+        are registered but ship no index. Resolution is model-aware, same-major only (OSCAL
+        majors can differ structurally, so a different major is never substituted), and stays
+        offline for old versions so they never trigger a bundle-merge or NIST fetch just to be
+        substituted anyway:
+
+          1. Declared version is in the registry AND has a processed index for *model* →
+             ``(&quot;exact&quot;)``.
+          2. Declared version is **below** the lowest indexed version in its major (an early/edge
+             version we will never index) → substitute the closest indexed version, with **no
+             network and no DB write** → ``(&quot;closest-match&quot;)``.
+          3. Declared version is **at or above** our indexed range for its major (an exact index
+             may exist — a torn registry row to heal, or a newer release) → acquire it via
+             :meth:`ensure_version` (bundled DB, then NIST); on success → ``(&quot;exact&quot;)``, else
+             substitute the closest indexed version → ``(&quot;closest-match&quot;)``.
+          4. No indexed version exists for *model* in the declared major → defer to
+             :meth:`ensure_version` (``&quot;exact&quot;`` / ``&quot;closest-match&quot;`` / ``&quot;unavailable&quot;``).
+
+        Returns:
+            tuple[str | None, str]: ``(resolved_version, outcome)`` with ``outcome`` one of
+                ``&quot;exact&quot;``, ``&quot;closest-match&quot;``, ``&quot;unavailable&quot;``. ``resolved_version`` is
+                None only when ``outcome`` is ``&quot;unavailable&quot;``.</pre>
+</section>
 <section class="member" id="oscal.oscal_support.OSCALSupport.set_version_index_version" data-kind="method" data-fqname="oscal.oscal_support.OSCALSupport.set_version_index_version">
 <h4><code class="sig">def set_version_index_version(self, version: &#x27;str&#x27;, index_version: &#x27;str&#x27; = &#x27;2.8.0&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Record the metaschema-index-schema version used to build *version*&#x27;s indexes.
@@ -1842,6 +1881,34 @@ Module constants:
         built at this library&#x27;s index version) and the resolution is retried once. Returns
         the resolved value.</pre>
 </section>
+<section class="member" id="oscal.oscal_support.OSCAL_support.resolve_validation_version" data-kind="method" data-fqname="oscal.oscal_support.OSCAL_support.resolve_validation_version">
+<h4><code class="sig">def resolve_validation_version(self, declared: &#x27;str&#x27;, model: &#x27;str&#x27;) -&gt; &#x27;tuple[Optional[str], str]&#x27;</code></h4>
+<pre class="doc">Resolve the version to validate / convert *model* content against.
+
+        Validation and XML↔JSON conversion need a **processed metaschema index**, which the
+        version registry does not guarantee: early OSCAL versions (e.g. several 1.0.x releases)
+        are registered but ship no index. Resolution is model-aware, same-major only (OSCAL
+        majors can differ structurally, so a different major is never substituted), and stays
+        offline for old versions so they never trigger a bundle-merge or NIST fetch just to be
+        substituted anyway:
+
+          1. Declared version is in the registry AND has a processed index for *model* →
+             ``(&quot;exact&quot;)``.
+          2. Declared version is **below** the lowest indexed version in its major (an early/edge
+             version we will never index) → substitute the closest indexed version, with **no
+             network and no DB write** → ``(&quot;closest-match&quot;)``.
+          3. Declared version is **at or above** our indexed range for its major (an exact index
+             may exist — a torn registry row to heal, or a newer release) → acquire it via
+             :meth:`ensure_version` (bundled DB, then NIST); on success → ``(&quot;exact&quot;)``, else
+             substitute the closest indexed version → ``(&quot;closest-match&quot;)``.
+          4. No indexed version exists for *model* in the declared major → defer to
+             :meth:`ensure_version` (``&quot;exact&quot;`` / ``&quot;closest-match&quot;`` / ``&quot;unavailable&quot;``).
+
+        Returns:
+            tuple[str | None, str]: ``(resolved_version, outcome)`` with ``outcome`` one of
+                ``&quot;exact&quot;``, ``&quot;closest-match&quot;``, ``&quot;unavailable&quot;``. ``resolved_version`` is
+                None only when ``outcome`` is ``&quot;unavailable&quot;``.</pre>
+</section>
 <section class="member" id="oscal.oscal_support.OSCAL_support.set_version_index_version" data-kind="method" data-fqname="oscal.oscal_support.OSCAL_support.set_version_index_version">
 <h4><code class="sig">def set_version_index_version(self, version: &#x27;str&#x27;, index_version: &#x27;str&#x27; = &#x27;2.8.0&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Record the metaschema-index-schema version used to build *version*&#x27;s indexes.
@@ -2219,14 +2286,21 @@ Contents:
     Grouped by failure category — fragment/back-matter, full-URI/file,
     content, and duplicate/retry. Members:
         FRAGMENT_INVALID_UUID (str): Fragment reference is not a valid UUID.
-        RESOURCE_NOT_FOUND (str): No back-matter resource matches the UUID.
+        BAD_REFERENCE (str): An import ``href=&quot;#uuid&quot;`` fragment whose target back-matter
+            resource is not present anywhere in the in-scope content (this document or any
+            document in its resolved import tree). Distinct from the file/URL *not-found*
+            codes: the reference itself is dangling, not a missing external location.
+        RESOURCE_NOT_FOUND (str): No back-matter resource matches the UUID (used by the
+            link/resource content-acquisition APIs, which look only in the owning document).
         RESOURCE_NO_VIABLE_CONTENT (str): Resource has neither rlinks nor base64 content.
         LOCAL_NOT_FOUND (str): Local file was not found.
-        REMOTE_UNREACHABLE (str): Remote host could not be reached.
-        REMOTE_AUTH_REQUIRED (str): Remote resource requires authentication.
+        REMOTE_NOT_FOUND (str): Remote resource returned HTTP 404/410 (reachable host, no
+            such resource) — distinct from REMOTE_UNREACHABLE (host/transport failure).
+        REMOTE_UNREACHABLE (str): Remote host could not be reached (DNS/timeout/connection/5xx).
+        REMOTE_AUTH_REQUIRED (str): Remote resource requires authentication (HTTP 401/403).
         REMOTE_UNSUPPORTED (str): URI scheme is not supported.
         CONTENT_EMPTY (str): Source returned no content.
-        CONTENT_INVALID (str): Content is not valid OSCAL.
+        CONTENT_INVALID (str): Content was reachable but is not minimally-valid OSCAL.
         ALREADY_IMPORTED (str): Retry href resolves to a file already loaded elsewhere.</pre>
 </section>
 <section class="class" id="oscal.oscal_source.ImportLoadError" data-kind="class" data-fqname="oscal.oscal_source.ImportLoadError">
@@ -2235,16 +2309,19 @@ Contents:
 
     Attributes:
         code (ImportFailureCode): The typed reason the import failed.
-        uri (str): The URI that failed to load.</pre>
+        uri (str): The URI that failed to load.
+        http_status (int | None): The HTTP status code when the failure came from an HTTP
+            response (e.g. 404, 401), else None.</pre>
 <section class="member" id="oscal.oscal_source.ImportLoadError.__init__" data-kind="method" data-fqname="oscal.oscal_source.ImportLoadError.__init__">
-<h4><code class="sig">def __init__(self, code: &#x27;ImportFailureCode&#x27;, uri: &#x27;str&#x27;, message: &#x27;str&#x27; = &#x27;&#x27;)</code></h4>
+<h4><code class="sig">def __init__(self, code: &#x27;ImportFailureCode&#x27;, uri: &#x27;str&#x27;, message: &#x27;str&#x27; = &#x27;&#x27;, http_status: &quot;&#x27;int | None&#x27;&quot; = None)</code></h4>
 <pre class="doc">Initialize the error.
 
         Args:
             code (ImportFailureCode, required): The typed import failure reason.
             uri (str, required): The URI that failed to load.
             message (str, optional): Human-readable detail; a default is derived from
-                ``code`` and ``uri`` when omitted.</pre>
+                ``code`` and ``uri`` when omitted.
+            http_status (int | None, optional): HTTP status code behind the failure, if any.</pre>
 </section>
 </section>
 <section class="class" id="oscal.oscal_source.ImportState" data-kind="class" data-fqname="oscal.oscal_source.ImportState">
@@ -2259,7 +2336,10 @@ Contents:
         DUPLICATE (str): &quot;duplicate&quot; — the resolved href is already loaded by an earlier import.
         IGNORED (str): &quot;ignored&quot; — the caller explicitly chose to ignore this import.
         CYCLIC (str): &quot;cyclic&quot; — this import resolves to one of its own ancestors; the
-            ancestor stays valid and recursion stops here to prevent an infinite loop.</pre>
+            ancestor stays valid and recursion stops here to prevent an infinite loop.
+        NOT_ATTEMPTED (str): &quot;not-attempted&quot; — a candidate href that was never tried (an
+            earlier candidate already succeeded, resolution stopped for a cycle, or it is a
+            back-matter fragment placeholder). Used at the per-``href_list``-item level.</pre>
 </section>
 <section class="class" id="oscal.oscal_source.OscalRef" data-kind="class" data-fqname="oscal.oscal_source.OscalRef">
 <h3>class OscalRef</h3>
@@ -2792,6 +2872,40 @@ Module constants:
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_content.OSCAL.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_content.OSCAL.ignore_import" data-kind="method" data-fqname="oscal.oscal_content.OSCAL.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -2843,9 +2957,26 @@ Module constants:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -4502,6 +4633,40 @@ backward compatibility.</pre>
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Catalog.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Catalog.ignore_import" data-kind="method" data-fqname="oscal.oscal_controls.Catalog.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -4553,9 +4718,26 @@ backward compatibility.</pre>
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -5822,6 +6004,40 @@ backward compatibility.</pre>
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Mapping.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Mapping.ignore_import" data-kind="method" data-fqname="oscal.oscal_controls.Mapping.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -5873,9 +6089,26 @@ backward compatibility.</pre>
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -7295,6 +7528,40 @@ backward compatibility.</pre>
         Returns:
             Optional[dict]: A deep copy of the set-parameter, or None if none matches.</pre>
 </section>
+<section class="member" id="oscal.oscal_controls.Profile.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_controls.Profile.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_controls.Profile.ignore_import" data-kind="method" data-fqname="oscal.oscal_controls.Profile.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -7346,9 +7613,26 @@ backward compatibility.</pre>
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -9144,6 +9428,40 @@ Module constants:
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.ComponentDefinition.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.ComponentDefinition.ignore_import" data-kind="method" data-fqname="oscal.oscal_implementation.ComponentDefinition.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -9247,9 +9565,26 @@ Module constants:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -10577,6 +10912,40 @@ Module constants:
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_implementation.SSP.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_implementation.SSP.ignore_import" data-kind="method" data-fqname="oscal.oscal_implementation.SSP.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -10628,9 +10997,26 @@ Module constants:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -11935,6 +12321,40 @@ Module constants:
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentPlan.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentPlan.ignore_import" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentPlan.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -11986,9 +12406,26 @@ Module constants:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -13103,6 +13540,40 @@ Module constants:
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.AssessmentResults.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.AssessmentResults.ignore_import" data-kind="method" data-fqname="oscal.oscal_assessment.AssessmentResults.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -13154,9 +13625,26 @@ Module constants:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).
@@ -14271,6 +14759,40 @@ Module constants:
         the role is defined in an imported document. See :meth:`_lookup_in_scope` for
         ``with_source`` and ``local_only``.</pre>
 </section>
+<section class="member" id="oscal.oscal_assessment.POAM.get_validation_errors" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.get_validation_errors">
+<h4><code class="sig">def get_validation_errors(self, include_imports: &#x27;bool&#x27; = False)</code></h4>
+<pre class="doc">Return validation errors for this document, optionally across the import tree.
+
+        Validation never *blocks* an import — resolution gates on minimal validity — so a
+        structurally-sound imported document can still carry L2/L3 findings. This is how a
+        caller pulls those findings, locally or for the whole chain.
+
+        Args:
+            include_imports (bool, optional): When False (default), return a flat list of
+                THIS document&#x27;s own (local) validation errors — a safe copy of
+                :attr:`validation_errors`. When True, return a hierarchical structure that
+                mirrors :attr:`import_tree`: a root node for this document plus a child node
+                per import (recursively), each carrying only that one document&#x27;s local errors.
+
+        The tree form is produced on demand and kept **separate** from :attr:`import_tree`
+        (which stays lightweight, carrying only each node&#x27;s ``validation.error_count``) because
+        the full error lists can be large. The two structures cross-reference by
+        ``object_uuid``/``href_valid``. Circular imports stop the recursion with a ``cyclic``
+        flag (same path guard as :attr:`import_tree`); unloaded/failed/duplicate imports appear
+        as stub nodes (``object_uuid`` None, empty ``errors``) whose ``status`` names the reason.
+
+        Returns:
+            list[dict]: the local errors when ``include_imports`` is False.
+            dict: otherwise a tree node::
+
+                {
+                  &quot;object_uuid&quot;, &quot;href_original&quot;, &quot;href_valid&quot;, &quot;model&quot;, &quot;title&quot;, &quot;status&quot;,
+                  &quot;error_count&quot;,          # this node&#x27;s local error count
+                  &quot;subtree_error_count&quot;,  # local + every descendant
+                  &quot;errors&quot;: [ ...local validation errors (safe copy)... ],
+                  &quot;imports&quot;: [ &lt;same node shape&gt;, ... ]   # mirrors import order
+                }</pre>
+</section>
 <section class="member" id="oscal.oscal_assessment.POAM.ignore_import" data-kind="method" data-fqname="oscal.oscal_assessment.POAM.ignore_import">
 <h4><code class="sig">def ignore_import(self, href: &#x27;str&#x27;) -&gt; &#x27;bool&#x27;</code></h4>
 <pre class="doc">Mark an import as intentionally ignored.
@@ -14322,9 +14844,26 @@ Module constants:
 
         * ``href_original`` (str): the import href as written in the source document.
         * ``href_valid`` (str): the resolved href actually loaded, if any.
-        * ``href_list`` (list[dict]): every href attempted, with per-attempt status.
-        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED.
+        * ``href_list`` (list[dict]): one entry per candidate source for this import (the
+          direct href, or each back-matter rlink; a retry appends another). Each item carries:
+          ``href`` / ``original`` (bool) / optional ``media-type``; ``status`` (ImportState:
+          ``READY`` | ``INVALID`` | ``NOT_ATTEMPTED`` | ``CYCLIC``); ``outcome``
+          (ImportFailureCode when not READY, else None); ``message``; and ``attempts`` — the
+          concrete URIs actually tried (primary + format variants), each
+          ``{uri, status, code (ImportFailureCode|None), http_status (int|None), message,
+          validation (ladder dict|None)}``. ``validation`` is populated when a URI was
+          reachable but not minimally-valid (``code == CONTENT_INVALID``), so the caller can
+          see exactly why a reachable source was rejected when prompting for an alternative.
+        * ``status`` (ImportState): READY, INVALID, DUPLICATE, or IGNORED. READY means the
+          document loaded and is at least MINIMALLY valid (structurally sound); L2/L3 findings
+          never make a node INVALID — see ``validation`` for content health.
         * ``is_valid`` / ``is_local`` / ``is_remote`` / ``is_cached`` (bool): provenance.
+        * ``validation`` (dict): granular content-health for the node&#x27;s document —
+          ``is_minimally_valid`` / ``is_valid`` (L2) / ``is_fully_compliant`` (L3 tri-state) /
+          ``status`` (per-phase dict) / ``error_count`` (local). The full error lists are NOT
+          here (they can be large); fetch them with
+          :meth:`get_validation_errors` (``include_imports=True``), which links back by
+          ``object_uuid``.
         * ``object_uuid`` (str | None): the imported document&#x27;s root UUID, or None when
           it was not acquired. Pass to :meth:`get_oscal_object` for the live object.
         * ``model`` (str): the imported document&#x27;s model type (e.g. &quot;catalog&quot;).

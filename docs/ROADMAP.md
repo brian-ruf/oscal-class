@@ -1,11 +1,29 @@
 ---
 ---
 
-# ROADMAP (_Updated November 12, 2026_)
+# ROADMAP (_Updated November 24, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## CURRENT: Version 4.2.4
+## CURRENT: Version 4.3.1
+
+- Profile resolution — control selection:
+    - Implicit ancestor inclusion: explicitly selecting a child control now implicitly selects its ancestor controls (OSCAL profile-resolution requirement), so an enhancement is never placed without its parent.
+    - Selection is independent of shape: `flat` and `as-is` resolve to the identical set of controls; only the representation differs (flat, or the source hierarchy preserved as closely as possible).
+    - Controls and groups may coexist at the catalog **root** (the catalog model permits it); the group `choice` (controls XOR groups) is enforced only **within a group**, where a merge that mixes them wraps the loose controls in a synthetic sub-group.
+- Validation:
+    - Child-path datatype/regex `matches` constraints are now enforced at L2 (e.g. a component `release-date` must be a `date`, not a date-time).
+- Import tree & failure reporting:
+    - Each import-tree node carries a granular `validation` summary; new `get_validation_errors(include_imports=…)` returns local errors or a tree mirroring the import hierarchy.
+    - Per-`href` failure detail: every candidate records each attempt with a typed `ImportFailureCode`, `http_status`, and (for reachable-but-invalid content) the validation ladder. New `REMOTE_NOT_FOUND` (HTTP 404/410, split from `REMOTE_UNREACHABLE`), `BAD_REFERENCE` (a `#uuid` import whose target is absent from the in-scope content), and `NOT_ATTEMPTED` import state.
+- Version resolution:
+    - Early/unindexed OSCAL versions substitute the closest version that has a processed metaschema index, offline (no spurious support-database update/fetch); a missing or unparseable `oscal-version` is reported unsupported without any acquisition.
+
+## Builds on Version 4.3.0
+
+- Improved exposure of imported content's validation level via the import tree.
+
+## Builds on Version 4.2.4
 
 - Profile import-selection authoring API — safer, granular control over an import's `include-controls` / `exclude-controls` and the `with-child-controls` flag:
     - `set_import_with_children()` toggles `with-child-controls` on the existing include/exclude selection independently, without rebuilding it.

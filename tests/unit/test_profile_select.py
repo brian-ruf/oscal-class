@@ -122,6 +122,45 @@ class TestSelectedTreeIds:
         sel, warn = _selected_tree_ids({"include-controls": [{"with-ids": ["ac-1", "ac-2"]}]}, _tree())
         assert sel == {"ac-1", "ac-2"} and warn == []
 
+    # --- implicit ancestor inclusion (OSCAL: selecting a child selects its ancestors) ---
+
+    def test_include_child_includes_ancestors(self):
+        # Selecting the enhancement ac-2.1 implicitly selects its parent ac-2.
+        sel, warn = _selected_tree_ids({"include-controls": [{"with-ids": ["ac-2.1"]}]}, _tree())
+        assert sel == {"ac-2", "ac-2.1"} and warn == []
+
+    def test_include_deep_child_includes_full_chain(self):
+        sel, _ = _selected_tree_ids({"include-controls": [{"with-ids": ["ac-2.1.1"]}]}, _tree())
+        assert sel == {"ac-2", "ac-2.1", "ac-2.1.1"}
+
+    def test_include_matching_child_includes_ancestors(self):
+        sel, _ = _selected_tree_ids({"include-controls": [{"matching": [{"pattern": "ac-2.1"}]}]}, _tree())
+        assert sel == {"ac-2", "ac-2.1"}
+
+    def test_top_level_control_adds_no_ancestors(self):
+        # ac-2 sits directly under a group, so it has no ancestor CONTROL to add.
+        sel, _ = _selected_tree_ids({"include-controls": [{"with-ids": ["ac-2"]}]}, _tree())
+        assert sel == {"ac-2"}
+
+    # --- excluding an implicitly-included ancestor (overlay case) ---
+
+    def test_exclude_implicit_ancestor_keeps_child(self):
+        # Include the child ac-2.1 (pulls in ac-2), then exclude ac-2: the child survives,
+        # the parent is dropped, and there is NO "not included" warning (ac-2 WAS included).
+        sel, warn = _selected_tree_ids(
+            {"include-controls": [{"with-ids": ["ac-2.1"]}],
+             "exclude-controls": [{"with-ids": ["ac-2"]}]}, _tree())
+        assert sel == {"ac-2.1"}
+        assert not any("not included" in w for w in warn)
+
+    def test_exclude_middle_ancestor_keeps_survivors(self):
+        # Include the deep ac-2.1.1, exclude the MIDDLE ancestor ac-2.1: the grandparent
+        # ac-2 and the deep child survive; the excluded middle is gone.
+        sel, _ = _selected_tree_ids(
+            {"include-controls": [{"with-ids": ["ac-2.1.1"]}],
+             "exclude-controls": [{"with-ids": ["ac-2.1"]}]}, _tree())
+        assert sel == {"ac-2", "ac-2.1.1"}
+
     def test_exclude_not_included_warns(self):
         sel, warn = _selected_tree_ids(
             {"include-controls": [{"with-ids": ["ac-1"]}],
