@@ -7,7 +7,7 @@
 <style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.5;max-width:64rem;margin:1.5rem auto;padding:0 1rem;color:#111}h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #ccc}h3{font-size:1rem;margin-top:1.3rem}h4{font-size:.95rem;margin:.9rem 0 .2rem}.sig{background:#eef;padding:.15rem .4rem;border-radius:3px}pre.doc{white-space:pre-wrap;margin:.2rem 0 .7rem;padding:.4rem .6rem;background:#f6f6f6;border-left:3px solid #bbb;overflow-x:auto}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}#index ul{margin:.2rem 0;padding-left:1.1rem}.muted{color:#666}</style></head><body>
 <header>
 <h1>oscal — API reference</h1>
-<p class="muted">generated 2026-11-24T17:47:06Z · 12 modules, 36 classes, 857 methods, 33 functions</p>
+<p class="muted">generated 2026-11-26T04:41:57Z · 12 modules, 36 classes, 857 methods, 33 functions</p>
 <p>Machine-oriented API reference for automated (agentic) consumption. Every symbol carries a stable <code>id</code> (its fully-qualified name) and <code>data-*</code> attributes; docstrings are preserved verbatim.</p>
 </header>
 <section id="index"><h2>Index</h2><ul>
@@ -4331,8 +4331,8 @@ backward compatibility.</pre>
             parent_id (str, required): ID of the parent to add the control to —
                 ``&#x27;[root]&#x27;`` (or an empty string) for the catalog top level, a group
                 id, or a control id. Nesting a control under a control models a
-                control enhancement (e.g. ``ac-2.1`` under ``ac-2``). The add fails if
-                it would mix controls and groups at the same level (not allowed in OSCAL).
+                control enhancement (e.g. ``ac-2.1`` under ``ac-2``). The add fails if it
+                would mix controls and groups within a GROUP (the catalog root may mix).
             id (str, required): ID of the new control.
             title (str, optional): Title of the new control. Defaults to the label,
                 or the id, when empty.
@@ -4366,7 +4366,7 @@ backward compatibility.</pre>
         Args:
             parent_id (str, required): ID of the parent group, or ``&#x27;[root]&#x27;`` (or an
                 empty string) for the catalog top level. The add fails if it would mix
-                controls and groups at the same level (not allowed in OSCAL).
+                controls and groups within a GROUP (the catalog root may mix).
             id (str, required): ID of the new group.
             title (str, optional): Title of the new group.
             params (list, optional): Parameters to add to the group.
@@ -4797,7 +4797,7 @@ backward compatibility.</pre>
             parent_id (str, required): ID of the parent to add the control to —
                 ``&#x27;[root]&#x27;`` (or an empty string) for the catalog top level, a group id,
                 or a control id (control-under-control models an enhancement). The add
-                fails if it would mix controls and groups at the same level.
+                fails if it would mix controls and groups within a GROUP (root may mix).
             control (dict, required): The control subtree to insert. Must be a dict with
                 a non-empty ``id``.
             validate (bool, optional): When True (default), the control is validated
@@ -4823,7 +4823,7 @@ backward compatibility.</pre>
         Args:
             parent_id (str, required): ID of the parent group, or ``&#x27;[root]&#x27;`` (or an
                 empty string) for the catalog top level. The add fails if it would mix
-                controls and groups at the same level.
+                controls and groups within a GROUP (the catalog root may mix).
             group (dict, required): The group node to insert. Must be a dict with a
                 non-empty ``id``.
             shallow (bool, optional): When True (default), drop the group&#x27;s child
@@ -6954,9 +6954,9 @@ backward compatibility.</pre>
       content is copied. Directives applied here: ``import``/``include``/``exclude``
       selection, ``merge`` (``as-is`` or ``flat``; ``custom`` is deferred and falls back
       to ``as-is``), and ``combine`` duplicate handling (``keep`` renames the node id,
-      ``use-first`` drops later duplicates). When an ``as-is`` merge would place controls
-      and groups together at the root, root controls are wrapped in a synthetic
-      &quot;ROOT CONTROLS&quot; group.
+      ``use-first`` drops later duplicates). Controls and groups may coexist at the catalog
+      root; only a GROUP that a merge leaves holding both controls and sub-groups has its
+      loose controls wrapped in a synthetic sub-group (the OSCAL group ``choice``).
 
     * **resolve() (heavy, cacheable).** :meth:`resolve` walks the tree and materializes a
       brand-new ``Catalog`` in :attr:`catalog`, fetching real content per node, applying
