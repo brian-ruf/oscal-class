@@ -91,10 +91,14 @@ class TestCreateControlGroup:
         result = empty_cat.create_control_group("nonexistent-parent", "xx")
         assert result is None
 
-    def test_group_blocked_when_root_has_controls(self, empty_cat):
-        """A top-level control means the root can't also take a group -> None."""
-        empty_cat.create_control("[root]", "top-1")
-        assert empty_cat.create_control_group("[root]", "grp") is None
+    def test_group_and_control_coexist_at_root(self, empty_cat):
+        """The catalog root may hold controls and groups together (the catalog model
+        permits it); only a GROUP must not mix the two."""
+        assert empty_cat.create_control("[root]", "top-1") is not None
+        assert empty_cat.create_control_group("[root]", "grp") is not None
+        root = empty_cat._dict["catalog"]
+        assert {c["id"] for c in root.get("controls", [])} == {"top-1"}
+        assert {g["id"] for g in root.get("groups", [])} == {"grp"}
 
     def test_group_blocked_when_group_has_controls(self, empty_cat):
         """A group holding controls cannot also take a subgroup."""
@@ -217,11 +221,15 @@ class TestCreateControl:
         """An empty parent id also means the catalog top level."""
         assert empty_cat.create_control("", "top-2") is not None
 
-    # --- no mixing of controls and groups at one level ---
+    # --- no mixing of controls and groups WITHIN A GROUP (root may mix) ---
 
-    def test_control_blocked_when_root_has_groups(self, cat_with_group):
-        """cat_with_group has a root group; a top-level control would mix -> None."""
-        assert cat_with_group.create_control("[root]", "loose") is None
+    def test_control_allowed_when_root_has_groups(self, cat_with_group):
+        """cat_with_group has a root group; a top-level control may coexist with it at the
+        catalog root (OSCAL permits root-level controls and groups together)."""
+        assert cat_with_group.create_control("[root]", "loose") is not None
+        root = cat_with_group._dict["catalog"]
+        assert "loose" in {c["id"] for c in root.get("controls", [])}
+        assert len(root.get("groups", [])) >= 1
 
     def test_control_ok_in_empty_group(self, cat_with_group):
         """A control in a group that has no subgroups is fine."""

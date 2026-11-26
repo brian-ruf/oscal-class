@@ -216,6 +216,45 @@ def _tree_descendant_control_ids(node: dict) -> list:
     return out
 
 
+def _control_parent_map(nodes: list) -> dict:
+    """Map each control id to its nearest ancestor CONTROL id (or ``None``).
+
+    Groups are transparent: a control nested only within groups has no control parent
+    (``None``); a control nested within another control (e.g. an enhancement) maps to that
+    enclosing control. Backs the OSCAL rule that selecting a child control implicitly
+    selects its ancestor controls.
+    """
+    parent: dict[str, "str | None"] = {}
+
+    def walk(ns: list, current_control: "str | None") -> None:
+        for n in ns:
+            if n.get("group"):
+                walk(n.get("children", []), current_control)  # groups don't change control-parent
+            else:
+                cid = n.get("id", "")
+                parent[cid] = current_control
+                walk(n.get("children", []), cid)
+
+    walk(nodes, None)
+    return parent
+
+
+def _add_ancestor_controls(ids: set, parent_map: dict) -> set:
+    """Return *ids* plus every ancestor control of each id (walking ``parent_map`` upward).
+
+    OSCAL profile resolution requires that explicitly selecting a child control implicitly
+    selects its ancestor controls, so the resolved catalog preserves the control's position
+    in the hierarchy (an enhancement cannot appear without its parent control).
+    """
+    out = set(ids)
+    for cid in ids:
+        p = parent_map.get(cid)
+        while p and p not in out:
+            out.add(p)
+            p = parent_map.get(p)
+    return out
+
+
 def _match_select_entries_tree(entries: list, ctrl_map: dict) -> set:
     """Resolve ``select-control-by-id`` entries to a set of control ids over a tree.
 
@@ -269,6 +308,9 @@ def _selected_tree_ids(imp: dict, source_tree: list) -> tuple:
         included = set(ctrl_map.keys())
     elif "include-controls" in imp:
         included = _match_select_entries_tree(imp.get("include-controls", []), ctrl_map)
+        # OSCAL: an explicitly-selected child control implicitly selects its ancestor
+        # controls, so a nested enhancement is never placed without its parent control.
+        included = _add_ancestor_controls(included, _control_parent_map(source_tree))
     else:
         warnings.append("import selects neither include-all nor include-controls; "
                         "nothing selected.")
@@ -1192,8 +1234,8 @@ class Catalog(OSCAL):
             parent_id (str, required): ID of the parent to add the control to —
                 ``'[root]'`` (or an empty string) for the catalog top level, a group
                 id, or a control id. Nesting a control under a control models a
-                control enhancement (e.g. ``ac-2.1`` under ``ac-2``). The add fails if
-                it would mix controls and groups at the same level (not allowed in OSCAL).
+                control enhancement (e.g. ``ac-2.1`` under ``ac-2``). The add fails if it
+                would mix controls and groups within a GROUP (the catalog root may mix).
             id (str, required): ID of the new control.
             title (str, optional): Title of the new control. Defaults to the label,
                 or the id, when empty.
@@ -1234,11 +1276,12 @@ class Catalog(OSCAL):
                 logger.warning(f"CREATE CONTROL: Unable to find parent group or control with id '{parent_id}'")
                 return None
 
-            # OSCAL does not allow controls and groups mixed at the same level.
-            if _would_mix(parent, "control"):
+            # Controls and groups may coexist at the catalog root; within a GROUP, OSCAL
+            # requires one or the other, so the mix guard applies only to non-root parents.
+            if parent_id not in ("", "[root]") and _would_mix(parent, "control"):
                 logger.warning(
-                    f"CREATE CONTROL: '{parent_id or '[root]'}' already contains groups; "
-                    "controls and groups cannot be mixed at the same level."
+                    f"CREATE CONTROL: group '{parent_id}' already contains groups; "
+                    "controls and groups cannot be mixed within a group."
                 )
                 return None
 
@@ -1316,7 +1359,7 @@ class Catalog(OSCAL):
         Args:
             parent_id (str, required): ID of the parent group, or ``'[root]'`` (or an
                 empty string) for the catalog top level. The add fails if it would mix
-                controls and groups at the same level (not allowed in OSCAL).
+                controls and groups within a GROUP (the catalog root may mix).
             id (str, required): ID of the new group.
             title (str, optional): Title of the new group.
             params (list, optional): Parameters to add to the group.
@@ -1376,11 +1419,12 @@ class Catalog(OSCAL):
                     logger.warning(f"CREATE GROUP: Unable to find parent group with id '{parent_id}'")
                     return None
 
-            # OSCAL does not allow controls and groups mixed at the same level.
-            if _would_mix(target, "group"):
+            # Controls and groups may coexist at the catalog root; within a GROUP, OSCAL
+            # requires one or the other, so the mix guard applies only to non-root parents.
+            if parent_id != "[root]" and _would_mix(target, "group"):
                 logger.warning(
-                    f"CREATE GROUP: '{parent_id}' already contains controls; "
-                    "controls and groups cannot be mixed at the same level."
+                    f"CREATE GROUP: group '{parent_id}' already contains controls; "
+                    "controls and groups cannot be mixed within a group."
                 )
                 return None
 
@@ -1474,7 +1518,7 @@ class Catalog(OSCAL):
             parent_id (str, required): ID of the parent to add the control to —
                 ``'[root]'`` (or an empty string) for the catalog top level, a group id,
                 or a control id (control-under-control models an enhancement). The add
-                fails if it would mix controls and groups at the same level.
+                fails if it would mix controls and groups within a GROUP (root may mix).
             control (dict, required): The control subtree to insert. Must be a dict with
                 a non-empty ``id``.
             validate (bool, optional): When True (default), the control is validated
@@ -1501,10 +1545,12 @@ class Catalog(OSCAL):
             logger.warning(f"insert_control: parent group or control '{parent_id}' not found.")
             return None
 
-        if _would_mix(parent, "control"):
+        # Controls and groups may coexist at the catalog root; the group choice applies
+        # only within a GROUP, so the mix guard is skipped for the root parent.
+        if parent_id not in ("", "[root]") and _would_mix(parent, "control"):
             logger.warning(
-                f"insert_control: '{parent_id or '[root]'}' already contains groups; "
-                "controls and groups cannot be mixed at the same level."
+                f"insert_control: group '{parent_id}' already contains groups; "
+                "controls and groups cannot be mixed within a group."
             )
             return None
 
@@ -1542,7 +1588,7 @@ class Catalog(OSCAL):
         Args:
             parent_id (str, required): ID of the parent group, or ``'[root]'`` (or an
                 empty string) for the catalog top level. The add fails if it would mix
-                controls and groups at the same level.
+                controls and groups within a GROUP (the catalog root may mix).
             group (dict, required): The group node to insert. Must be a dict with a
                 non-empty ``id``.
             shallow (bool, optional): When True (default), drop the group's child
@@ -1570,10 +1616,12 @@ class Catalog(OSCAL):
             logger.warning(f"insert_group: parent group '{parent_id}' not found.")
             return None
 
-        if _would_mix(parent, "group"):
+        # Controls and groups may coexist at the catalog root; the group choice applies
+        # only within a GROUP, so the mix guard is skipped for the root parent.
+        if parent_id not in ("", "[root]") and _would_mix(parent, "group"):
             logger.warning(
-                f"insert_group: '{parent_id or '[root]'}' already contains controls; "
-                "controls and groups cannot be mixed at the same level."
+                f"insert_group: group '{parent_id}' already contains controls; "
+                "controls and groups cannot be mixed within a group."
             )
             return None
 
@@ -2161,9 +2209,9 @@ class Profile(OSCAL):
       content is copied. Directives applied here: ``import``/``include``/``exclude``
       selection, ``merge`` (``as-is`` or ``flat``; ``custom`` is deferred and falls back
       to ``as-is``), and ``combine`` duplicate handling (``keep`` renames the node id,
-      ``use-first`` drops later duplicates). When an ``as-is`` merge would place controls
-      and groups together at the root, root controls are wrapped in a synthetic
-      "ROOT CONTROLS" group.
+      ``use-first`` drops later duplicates). Controls and groups may coexist at the catalog
+      root; only a GROUP that a merge leaves holding both controls and sub-groups has its
+      loose controls wrapped in a synthetic sub-group (the OSCAL group ``choice``).
 
     * **resolve() (heavy, cacheable).** :meth:`resolve` walks the tree and materializes a
       brand-new ``Catalog`` in :attr:`catalog`, fetching real content per node, applying
@@ -2348,9 +2396,10 @@ class Profile(OSCAL):
         mutation is deferred to :meth:`resolve`), tags every node with an ``origin``,
         and prunes empty groups. Populates :attr:`controls_tree` and :attr:`duplicates`.
 
-        For ``as-is`` merges, if the result would place controls and groups together at
-        the root (which OSCAL forbids), the root controls are wrapped in a synthetic
-        "ROOT CONTROLS" group via :meth:`_wrap_root_controls`.
+        Controls and groups may coexist at the catalog ROOT (the catalog model permits it),
+        so the root is left mixed. Within a GROUP, where OSCAL requires children be either
+        controls or groups, a mixed group produced by a merge has its loose controls wrapped
+        in a synthetic sub-group via :meth:`_normalize_group_control_mix`.
 
         Best-effort: if content or imports are not yet available the tree is left empty
         and ``_tree_dirty`` stays set so it rebuilds on the next access.
@@ -2379,14 +2428,10 @@ class Profile(OSCAL):
                            f"(status={status}); excluded from scope.")
 
         mode, combine = self._merge_mode()
-        # A synthetic "ROOT CONTROLS" wrapper is only relevant to as-is: flat has no
-        # groups (so no root mix), and custom defines its own structure.
-        wrap_root = (mode == "as-is")
         if mode == "custom":
             logger.warning("controls_tree: 'custom' merge is not yet implemented; "
                            "falling back to 'as-is'.")
             mode = "as-is"
-            wrap_root = False
 
         # id -> placed node, shared across imports so duplicates merge/rename correctly.
         ctrl_nodes: dict[str, dict] = {}
@@ -2413,8 +2458,11 @@ class Profile(OSCAL):
             result = self._renest_by_hierarchy(result)
 
         result = _prune_empty_group_nodes(result)
-        if wrap_root:
-            result = self._wrap_root_controls(result)
+        # Controls and groups may legitimately coexist at the catalog ROOT — the catalog
+        # model permits it and other OSCAL tools emit it — so the root is left as-is. Within
+        # a GROUP, OSCAL requires children be EITHER controls OR groups; if a merge ever
+        # produces a mixed group, its loose controls are wrapped in a synthetic sub-group.
+        result = self._normalize_group_control_mix(result)
         self.controls_tree = result
         self._tree_dirty = False
 
@@ -2484,7 +2532,7 @@ class Profile(OSCAL):
              catalogs in import order and take the first that defines the control.
           3. **climb** — if the chosen parent is not present, walk up the ancestor chain
              to the nearest present control; failing that, the control stays under its
-             group (or root, later wrapped by :meth:`_wrap_root_controls`).
+             group (or at the root, where controls and groups may coexist).
 
         A catalog-asserted relationship is always honored; the dotted convention is used
         only for known catalogs flagged for it. Returns the re-nested node list.
@@ -2634,39 +2682,48 @@ class Profile(OSCAL):
         return new_root_groups + root_controls
 
     # -------------------------------------------------------------------------
-    def _wrap_root_controls(self, tree: list) -> list:
-        """Wrap root-level controls in a synthetic group when groups also sit at root.
+    def _normalize_group_control_mix(self, tree: list) -> list:
+        """Enforce the OSCAL group ``choice`` within groups: a group's children must be
+        EITHER controls OR groups, never both.
 
-        OSCAL forbids controls and groups at the same level. Profile resolution can
-        legitimately place both at the catalog root (one import contributing top-level
-        controls, another contributing groups) — an under-specified case in the
-        spec. This resolves it by moving every root-level control into a new group,
-        inserted first, with a fresh uuid, the title "ROOT CONTROLS", and ``sort-id``
-        "0" / ``label`` "/" props (so it sorts and labels ahead of the real families).
+        The catalog ROOT is exempt — the catalog model permits top-level controls and
+        groups to coexist (and other OSCAL tools emit that), so root mixing is left as-is.
+        Walks every GROUP in *tree* (bottom-up); where a merge has produced a group holding
+        both loose controls and sub-groups, the loose controls are moved into a synthetic
+        sub-group (inserted first, fresh token-valid id, title "UNGROUPED CONTROLS",
+        ``sort-id`` "0" / ``label`` "/") so the parent group then holds only groups. A
+        well-formed single source never triggers this; it is a safety net for merges.
         """
-        groups = [n for n in tree if n.get("group")]
-        controls = [n for n in tree if not n.get("group")]
-        if not (groups and controls):
-            return tree
-        # A group id is a TokenDatatype and cannot start with a digit, so a raw UUID is
-        # not valid — prefix it with '_' to keep it unique and token-valid.
-        gid = "_" + new_uuid()
-        wrapper = {
-            "id": gid,
-            "label": "/",
-            "title": "ROOT CONTROLS",
-            "group": True,
-            "origin": None,
-            # Full intrinsic content for a synthetic group with no import source.
-            "intrinsic": {
-                "id": gid,
-                "title": "ROOT CONTROLS",
-                "props": [{"name": "sort-id", "value": "0"},
-                          {"name": "label", "value": "/"}],
-            },
-            "children": controls,
-        }
-        return [wrapper] + groups
+        def wrap(children: list) -> list:
+            groups = [n for n in children if n.get("group")]
+            controls = [n for n in children if not n.get("group")]
+            if not (groups and controls):
+                return children
+            # A group id is a TokenDatatype and cannot start with a digit, so a raw UUID is
+            # not valid — prefix it with '_' to keep it unique and token-valid.
+            gid = "_" + new_uuid()
+            wrapper = {
+                "id": gid, "label": "/", "title": "UNGROUPED CONTROLS",
+                "group": True, "origin": None,
+                "intrinsic": {
+                    "id": gid, "title": "UNGROUPED CONTROLS",
+                    "props": [{"name": "sort-id", "value": "0"},
+                              {"name": "label", "value": "/"}],
+                },
+                "children": controls,
+            }
+            return [wrapper] + groups
+
+        def walk(nodes: list) -> None:
+            for n in nodes:
+                if n.get("group"):
+                    walk(n.get("children", []))                 # normalize sub-groups first
+                    n["children"] = wrap(n.get("children", []))  # then de-mix this group
+                else:
+                    walk(n.get("children", []))                 # control enhancements (no groups)
+
+        walk(tree)   # recurse into groups; the root list itself is intentionally NOT wrapped
+        return tree
 
     # -------------------------------------------------------------------------
     def _export_state(self) -> dict:
@@ -4678,7 +4735,7 @@ class Profile(OSCAL):
         Applies the ``__<uuid>`` id/params/parts rename when the node is a duplicate, so
         the returned group id matches the controls_tree node id.
         """
-        # Synthetic groups (e.g. the ROOT CONTROLS wrapper) carry their own content.
+        # Synthetic groups (e.g. the UNGROUPED CONTROLS wrapper) carry their own content.
         if node.get("intrinsic") is not None:
             return copy.deepcopy(node["intrinsic"])
         origin = node.get("origin") or {}

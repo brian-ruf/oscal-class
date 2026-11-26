@@ -526,7 +526,9 @@ class TestMultiImport:
             _inject_statements(doc); json.dump(doc, fh)
         return path
 
-    def test_root_controls_wrapped_when_groups_present(self, tmp_path):
+    def test_root_controls_and_groups_coexist(self, tmp_path):
+        # The catalog model permits controls and groups at the top level, so root mixing is
+        # kept as-is (no synthetic wrapper) — matching what other OSCAL tools emit.
         a = self._cat(tmp_path, "a.json", "33333333-3333-4333-8333-333333333333",
                       root_controls=["x1", "x2"])
         b = self._cat(tmp_path, "b.json", "44444444-4444-4444-8444-444444444444",
@@ -535,22 +537,47 @@ class TestMultiImport:
         p.add_import(a, include_all=True)
         p.add_import(b, include_all=True)
         p.set_merge(as_is=True)
-        # Root controls are wrapped into a synthetic "ROOT CONTROLS" group, inserted
-        # first; the tree top is now all groups (no controls/groups mixing).
         top = p.controls_tree
-        assert all(n["group"] for n in top)
-        assert top[0]["title"] == "ROOT CONTROLS"
-        assert {c["id"] for c in top[0]["children"]} == {"x1", "x2"}
-        assert top[1]["id"] == "g"
+        assert {n["id"] for n in top if not n["group"]} == {"x1", "x2"}
+        assert {n["id"] for n in top if n["group"]} == {"g"}
+        assert all(n.get("title") != "ROOT CONTROLS" for n in top)   # no wrapper
 
         p.resolve()
-        assert p.catalog.is_valid   # no root mixing -> valid
+        assert p.catalog.is_valid   # root controls + groups coexist and validate
         assert {c["id"] for c in p.get_control_list()} == {"x1", "x2", "y1", "y2"}
-        # the wrapper group carries the specified props
-        wrapper = p.catalog._dict["catalog"]["groups"][0]
-        assert wrapper["title"] == "ROOT CONTROLS"
-        props = {pr["name"]: pr["value"] for pr in wrapper.get("props", [])}
-        assert props.get("sort-id") == "0" and props.get("label") == "/"
+        root = p.catalog._dict["catalog"]
+        assert {c["id"] for c in root.get("controls", [])} == {"x1", "x2"}
+        assert {g["id"] for g in root.get("groups", [])} == {"g"}
+
+    def test_mixed_group_wraps_loose_controls(self, tmp_path):
+        # OSCAL's group choice still holds WITHIN a group. Two imports funnel into the same
+        # group id 'g': one contributes a direct control, the other a sub-group. The merge
+        # leaves 'g' holding both, so the loose control is wrapped in a synthetic sub-group.
+        def _cat(name, uuid, groups_block):
+            doc = {"catalog": {"uuid": uuid,
+                   "metadata": {"title": "C", "last-modified": "2026-01-01T00:00:00Z",
+                                "version": "1", "oscal-version": "1.1.3"},
+                   "groups": groups_block}}
+            path = os.path.join(str(tmp_path), name)
+            with open(path, "w") as fh:
+                _inject_statements(doc); json.dump(doc, fh)
+            return path
+        a = _cat("ga.json", "a1111111-1111-4111-8111-111111111111",
+                 [{"id": "g", "title": "G", "controls": [{"id": "c1", "title": "C1"}]}])
+        b = _cat("gb.json", "b2222222-2222-4222-8222-222222222222",
+                 [{"id": "g", "title": "G", "groups": [
+                     {"id": "sg", "title": "SG", "controls": [{"id": "c2", "title": "C2"}]}]}])
+        p = Profile.new("Multi")
+        p.add_import(a, include_all=True)
+        p.add_import(b, include_all=True)
+        p.set_merge(as_is=True, combine="use-first")
+        g = next(n for n in p.controls_tree if n["id"] == "g")
+        assert all(ch["group"] for ch in g["children"]), "group 'g' must hold only groups"
+        wrapper = next(ch for ch in g["children"] if ch["title"] == "UNGROUPED CONTROLS")
+        assert {c["id"] for c in wrapper["children"]} == {"c1"}
+        p.resolve()
+        assert p.catalog.is_valid
+        assert {c["id"] for c in p.get_control_list()} == {"c1", "c2"}
 
     def test_no_wrapper_when_all_grouped(self, tmp_path):
         a = self._cat(tmp_path, "a.json", "77777777-7777-4777-8777-777777777777",
@@ -832,3 +859,202 @@ class TestResolutionInvalidation:
         p.resolve_duplicate("ac-1")                       # edits .catalog in place
         assert p.resolution_status == ResolutionStatus.RESOLVED
         assert p.catalog is not None
+
+
+# ===========================================================================
+# Implicit ancestor inclusion — OSCAL requires that selecting a child control
+# implicitly selects its ancestor controls (an enhancement cannot be placed
+# without its parent control).
+# ===========================================================================
+
+def _nested_source_catalog():
+    """A catalog with a group ac → control ac-1 → enhancement ac-1.1 → ac-1.1.i (deep),
+    plus a sibling ac-2, so ancestor chains and non-selection can both be checked."""
+    return {
+        "catalog": {
+            "uuid": "22222222-2222-4222-8222-222222222222",
+            "metadata": {"title": "Nested", "last-modified": "2026-01-01T00:00:00Z",
+                         "version": "1.0", "oscal-version": "1.1.3"},
+            "groups": [
+                {"id": "ac", "class": "family", "title": "Access Control", "controls": [
+                    {"id": "ac-1", "title": "Policy", "controls": [
+                        {"id": "ac-1.1", "title": "Enh", "controls": [
+                            {"id": "ac-1.1.i", "title": "Deep Enh"}]}]},
+                    {"id": "ac-2", "title": "Account Mgmt"},
+                ]},
+            ],
+        }
+    }
+
+
+def _find_node(nodes, cid):
+    for n in nodes:
+        if n["id"] == cid:
+            return n
+        hit = _find_node(n.get("children", []), cid)
+        if hit:
+            return hit
+    return None
+
+
+def _select_profile(tmp_path, with_ids=None, matching=None, exclude_ids=None,
+                    merge=None, catalog=None, name="nested.json"):
+    doc = catalog if catalog is not None else _nested_source_catalog()
+    _inject_statements(doc)
+    src = os.path.join(str(tmp_path), name)
+    with open(src, "w") as fh:
+        json.dump(doc, fh)
+    p = Profile.new("Sel")
+    p.set_metadata({"title": "Sel"})
+    p.add_import(src)
+    entry = {}
+    if with_ids is not None:
+        entry["with-ids"] = with_ids
+    if matching is not None:
+        entry["matching"] = matching
+    kwargs = {"include_controls": [entry]}
+    if exclude_ids is not None:
+        kwargs["exclude_controls"] = [{"with-ids": exclude_ids}]
+    p.set_import_selection(src, **kwargs)
+    p.set_merge(**(merge or {"as_is": True, "combine": "keep"}))
+    return p
+
+
+def _resolved_ids(p):
+    """The set of control ids in the resolved catalog."""
+    p.resolve()
+    return {c["id"] for c in p.get_control_list()}
+
+
+class TestImplicitAncestorInclusion:
+    def test_enhancement_pulls_in_parent_nested(self, tmp_path):
+        p = _select_profile(tmp_path, with_ids=["ac-1.1"])
+        ac1 = _find_node(p.controls_tree, "ac-1")
+        assert ac1 is not None, "parent control ac-1 must be implicitly included"
+        assert any(c["id"] == "ac-1.1" for c in ac1.get("children", [])), \
+            "ac-1.1 must nest under its implicitly-included parent ac-1"
+
+    def test_deep_enhancement_pulls_in_full_chain(self, tmp_path):
+        p = _select_profile(tmp_path, with_ids=["ac-1.1.i"])
+        ac1 = _find_node(p.controls_tree, "ac-1")
+        ac11 = _find_node(p.controls_tree, "ac-1.1")
+        ac11i = _find_node(p.controls_tree, "ac-1.1.i")
+        assert ac1 and ac11 and ac11i
+        assert any(c["id"] == "ac-1.1" for c in ac1["children"])
+        assert any(c["id"] == "ac-1.1.i" for c in ac11["children"])
+
+    def test_unselected_sibling_absent(self, tmp_path):
+        p = _select_profile(tmp_path, with_ids=["ac-1.1"])
+        assert _find_node(p.controls_tree, "ac-2") is None
+
+    def test_matching_pattern_also_pulls_ancestors(self, tmp_path):
+        p = _select_profile(tmp_path, matching=[{"pattern": "ac-1.1"}])
+        assert _find_node(p.controls_tree, "ac-1") is not None
+
+    def test_top_level_selection_adds_no_spurious_ancestors(self, tmp_path):
+        p = _select_profile(tmp_path, with_ids=["ac-2"])
+        top_ctrl_ids = {n["id"] for n in p.controls_tree
+                        if not n.get("group")} | {
+                        c["id"] for g in p.controls_tree for c in g.get("children", [])}
+        assert "ac-2" in top_ctrl_ids
+        assert _find_node(p.controls_tree, "ac-1") is None
+
+    def test_resolved_catalog_contains_ancestor(self, tmp_path):
+        p = _select_profile(tmp_path, with_ids=["ac-1.1"])
+        p.resolve()
+        ids = {c["id"] for c in p.get_control_list()}
+        assert {"ac-1", "ac-1.1"} <= ids
+        assert "ac-2" not in ids
+
+    def test_include_child_initially_includes_ancestors_in_set(self, tmp_path):
+        # The resolved control SET includes the explicitly-selected child and its ancestor
+        # chain (and nothing else, for a single deep selection).
+        assert _resolved_ids(_select_profile(tmp_path, with_ids=["ac-1.1.i"])) == {
+            "ac-1", "ac-1.1", "ac-1.1.i"}
+
+
+# ===========================================================================
+# Excluding an implicitly-included ancestor: the child survives without its
+# parent (the overlay case). The orphaned child takes the closest surviving
+# ancestor, falling back to the root.
+# ===========================================================================
+class TestExcludeImplicitAncestor:
+
+    def test_exclude_parent_keeps_child(self, tmp_path):
+        # include the enhancement, exclude its (implicitly-included) parent
+        p = _select_profile(tmp_path, with_ids=["ac-1.1"], exclude_ids=["ac-1"])
+        assert _find_node(p.controls_tree, "ac-1") is None       # parent dropped
+        assert _find_node(p.controls_tree, "ac-1.1") is not None  # child kept
+
+    def test_orphan_attaches_to_closest_surviving_ancestor(self, tmp_path):
+        # parent ac-1 excluded; the orphan ac-1.1 attaches to the nearest surviving
+        # ancestor — here the enclosing group 'ac' (as-is).
+        p = _select_profile(tmp_path, with_ids=["ac-1.1"], exclude_ids=["ac-1"])
+        g = _find_node(p.controls_tree, "ac")
+        assert g is not None and g.get("group")
+        assert any(c["id"] == "ac-1.1" for c in g.get("children", []))
+
+    def test_exclude_middle_ancestor_keeps_grandparent(self, tmp_path):
+        # include the deep enhancement, exclude the MIDDLE ancestor: grandparent survives.
+        p = _select_profile(tmp_path, with_ids=["ac-1.1.i"], exclude_ids=["ac-1.1"])
+        assert _resolved_ids(p) == {"ac-1", "ac-1.1.i"}
+        # ac-1.1.i attaches to the surviving grandparent ac-1
+        ac1 = _find_node(p.controls_tree, "ac-1")
+        assert any(c["id"] == "ac-1.1.i" for c in ac1.get("children", []))
+
+    def test_resolved_set_excludes_parent(self, tmp_path):
+        p = _select_profile(tmp_path, with_ids=["ac-1.1"], exclude_ids=["ac-1"])
+        assert _resolved_ids(p) == {"ac-1.1"}
+
+    def test_root_orphan_coexists_with_groups(self, tmp_path):
+        # A top-level control cc-1 -> cc-1.1 (no group) plus a real group. Include the
+        # orphan cc-1.1, exclude its parent cc-1: the orphan lands at the root and coexists
+        # with the group (no synthetic wrapper, no parent).
+        cat = {"catalog": {"uuid": "55555555-5555-4555-8555-555555555555",
+               "metadata": {"title": "C", "last-modified": "2026-01-01T00:00:00Z",
+                            "version": "1.0", "oscal-version": "1.1.3"},
+               "controls": [{"id": "cc-1", "title": "Root",
+                             "controls": [{"id": "cc-1.1", "title": "Root Enh"}]}],
+               "groups": [{"id": "ac", "title": "Access",
+                           "controls": [{"id": "ac-1", "title": "Policy"}]}]}}
+        p = _select_profile(tmp_path, with_ids=["cc-1.1", "ac-1"], exclude_ids=["cc-1"],
+                            catalog=cat, name="rootorphan.json")
+        top = p.controls_tree
+        assert {n["id"] for n in top if not n.get("group")} == {"cc-1.1"}   # orphan at root
+        assert "ac" in {n["id"] for n in top if n.get("group")}
+        assert all(n.get("title") != "ROOT CONTROLS" for n in top)         # no wrapper
+        assert _resolved_ids(p) == {"cc-1.1", "ac-1"}
+        assert p.catalog.is_valid
+
+
+# ===========================================================================
+# Inclusion is independent of shape: `flat` and `as-is` yield the SAME set of
+# controls; only the representation (flat vs. preserved hierarchy) differs.
+# ===========================================================================
+class TestInclusionIndependentOfShape:
+
+    _AS_IS = {"as_is": True, "combine": "keep"}
+    _FLAT = {"flat": True, "combine": "keep"}
+
+    def test_same_set_basic(self, tmp_path):
+        a = _select_profile(tmp_path, with_ids=["ac-1.1.i"], merge=self._AS_IS, name="a.json")
+        f = _select_profile(tmp_path, with_ids=["ac-1.1.i"], merge=self._FLAT, name="f.json")
+        assert _resolved_ids(a) == _resolved_ids(f) == {"ac-1", "ac-1.1", "ac-1.1.i"}
+
+    def test_same_set_with_excluded_ancestor(self, tmp_path):
+        a = _select_profile(tmp_path, with_ids=["ac-1.1"], exclude_ids=["ac-1"],
+                            merge=self._AS_IS, name="a.json")
+        f = _select_profile(tmp_path, with_ids=["ac-1.1"], exclude_ids=["ac-1"],
+                            merge=self._FLAT, name="f.json")
+        assert _resolved_ids(a) == _resolved_ids(f) == {"ac-1.1"}
+
+    def test_shape_differs_hierarchy_vs_flat(self, tmp_path):
+        a = _select_profile(tmp_path, with_ids=["ac-1.1.i"], merge=self._AS_IS, name="a.json")
+        f = _select_profile(tmp_path, with_ids=["ac-1.1.i"], merge=self._FLAT, name="f.json")
+        # as-is preserves the source hierarchy (group ac -> ac-1 -> ac-1.1 -> ac-1.1.i)
+        ac1 = _find_node(a.controls_tree, "ac-1")
+        assert ac1 is not None and any(c["id"] == "ac-1.1" for c in ac1["children"])
+        # flat hoists every control to the root with no groups and no nesting
+        assert all(not n.get("group") for n in f.controls_tree)
+        assert all(not n.get("children") for n in f.controls_tree)
+        assert {n["id"] for n in f.controls_tree} == {"ac-1", "ac-1.1", "ac-1.1.i"}

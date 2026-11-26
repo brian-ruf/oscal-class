@@ -1,18 +1,24 @@
 """
 Referential (hierarchy-reconstructing) profile merge — MergeStrategy.
 
-Covers the underspecified OSCAL ``as-is`` case where two imports select a parent
-control and its enhancement respectively, from a common source catalog, via
-different import branches. REFERENTIAL (default) nests the enhancement under its
-parent; POSITIONAL (legacy) leaves them as peers.
+Covers the ``as-is`` case where two imports select a parent control and its
+enhancement respectively, from a common source catalog, via different import
+branches.
 
 Public fixtures reproduce the private ``ed`` overlay-chain scenario:
 
     top-profile (as-is, use-first)
-      ├── branch-a-profile  -> catalog, includes ac-3        (parent, no child)
-      └── branch-b-profile  -> catalog, includes ac-3.14     (child, no parent)
+      ├── branch-a-profile  -> catalog, includes ac-3        (parent)
+      └── branch-b-profile  -> catalog, includes ac-3.14     (child only)
 
-In the source catalog ac-3.14 is an enhancement of ac-3.
+In the source catalog ac-3.14 is an enhancement of ac-3. Per the OSCAL
+profile-resolution rule that an explicitly-selected child control implicitly
+selects its ancestor controls, branch-b's selection of ac-3.14 pulls ac-3 into
+scope, so the enhancement nests under its parent in BOTH merge strategies for this
+nested source. The REFERENTIAL-vs-POSITIONAL distinction (REFERENTIAL reconstructs
+control→control containment; POSITIONAL keeps the immediate-import structure)
+therefore now only diverges for flat/dotted sources where the parent is not an
+ancestor of the child in the source tree.
 """
 
 import json
@@ -137,9 +143,11 @@ class TestReferentialDefault:
         assert _path_to(top.controls_tree, "ac-3.14") == ("ac", "ac-3", "ac-3.14")
         assert _path_to(top.controls_tree, "ac-3") == ("ac", "ac-3")
 
-    def test_positional_leaves_enhancement_as_peer(self, top):
+    def test_positional_also_nests_via_implicit_ancestor(self, top):
+        # Ancestor inclusion puts ac-3 in branch-b's scope, so the source nesting is
+        # preserved under POSITIONAL too (no orphan peer for a nested source).
         top.merge_strategy = MergeStrategy.POSITIONAL
-        assert _path_to(top.controls_tree, "ac-3.14") == ("ac", "ac-3.14")
+        assert _path_to(top.controls_tree, "ac-3.14") == ("ac", "ac-3", "ac-3.14")
         assert _path_to(top.controls_tree, "ac-3") == ("ac", "ac-3")
 
     def test_strategy_preserves_control_set(self, top):
@@ -162,10 +170,12 @@ class TestStrategySwitch:
         assert top.catalog is None
 
     def test_switch_rebuilds_tree_immediately(self, top):
-        # No explicit resolve()/getter call between the switch and the read.
+        # No explicit resolve()/getter call between the switch and the read: the tree is
+        # rebuilt on access. (For this nested source both strategies nest ac-3.14 under
+        # ac-3 because ancestor inclusion pulls ac-3 into scope.)
         assert _path_to(top.controls_tree, "ac-3.14") == ("ac", "ac-3", "ac-3.14")
         top.merge_strategy = MergeStrategy.POSITIONAL
-        assert _path_to(top.controls_tree, "ac-3.14") == ("ac", "ac-3.14")
+        assert _path_to(top.controls_tree, "ac-3.14") == ("ac", "ac-3", "ac-3.14")
 
     def test_setting_same_strategy_is_noop(self, top):
         top.resolve()
@@ -178,12 +188,13 @@ class TestStrategySwitch:
         ac3 = top.catalog.get_control_by_id("ac-3")
         assert "ac-3.14" in [c.get("id") for c in ac3.get("controls", [])]
 
-    def test_positional_resolve_keeps_peer(self, top):
+    def test_positional_resolve_nests_via_ancestor(self, top):
+        # ac-3 is implicitly in scope (ancestor of the selected ac-3.14), so the resolved
+        # catalog nests the enhancement under its parent even under POSITIONAL.
         top.merge_strategy = MergeStrategy.POSITIONAL
         top.resolve()
         ac3 = top.catalog.get_control_by_id("ac-3")
-        assert "ac-3.14" not in [c.get("id") for c in ac3.get("controls", [])]
-        # still present in the catalog, just not nested
+        assert "ac-3.14" in [c.get("id") for c in ac3.get("controls", [])]
         assert top.catalog.get_control_by_id("ac-3.14") is not None
 
 
@@ -201,10 +212,12 @@ class TestEdOverlayChain:
         p = Profile.load(_ED)
         assert _path_to(p.controls_tree, "ac-3.14") == ("ac", "ac-3", "ac-3.14")
 
-    def test_positional_keeps_ac_3_14_as_peer(self):
+    def test_positional_also_nests_ac_3_14_via_ancestor(self):
+        # The source nests ac-3.14 under ac-3; ancestor inclusion keeps ac-3 in scope, so
+        # the enhancement nests under its parent under POSITIONAL too.
         p = Profile.load(_ED)
         p.merge_strategy = MergeStrategy.POSITIONAL
-        assert _path_to(p.controls_tree, "ac-3.14") == ("ac", "ac-3.14")
+        assert _path_to(p.controls_tree, "ac-3.14") == ("ac", "ac-3", "ac-3.14")
 
     def test_strategy_preserves_ed_control_count(self):
         p = Profile.load(_ED)
