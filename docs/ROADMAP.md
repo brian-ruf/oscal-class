@@ -1,11 +1,11 @@
 ---
 ---
 
-# ROADMAP (_Updated November 12, 2026_)
+# ROADMAP (_Updated November 24, 2026_)
 
 The sequencing of releases may change in response to client needs and other external factors.
 
-## CURRENT: Version 4.3.0
+## CURRENT: Version 4.3.1
 
 - Profile resolution — control selection:
     - Implicit ancestor inclusion: explicitly selecting a child control now implicitly selects its ancestor controls (OSCAL profile-resolution requirement), so an enhancement is never placed without its parent.
@@ -18,6 +18,10 @@ The sequencing of releases may change in response to client needs and other exte
     - Per-`href` failure detail: every candidate records each attempt with a typed `ImportFailureCode`, `http_status`, and (for reachable-but-invalid content) the validation ladder. New `REMOTE_NOT_FOUND` (HTTP 404/410, split from `REMOTE_UNREACHABLE`), `BAD_REFERENCE` (a `#uuid` import whose target is absent from the in-scope content), and `NOT_ATTEMPTED` import state.
 - Version resolution:
     - Early/unindexed OSCAL versions substitute the closest version that has a processed metaschema index, offline (no spurious support-database update/fetch); a missing or unparseable `oscal-version` is reported unsupported without any acquisition.
+
+## Builds on Version 4.3.0
+
+- Improved exposure of imported content's validation level via the import tree.
 
 ## Builds on Version 4.2.4
 

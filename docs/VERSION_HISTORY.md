@@ -95,4 +95,8 @@
   - new methods allow targeted adjustments
 - new release script
 
-  
+
+## Version 4.2.4
+
+- Improved exposure of imported content's validation level via the import tree.
+

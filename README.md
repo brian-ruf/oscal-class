@@ -57,11 +57,15 @@ A Python library for working with [Open Security Controls Assessment Language (O
 
 ### Latest Release
 
+Install the latest release from the Python Package Index ([https://PyPI.org](https://PyPI.org)):
+
 ```bash
 pip install oscal
 ```
 
 ### Latest Development:
+
+Insall the latest development work directly from the GitHub repo:
 
 ```bash
 pip install git+https://github.com/brian-ruf/oscal-class.git@develop
